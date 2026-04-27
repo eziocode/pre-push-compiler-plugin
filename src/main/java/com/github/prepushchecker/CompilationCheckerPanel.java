@@ -19,6 +19,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
+import com.intellij.ui.components.JBCheckBox;
 import org.jetbrains.annotations.NotNull;
 
 import java.net.URLEncoder;
@@ -59,7 +60,11 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         var toolbar = ActionManager.getInstance()
             .createActionToolbar("CompilationCheckerToolbar", group, true);
         toolbar.setTargetComponent(this);
-        add(toolbar.getComponent(), BorderLayout.NORTH);
+
+        JPanel header = new JPanel(new BorderLayout());
+        header.add(toolbar.getComponent(), BorderLayout.NORTH);
+        header.add(createSettingsPanel(), BorderLayout.SOUTH);
+        add(header, BorderLayout.NORTH);
 
         // ── Error list ────────────────────────────────────────────────────────
         JBList<String> errorList = new JBList<>(listModel);
@@ -108,6 +113,21 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         listModel.clear();
         errors.forEach(listModel::addElement);
         statusLabel.setText(errors.isEmpty() ? " " : errors.size() + " error(s) from last check");
+    }
+
+    private JComponent createSettingsPanel() {
+        JBCheckBox strictGuard = new JBCheckBox("Enable strict A/B dependency guard");
+        strictGuard.setSelected(PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project));
+        strictGuard.setToolTipText(
+            "Stores the per-project toggle for strict pushed-snapshot validation. " +
+                "Disabled by default to preserve the current fast push path.");
+        strictGuard.addActionListener(event ->
+            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, strictGuard.isSelected()));
+
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createEmptyBorder(0, 6, 6, 6));
+        panel.add(strictGuard, BorderLayout.WEST);
+        return panel;
     }
 
     // ── Toolbar actions ───────────────────────────────────────────────────────

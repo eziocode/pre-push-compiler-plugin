@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - **External pushes can now reuse IntelliJ's incremental compiler.** The managed hook contacts a local loopback server when the IDE is open, so terminal and GUI-client pushes can validate with JPS before falling back to Gradle or Maven.
 - **Debounced warmup compiles** run after source saves, keeping compiler caches hot so pre-push checks can usually reuse a fresh verdict.
 - **Dependent-module compile scopes** include modules that depend on changed modules, catching caller-side breakage without forcing a full project build on ordinary pushes.
+- **Side-panel toggle for strict A/B dependency guard.** The Compilation Checker tool window now exposes a per-project checkbox for the optional pushed-snapshot guard, disabled by default.
 
 ### Changed
 - External push handling now bounds concurrent client workers and caps requested path lists, falling back to project-scope compilation when a request is too large to keep memory usage predictable.
