@@ -8,6 +8,7 @@ import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -30,6 +31,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 public final class CompilationErrorService {
 
     private static final Logger LOG = Logger.getInstance(CompilationErrorService.class);
+    static final int MAX_RETAINED_ERRORS = 200;
+    private static final int MAX_RETAINED_ERROR_CHARS = 4_000;
 
     private volatile List<String> errors = Collections.emptyList();
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
@@ -44,12 +47,41 @@ public final class CompilationErrorService {
     }
 
     public void setErrors(@NotNull List<String> newErrors) {
-        List<String> snapshot = List.copyOf(newErrors);
+        List<String> snapshot = compactErrors(newErrors);
         if (snapshot.equals(this.errors)) {
             return;
         }
         this.errors = snapshot;
         ApplicationManager.getApplication().invokeLater(this::fireListeners);
+    }
+
+    static @NotNull List<String> compactErrors(@NotNull List<String> newErrors) {
+        if (newErrors.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        int retained = Math.min(newErrors.size(), MAX_RETAINED_ERRORS);
+        List<String> snapshot = new ArrayList<>(retained + (newErrors.size() > retained ? 1 : 0));
+        for (int i = 0; i < retained; i++) {
+            snapshot.add(compactError(newErrors.get(i)));
+        }
+        if (newErrors.size() > retained) {
+            snapshot.add(omittedErrorsMessage(newErrors.size() - retained));
+        }
+        return List.copyOf(snapshot);
+    }
+
+    static @NotNull String compactError(@Nullable String error) {
+        String value = error == null ? "" : error;
+        if (value.length() <= MAX_RETAINED_ERROR_CHARS) {
+            return value;
+        }
+        return value.substring(0, MAX_RETAINED_ERROR_CHARS)
+            + "... [truncated to limit memory usage]";
+    }
+
+    static @NotNull String omittedErrorsMessage(int omittedCount) {
+        return "... " + omittedCount + " more compiler error(s) omitted to limit memory usage.";
     }
 
     public @NotNull List<String> getErrors() {

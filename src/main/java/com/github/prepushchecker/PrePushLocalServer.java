@@ -30,8 +30,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -55,9 +61,12 @@ public final class PrePushLocalServer implements Disposable {
     private static final Logger LOG = Logger.getInstance(PrePushLocalServer.class);
     private static final long COMPILE_TIMEOUT_SECONDS = 300L;
     private static final int BACKLOG = 4;
+    private static final int MAX_CLIENT_THREADS = 4;
+    private static final int MAX_REQUESTED_PATHS = 2_048;
     private static final int CLIENT_SO_TIMEOUT_MS = 5 * 60 * 1000;
 
     private final Project project;
+    private final ExecutorService clientExecutor;
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile ServerSocket server;
     private volatile Thread acceptThread;
@@ -65,6 +74,14 @@ public final class PrePushLocalServer implements Disposable {
 
     public PrePushLocalServer(@NotNull Project project) {
         this.project = project;
+        this.clientExecutor = new ThreadPoolExecutor(
+            0,
+            MAX_CLIENT_THREADS,
+            30L,
+            TimeUnit.SECONDS,
+            new SynchronousQueue<>(),
+            clientThreadFactory(project.getName()),
+            new ThreadPoolExecutor.AbortPolicy());
     }
 
     void start() {
@@ -98,13 +115,39 @@ public final class PrePushLocalServer implements Disposable {
             try {
                 Socket socket = s.accept();
                 socket.setSoTimeout(CLIENT_SO_TIMEOUT_MS);
-                handleClient(socket);
+                try {
+                    clientExecutor.execute(() -> handleClient(socket));
+                } catch (RejectedExecutionException rejected) {
+                    LOG.warn("Pre-push client rejected because all workers are busy.", rejected);
+                    writeServerBusy(socket);
+                }
             } catch (IOException e) {
                 if (s.isClosed()) return;
                 LOG.debug("Accept failed", e);
             } catch (Throwable t) {
                 LOG.warn("Unexpected error in accept loop", t);
             }
+        }
+    }
+
+    private static ThreadFactory clientThreadFactory(String projectName) {
+        AtomicInteger counter = new AtomicInteger(1);
+        return runnable -> {
+            Thread thread = new Thread(
+                runnable,
+                "PrePushChecker-Client-" + projectName + "-" + counter.getAndIncrement());
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
+
+    private void writeServerBusy(Socket socket) {
+        try (Socket c = socket;
+             BufferedWriter out = new BufferedWriter(new OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8))) {
+            out.write("ERR server-busy\n");
+            out.flush();
+        } catch (IOException e) {
+            LOG.debug("Could not notify pre-push client that the server is busy", e);
         }
     }
 
@@ -121,9 +164,18 @@ public final class PrePushLocalServer implements Disposable {
             }
             // Read optional list of absolute file paths (one per line) until a blank line or EOF.
             List<String> requestedPaths = new ArrayList<>();
+            boolean pathLimitExceeded = false;
             while ((line = in.readLine()) != null) {
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) break;
+                if (pathLimitExceeded) continue;
+                if (requestedPaths.size() >= MAX_REQUESTED_PATHS) {
+                    requestedPaths.clear();
+                    pathLimitExceeded = true;
+                    LOG.info("Pre-push request listed more than " + MAX_REQUESTED_PATHS
+                        + " paths; using project-scope compile to keep memory bounded.");
+                    continue;
+                }
                 requestedPaths.add(trimmed);
             }
 
@@ -133,7 +185,7 @@ public final class PrePushLocalServer implements Disposable {
                 return;
             }
 
-            List<String> errors = runCompile(requestedPaths);
+            List<String> errors = runCompile(pathLimitExceeded ? Collections.emptyList() : requestedPaths);
             if (errors == null) {
                 out.write("ERR compile-timeout\n");
             } else if (errors.isEmpty()) {
@@ -293,6 +345,7 @@ public final class PrePushLocalServer implements Disposable {
         if (s != null) {
             try { s.close(); } catch (IOException ignored) {}
         }
+        clientExecutor.shutdownNow();
         Thread t = acceptThread;
         if (t != null) t.interrupt();
         Path p = portFile;

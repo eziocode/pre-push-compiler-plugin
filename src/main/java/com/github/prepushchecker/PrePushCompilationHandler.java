@@ -347,10 +347,17 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             return Collections.singletonList("Compilation failed with an unknown compiler error.");
         }
 
-        List<String> formattedMessages = new ArrayList<>(messages.length);
+        List<String> formattedMessages = new ArrayList<>(
+            Math.min(messages.length, CompilationErrorService.MAX_RETAINED_ERRORS) + 1);
         StringBuilder builder = new StringBuilder(128);
+        int omittedMessages = 0;
         for (CompilerMessage message : messages) {
             if (message == null) {
+                continue;
+            }
+
+            if (formattedMessages.size() >= CompilationErrorService.MAX_RETAINED_ERRORS) {
+                omittedMessages++;
                 continue;
             }
 
@@ -365,7 +372,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             builder.append("] ");
             String msg = message.getMessage();
             builder.append(msg != null ? msg : "");
-            formattedMessages.add(builder.toString());
+            formattedMessages.add(CompilationErrorService.compactError(builder.toString()));
+        }
+
+        if (omittedMessages > 0) {
+            formattedMessages.add(CompilationErrorService.omittedErrorsMessage(omittedMessages));
         }
 
         if (formattedMessages.isEmpty()) {

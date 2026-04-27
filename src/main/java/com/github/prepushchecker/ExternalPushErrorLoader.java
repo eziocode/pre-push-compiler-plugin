@@ -17,6 +17,7 @@ import com.intellij.openapi.wm.ToolWindowManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -88,13 +89,13 @@ public final class ExternalPushErrorLoader implements StartupActivity {
             }
             LAST_PARSED.put(key, new long[] { size, mtime });
 
-            List<String> lines = Files.readAllLines(logFile, StandardCharsets.UTF_8);
-            Integer exitCode = readExitCode(lines);
+            HookLogParseResult parsedLog = parseHookLog(project, logFile);
+            Integer exitCode = parsedLog.exitCode();
             if (exitCode == null || exitCode == 0) {
                 return;
             }
 
-            List<String> errors = parseErrors(project, lines);
+            List<String> errors = parsedLog.errors();
             if (errors.isEmpty()) {
                 errors = Collections.singletonList(
                     "External pre-push check failed (exit " + exitCode + "). See "
@@ -108,49 +109,109 @@ public final class ExternalPushErrorLoader implements StartupActivity {
     }
 
     @Nullable
-    private static Integer readExitCode(List<String> lines) {
-        for (int i = lines.size() - 1; i >= 0; i--) {
-            String line = lines.get(i).trim();
-            if (line.startsWith(EXIT_TRAILER)) {
-                try {
-                    return Integer.parseInt(line.substring(EXIT_TRAILER.length()).trim());
-                } catch (NumberFormatException ignored) {
-                    return null;
-                }
-            }
+    private static Integer parseExitCode(@NotNull String line) {
+        try {
+            return Integer.parseInt(line.substring(EXIT_TRAILER.length()).trim());
+        } catch (NumberFormatException ignored) {
+            return null;
         }
-        return null;
+    }
+
+    private static HookLogParseResult parseHookLog(@NotNull Project project, @NotNull Path logFile)
+        throws IOException {
+        try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
+            String basePath = project.getBasePath();
+            ErrorCollector collector = new ErrorCollector();
+            Integer exitCode = null;
+
+            String raw;
+            while ((raw = reader.readLine()) != null) {
+                String line = raw.trim();
+                if (line.isEmpty()) continue;
+
+                if (line.startsWith(EXIT_TRAILER)) {
+                    exitCode = parseExitCode(line);
+                    continue;
+                }
+
+                collector.add(parseErrorLine(basePath, line));
+            }
+            return new HookLogParseResult(exitCode, collector.toList());
+        }
     }
 
     static List<String> parseErrors(@NotNull Project project, @NotNull List<String> lines) {
         String basePath = project.getBasePath();
-        Set<String> seen = new LinkedHashSet<>();
-        List<String> formatted = new ArrayList<>();
-
+        ErrorCollector collector = new ErrorCollector();
         for (String raw : lines) {
             String line = raw == null ? "" : raw.trim();
             if (line.isEmpty()) continue;
+            collector.add(parseErrorLine(basePath, line));
+        }
+        return collector.toList();
+    }
 
-            Matcher m = KOTLIN_PATTERN.matcher(line);
-            if (!m.matches()) {
-                m = JAVAC_PATTERN.matcher(line);
-                if (!m.matches()) continue;
+    @Nullable
+    private static String parseErrorLine(@Nullable String basePath, @NotNull String line) {
+        Matcher m = KOTLIN_PATTERN.matcher(line);
+        if (!m.matches()) {
+            m = JAVAC_PATTERN.matcher(line);
+            if (!m.matches()) return null;
+        }
+
+        String path = m.group("path");
+        String lineNo = m.group("line");
+        String col = safeGroup(m, "col");
+        String msg = m.group("msg").trim();
+
+        String relativePath = toProjectRelative(basePath, path);
+        String position = col != null && !col.isEmpty() ? lineNo + ":" + col : lineNo;
+        return "[" + relativePath + " (" + position.replace(":", ", ") + ")] " + msg;
+    }
+
+    private static final class ErrorCollector {
+        private final Set<String> seen = new LinkedHashSet<>();
+        private final List<String> formatted = new ArrayList<>();
+        private int omitted;
+
+        private void add(@Nullable String entry) {
+            if (entry == null) return;
+            if (formatted.size() >= CompilationErrorService.MAX_RETAINED_ERRORS) {
+                omitted++;
+                return;
             }
-
-            String path = m.group("path");
-            String lineNo = m.group("line");
-            String col = safeGroup(m, "col");
-            String msg = m.group("msg").trim();
-
-            String relativePath = toProjectRelative(basePath, path);
-            String position = col != null && !col.isEmpty() ? lineNo + ":" + col : lineNo;
-            String entry = "[" + relativePath + " (" + position.replace(":", ", ") + ")] " + msg;
-
             if (seen.add(entry)) {
-                formatted.add(entry);
+                formatted.add(CompilationErrorService.compactError(entry));
             }
         }
-        return formatted;
+
+        private List<String> toList() {
+            if (omitted == 0) {
+                return List.copyOf(formatted);
+            }
+            List<String> result = new ArrayList<>(formatted.size() + 1);
+            result.addAll(formatted);
+            result.add(CompilationErrorService.omittedErrorsMessage(omitted));
+            return List.copyOf(result);
+        }
+    }
+
+    private static final class HookLogParseResult {
+        private final Integer exitCode;
+        private final List<String> errors;
+
+        private HookLogParseResult(@Nullable Integer exitCode, @NotNull List<String> errors) {
+            this.exitCode = exitCode;
+            this.errors = errors;
+        }
+
+        private @Nullable Integer exitCode() {
+            return exitCode;
+        }
+
+        private @NotNull List<String> errors() {
+            return errors;
+        }
     }
 
     @Nullable
