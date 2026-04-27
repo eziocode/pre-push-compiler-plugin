@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 13 13">
+  <!-- Error list lines -->
+  <rect x="1" y="2" width="8" height="1.5" rx="0.5" fill="#6E6E6E"/>
+  <rect x="1" y="5" width="8" height="1.5" rx="0.5" fill="#6E6E6E"/>
+  <rect x="1" y="8" width="8" height="1.5" rx="0.5" fill="#6E6E6E"/>
+  <!-- Error badge -->
+  <circle cx="10" cy="10" r="3" fill="#E05252"/>
+  <!-- Exclamation mark body -->
+  <rect x="9.4" y="8.2" width="1.2" height="1.8" rx="0.3" fill="white"/>
+  <!-- Exclamation mark dot -->
+  <circle cx="10" cy="11.3" r="0.5" fill="white"/>
+</svg>

@@ -1,0 +1,116 @@
+<idea-plugin>
+    <id>com.github.prepushchecker</id>
+    <name>Pre-Push Compilation Checker</name>
+    <version>1.2.0</version>
+    <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
+
+    <description><![CDATA[
+        <p>Blocks git pushes when your code has compilation errors — before they reach the remote.</p>
+
+        <h3>How it works</h3>
+        <ul>
+            <li><b>IDE Push Guard:</b> Hooks into the IntelliJ Git Push dialog via the
+                <code>prePushHandler</code> extension point. Checks whether the IDE already knows
+                about problems in the pushed files, then compiles only the affected modules.
+                A full project build is used only when build files or file deletions are involved.</li>
+            <li><b>Terminal Push Guard:</b> On project open, the plugin installs a managed
+                <code>pre-push</code> Git hook that runs a fast Gradle or Maven compile before
+                allowing any push from a terminal or external git client.</li>
+        </ul>
+
+        <h3>Features</h3>
+        <ul>
+            <li>Smart compile scope — module-level by default, project-level when necessary</li>
+            <li>IDE problem check — skips compilation if IntelliJ already reports errors</li>
+            <li>Navigable error dialog — double-click any error to jump to the source file</li>
+            <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
+            <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
+            <li>Gradle (wrapper or system) and Maven (wrapper or system) support</li>
+            <li>Respects <code>PRE_PUSH_CHECKER_COMMAND</code> env variable for custom check commands</li>
+        </ul>
+
+        <h3>Requirements</h3>
+        <ul>
+            <li>IntelliJ IDEA 2023.3 or later</li>
+            <li>Java 17+</li>
+            <li>Java or Kotlin (JVM) project</li>
+        </ul>
+    ]]></description>
+
+    <change-notes><![CDATA[
+        <h3>1.2.0</h3>
+        <ul>
+            <li><b>External push guard (terminal, Sublime Merge, SourceTree, GitHub Desktop, etc.):</b>
+                hook installation now resolves the real hooks directory via <code>git rev-parse --git-path hooks</code>,
+                so it works in worktrees, submodules, and repos that set <code>core.hooksPath</code>.</li>
+            <li><b>Stricter external check:</b> the hook now also compiles test sources
+                (<code>classes testClasses</code> / <code>test-compile</code>) so test-only breakage is caught.</li>
+            <li><b>Errors from external pushes surface inside IntelliJ:</b> the hook writes a log to
+                <code>.idea/pre-push-checker/last-run.log</code>. A new startup activity parses that log on
+                project open and on every hook run, feeds errors into the Compilation Checker tool window,
+                and raises a notification with an "Open Compilation Checker" action.</li>
+            <li>Managed wrapper is refreshed on every project open so hook upgrades ship automatically.</li>
+        </ul>
+
+        <h3>1.1.0</h3>
+        <ul>
+            <li><b>Tool window:</b> Replaced the "Clear" action with a "Report Issue" action that opens the plugin's GitHub Issues page with a pre-populated, concise title (no large error payload stuffed into the URL).</li>
+            <li><b>Readable error list:</b> Entries now render as <code>FileName:line:col — message</code> instead of the raw <code>[full/deep/path (line, col)] message</code>. The full entry is preserved as a tooltip on hover.</li>
+            <li><b>Navigation fix:</b> Double-click / Enter now correctly opens the source file for entries that use the <code>[path (line, col)]</code> compiler format. Also supports paths containing spaces.</li>
+            <li><b>Pre-push EDT fix:</b> Replaced <code>ModalityState.any()</code> with the progress indicator's modality (falling back to the default) when triggering a compilation from a background thread. Prevents "Write-unsafe context" errors during compile setup.</li>
+            <li><b>Robustness:</b> Null-safe compiler-message formatting, exception-isolated listener fan-out in <code>CompilationErrorService</code>, and short-circuit when the new error list equals the previous snapshot.</li>
+            <li><b>Performance:</b> Per-extension icon cache in the list renderer, allocation-free source-extension check in <code>PushValidationPaths</code>, reused <code>StringBuilder</code> when formatting compiler messages, and pre-sized result lists.</li>
+        </ul>
+
+        <h3>1.0.1</h3>
+        <ul>
+            <li>Fix EDT violation when triggering a compilation check from the tool window Run Check button</li>
+        </ul>
+
+        <h3>1.0.0 — Initial Release</h3>
+        <ul>
+            <li>Pre-push handler for the IntelliJ Git Push dialog</li>
+            <li>Smart module-level compile scope with automatic full-build fallback</li>
+            <li>IDE problem check using WolfTheProblemSolver before triggering a build</li>
+            <li>Compilation error dialog with file-type icons, navigation, and Refresh action</li>
+            <li>Compilation Checker tool window (right side panel)</li>
+            <li>Git hook installer for terminal push support (Gradle &amp; Maven)</li>
+            <li>CompilationErrorService for cross-component error state sharing</li>
+        </ul>
+    ]]></change-notes>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.lang</depends>
+    <depends>com.intellij.java</depends>
+    <depends>Git4Idea</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <prePushHandler implementation="com.github.prepushchecker.PrePushCompilationHandler"/>
+        <postStartupActivity implementation="com.github.prepushchecker.GitHookInstaller"/>
+        <postStartupActivity implementation="com.github.prepushchecker.ExternalPushErrorLoader"/>
+        <postStartupActivity implementation="com.github.prepushchecker.PrePushLocalServer$Starter"/>
+        <postStartupActivity implementation="com.github.prepushchecker.CompilationWarmupService$Starter"/>
+        <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
+        <projectService serviceImplementation="com.github.prepushchecker.CompilationWarmupService"/>
+        <registryKey key="prepushchecker.warmup.enabled"
+                     defaultValue="true"
+                     description="Run a debounced background compile of recently saved files so pre-push checks hit the cache and finish instantly."/>
+        <registryKey key="prepushchecker.scope.modules.cap"
+                     defaultValue="50"
+                     description="Maximum number of modules (pushed modules plus their dependents) included in the pre-push compile scope. If exceeded, falls back to file scope to avoid churning the world when a widely-used utility module is pushed."/>
+        <notificationGroup id="Pre-Push Compilation Checker"
+                           displayType="BALLOON"
+                           isLogByDefault="true"/>
+        <toolWindow id="Compilation Checker"
+                    anchor="right"
+                    factoryClass="com.github.prepushchecker.CompilationCheckerToolWindowFactory"
+                    icon="/icons/toolWindowCompilation.svg"/>
+    </extensions>
+
+    <applicationListeners>
+        <listener class="com.github.prepushchecker.PluginLifecycleListener"
+                  topic="com.intellij.ide.plugins.DynamicPluginListener"/>
+        <listener class="com.github.prepushchecker.CompilationWarmupService$SaveListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
+</idea-plugin>
