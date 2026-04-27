@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.2.0</version>
+    <version>1.3.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -11,16 +11,18 @@
         <ul>
             <li><b>IDE Push Guard:</b> Hooks into the IntelliJ Git Push dialog via the
                 <code>prePushHandler</code> extension point. Checks whether the IDE already knows
-                about problems in the pushed files, then compiles only the affected modules.
+                about problems in the pushed files, then compiles the affected modules and their dependents.
                 A full project build is used only when build files or file deletions are involved.</li>
             <li><b>Terminal Push Guard:</b> On project open, the plugin installs a managed
-                <code>pre-push</code> Git hook that runs a fast Gradle or Maven compile before
-                allowing any push from a terminal or external git client.</li>
+                <code>pre-push</code> Git hook that reuses the running IDE compiler when available,
+                then falls back to a fast Gradle or Maven compile before allowing any push from a
+                terminal or external git client.</li>
         </ul>
 
         <h3>Features</h3>
         <ul>
-            <li>Smart compile scope — module-level by default, project-level when necessary</li>
+            <li>Smart compile scope — changed modules plus dependent modules by default, project-level when necessary</li>
+            <li>Debounced warmup compiles — keeps the IDE compiler cache hot for near-instant pushes</li>
             <li>IDE problem check — skips compilation if IntelliJ already reports errors</li>
             <li>Navigable error dialog — double-click any error to jump to the source file</li>
             <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
@@ -38,6 +40,23 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.3.0</h3>
+        <ul>
+            <li><b>External pushes reuse IntelliJ's incremental compiler:</b> terminal and GUI-client
+                pushes now contact a local loopback server when the IDE is open, then fall back to
+                Gradle or Maven if IntelliJ is unavailable.</li>
+            <li><b>Zero-cost warmup path:</b> debounced background compiles after source saves keep
+                compiler caches hot so most pre-push checks reuse a fresh verdict.</li>
+            <li><b>Stronger dependency coverage:</b> targeted compile scopes now include dependent
+                modules, catching caller-side breakage without forcing full project builds for
+                ordinary source changes.</li>
+            <li><b>Bounded error retention:</b> compiler errors and external hook log entries are
+                compacted, deduplicated, and truncated where needed to keep memory usage predictable.</li>
+            <li><b>Repository cleanliness:</b> plugin-owned hook/log/cache paths are excluded via
+                repo-local <code>.git/info/exclude</code> and cleaned up when the plugin is disabled
+                or uninstalled.</li>
+        </ul>
+
         <h3>1.2.0</h3>
         <ul>
             <li><b>External push guard (terminal, Sublime Merge, SourceTree, GitHub Desktop, etc.):</b>
