@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.0]
+
+### Added
+- **Symbolic A/B detection (`SymbolicAbCheck`).** Before the snapshot compile, the strict guard parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans the HEAD content of pushed files for word-boundary references. A match blocks the push immediately with a per-symbol message (`[ImportNewAction1.java] references 'test', defined only in unpushed local change to ImportUtil.java`). Catches the canonical A/B case in milliseconds without invoking a build, so it works even when the HEAD snapshot has unrelated compile noise (missing generated sources, multi-module install gaps).
+- **macOS `/private` path normalization** in `normalizeSnapshotOutput`. javac/Maven canonicalize `/var/folders/...` to `/private/var/folders/...`; the snapshot worktree-path replacement now strips both forms so `filterSnapshotErrors` actually retains errors in pushed files.
+- **Auto-retry push on success.** When the background pre-push compilation passes, the plugin automatically runs `git push` per repository root (sequential, 120s timeout per repo, isolated `Task.Backgroundable`). Stdin is redirected from `/dev/null` and `GIT_TERMINAL_PROMPT=0` / empty `*_ASKPASS` env vars are set so a missing credential surfaces immediately as an error instead of hanging on a TTY prompt. Per-push elapsed-ms is logged to `idea.log`.
+- **Failure-choice dialog.** When the background compile finds errors, a modal dialog presents four options: **Reset Commit** (soft-reset the pushed commits, keep changes in the working tree, reuses the existing abort-commit runnable), **Push Anyway** (run the auto-push path despite errors), **Leave Commit** (no-op, keep commit and skip push), **Cancel**.
+- **HEAD-snapshot stash in the managed pre-push hook fallback.** When the IDE socket is unreachable and the hook falls back to running Gradle/Maven directly, it now `git stash push --include-untracked`'s the working tree first so the build sees only HEAD content. A trap on `EXIT INT TERM HUP` guarantees the stash is popped even on user interrupt or build crash. Closes the A/B coverage gap when the IDE is closed and pushes happen via terminal / Sublime Merge / GitHub Desktop.
+
+### Changed
+- `scheduleBackgroundPrePushCheck` now takes the original `List<PushInfo>` so success/failure handlers can re-issue the push or run the soft-reset action.
+- `notifyBackgroundCompilationFinished` replaced by `handleBackgroundCompletion`; success and failure each take their own UX path (auto-push vs. choice dialog) instead of a single notification.
+
+### Fixed
+- Strict A/B snapshot validation no longer slips through silently when the HEAD compile fails but no parsed errors fall under the pushed paths. The new symbolic check usually catches these cases first; the snapshot path remains the secondary safety net.
+
+---
+
 ## [1.3.1]
 
 ### Added
