@@ -13,8 +13,11 @@ import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
+import com.intellij.openapi.progress.PerformInBackgroundOption;
 import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.openapi.util.Computable;
@@ -38,19 +41,13 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.TreeSet;
 
 public final class PrePushCompilationHandler implements PrePushHandler {
     private static final Logger LOG = Logger.getInstance(PrePushCompilationHandler.class);
     private static final long WAIT_SLICE_MILLIS = 250L;
-    private static final String TARGETED_WAIT_SECONDS_KEY = "prepushchecker.push.targeted.wait.seconds";
-    private static final String FULL_BUILD_WAIT_SECONDS_KEY = "prepushchecker.push.full.wait.seconds";
-    private static final int DEFAULT_TARGETED_WAIT_SECONDS = 20;
-    private static final int DEFAULT_FULL_BUILD_WAIT_SECONDS = 30;
-    static final String COMPILATION_RUNNING_IN_BACKGROUND =
-        "Compilation is still running in the background. Retry the push after the background check finishes.";
 
     @Override
     public @NotNull String getPresentableName() {
@@ -76,31 +73,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
             CompilationErrorService errorService = CompilationErrorService.getInstance(project);
             Runnable abortCommitAction = buildAbortCommitAction(project, pushDetails);
-
-            PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
-                PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, changeSet.getRelevantPaths(), indicator);
-            if (strictSnapshot.wasChecked()) {
-                List<String> snapshotErrors = strictSnapshot.errors();
-                if (snapshotErrors.isEmpty()) {
-                    errorService.setErrors(Collections.emptyList());
-                    return Result.OK;
-                }
-                errorService.setErrors(snapshotErrors);
-                boolean resolved = showDialog(
-                    project,
-                    indicator.getModalityState(),
-                    "Push Blocked - Pushed Snapshot Compilation Failed",
-                    "Strict A/B dependency check compiled the committed HEAD without local-only changes " +
-                        "and found failures that would reach the target branch:",
-                    snapshotErrors,
-                    freshInd -> PrePushSnapshotGuard
-                        .validateHeadSnapshotIfNeeded(project, changeSet.getRelevantPaths(), freshInd)
-                        .errors(),
-                    abortCommitAction
-                );
-                if (resolved) errorService.setErrors(Collections.emptyList());
-                return resolved ? Result.OK : Result.ABORT;
-            }
+            String prePushKey = changeSet.cacheKey();
 
             List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
             if (!problemFiles.isEmpty()) {
@@ -120,18 +93,17 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             // Reuse a recent compile verdict when nothing has moved on disk since it ran.
             // This skips a redundant full rebuild when e.g. the user just ran the manual
             // "Run Compilation Check" and is now pushing without edits.
-            List<String> cached = errorService.tryReuse(changeSet.getSourceFiles());
+            List<String> cached = errorService.tryReusePrePushResult(prePushKey);
+            if (cached == null && !changeSet.requiresProjectBuild() && !requiresStrictSnapshotCheck(project, changeSet)) {
+                cached = errorService.tryReuse(changeSet.getSourceFiles());
+            }
             List<String> errors;
             if (cached != null) {
                 LOG.info("Reusing cached compilation result (" + cached.size() + " error(s)).");
                 errors = cached;
             } else {
-                errors = changeSet.requiresProjectBuild()
-                    ? compileProject(project, indicator)
-                    : compileFiles(project, changeSet.getSourceFiles(), indicator);
-                if (isBackgroundCompilation(errors)) {
-                    return Result.ABORT;
-                }
+                scheduleBackgroundPrePushCheck(project, changeSet, prePushKey);
+                return Result.ABORT;
             }
 
             if (!errors.isEmpty()) {
@@ -171,11 +143,13 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static PushChangeSet collectRelevantChanges(List<PushInfo> pushDetails, ProgressIndicator indicator) {
         Map<String, VirtualFile> sourceFiles = new LinkedHashMap<>();
         Set<String> relevantPaths = new LinkedHashSet<>();
+        Set<String> commitIds = new LinkedHashSet<>();
         boolean requiresProjectBuild = false;
 
         for (PushInfo pushInfo : pushDetails) {
             for (VcsFullCommitDetails commit : pushInfo.getCommits()) {
                 indicator.checkCanceled();
+                commitIds.add(commit.getId().asString());
                 for (Change change : commit.getChanges()) {
                     String path = extractPath(change);
                     if (!PushValidationPaths.isRelevantPath(path)) {
@@ -200,6 +174,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return new PushChangeSet(
             new ArrayList<>(sourceFiles.values()),
             new ArrayList<>(relevantPaths),
+            new ArrayList<>(commitIds),
             !relevantPaths.isEmpty(),
             requiresProjectBuild
         );
@@ -254,7 +229,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return runCompilation(
             project,
             indicator,
-            waitBudgetMillis(TARGETED_WAIT_SECONDS_KEY, DEFAULT_TARGETED_WAIT_SECONDS),
             false,
             stamps,
             notification -> compilerManager.make(scope, notification)
@@ -324,7 +298,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return runCompilation(
             project,
             indicator,
-            waitBudgetMillis(FULL_BUILD_WAIT_SECONDS_KEY, DEFAULT_FULL_BUILD_WAIT_SECONDS),
             true,
             Collections.emptyMap(),
             notification -> compilerManager.make(scope, notification)
@@ -334,14 +307,12 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static List<String> runCompilation(
         Project project,
         ProgressIndicator indicator,
-        long waitBudgetMillis,
         boolean projectScope,
         Map<String, Long> stamps,
         CompilationStarter compilationStarter
     ) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<List<String>> errors = new AtomicReference<>(Collections.emptyList());
-        AtomicBoolean movedToBackground = new AtomicBoolean(false);
 
         Runnable startCompilation = () -> compilationStarter.start((aborted, errorCount, warnings, compileContext) -> {
             List<String> result;
@@ -360,9 +331,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 errorService.recordCompletion(projectScope, stamps, result);
             }
             latch.countDown();
-            if (movedToBackground.get()) {
-                notifyBackgroundCompilationFinished(project, result);
-            }
         });
 
         Application application = ApplicationManager.getApplication();
@@ -376,57 +344,15 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             application.invokeAndWait(startCompilation, modality);
         }
 
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitBudgetMillis);
         try {
-            while (true) {
+            while (!latch.await(WAIT_SLICE_MILLIS, TimeUnit.MILLISECONDS)) {
                 indicator.checkCanceled();
-                long remainingNanos = deadlineNanos - System.nanoTime();
-                if (remainingNanos <= 0) {
-                    if (latch.await(0, TimeUnit.MILLISECONDS)) {
-                        return errors.get();
-                    }
-                    movedToBackground.set(true);
-                    if (latch.await(0, TimeUnit.MILLISECONDS)) {
-                        return errors.get();
-                    }
-                    notifyCompilationMovedToBackground(project, waitBudgetMillis);
-                    return Collections.singletonList(COMPILATION_RUNNING_IN_BACKGROUND);
-                }
-
-                long waitMillis = Math.min(WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-                if (latch.await(waitMillis, TimeUnit.MILLISECONDS)) {
-                    return errors.get();
-                }
             }
+            return errors.get();
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
             return Collections.singletonList("Compilation check was interrupted.");
         }
-    }
-
-    static boolean isBackgroundCompilation(List<String> errors) {
-        return errors.size() == 1 && COMPILATION_RUNNING_IN_BACKGROUND.equals(errors.get(0));
-    }
-
-    private static long waitBudgetMillis(String registryKey, int defaultSeconds) {
-        int seconds;
-        try {
-            seconds = Registry.intValue(registryKey, defaultSeconds);
-        } catch (Throwable ignored) {
-            seconds = defaultSeconds;
-        }
-        return TimeUnit.SECONDS.toMillis(Math.max(1, seconds));
-    }
-
-    private static void notifyCompilationMovedToBackground(Project project, long waitBudgetMillis) {
-        int waitSeconds = Math.max(1, (int) TimeUnit.MILLISECONDS.toSeconds(waitBudgetMillis));
-        notify(
-            project,
-            "Pre-push compilation still running",
-            "The current push was stopped after " + waitSeconds + "s so the IDE is not blocked. "
-                + "Compilation is continuing in the background; retry push after it finishes.",
-            com.intellij.notification.NotificationType.INFORMATION
-        );
     }
 
     private static void notifyBackgroundCompilationFinished(Project project, List<String> errors) {
@@ -442,6 +368,102 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 ? com.intellij.notification.NotificationType.ERROR
                 : com.intellij.notification.NotificationType.INFORMATION
         );
+    }
+
+    private static boolean requiresStrictSnapshotCheck(Project project, PushChangeSet changeSet) {
+        if (!PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project)) {
+            return false;
+        }
+        return PrePushSnapshotGuard
+            .analyzeSnapshotRisk(project, changeSet.getRelevantPaths())
+            .shouldValidateSnapshot();
+    }
+
+    private static void scheduleBackgroundPrePushCheck(Project project, PushChangeSet changeSet, String key) {
+        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
+        if (!errorService.markPrePushCheckRunning(key)) {
+            if (errorService.isPrePushCheckRunning(key)) {
+                notify(
+                    project,
+                    "Pre-push compilation already running",
+                    "The current push was stopped while the background check finishes. Retry push after the notification appears.",
+                    com.intellij.notification.NotificationType.INFORMATION
+                );
+            }
+            return;
+        }
+
+        ProgressManager.getInstance().run(
+            new Task.Backgroundable(
+                project,
+                "Pre-Push Compilation Checker",
+                true,
+                PerformInBackgroundOption.ALWAYS_BACKGROUND
+            ) {
+                private List<String> result = Collections.emptyList();
+
+                @Override
+                public void run(@NotNull ProgressIndicator indicator) {
+                    try {
+                        result = runFullPrePushCheck(project, changeSet, indicator);
+                        errorService.recordPrePushResult(key, result);
+                    } catch (ProcessCanceledException canceled) {
+                        errorService.finishPrePushCheck(key);
+                        throw canceled;
+                    } catch (Throwable t) {
+                        LOG.warn("Background pre-push compilation check failed", t);
+                        result = Collections.singletonList("Pre-push compilation check failed: " + t.getMessage());
+                        errorService.recordPrePushResult(key, result);
+                    }
+                }
+
+                @Override
+                public void onSuccess() {
+                    notifyBackgroundCompilationFinished(project, result);
+                }
+
+                @Override
+                public void onCancel() {
+                    errorService.finishPrePushCheck(key);
+                    PrePushCompilationHandler.notify(
+                        project,
+                        "Pre-push compilation canceled",
+                        "The background pre-push compilation check was canceled. Retry push to start it again.",
+                        com.intellij.notification.NotificationType.WARNING
+                    );
+                }
+            }
+        );
+        notify(
+            project,
+            "Pre-push compilation started",
+            "The current push was stopped so compilation can run in the IDE background instead of blocking the editor. Retry push after it finishes.",
+            com.intellij.notification.NotificationType.INFORMATION
+        );
+    }
+
+    private static List<String> runFullPrePushCheck(Project project, PushChangeSet changeSet, ProgressIndicator indicator) {
+        indicator.setIndeterminate(true);
+        indicator.setText("Checking pushed snapshot");
+        PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
+            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, changeSet.getRelevantPaths(), indicator);
+        if (strictSnapshot.wasChecked()) {
+            return strictSnapshot.errors();
+        }
+
+        indicator.setText("Checking IDE problem cache");
+        List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
+        if (!problemFiles.isEmpty()) {
+            CompilationErrorService.getInstance(project).setErrors(problemFiles);
+            return problemFiles;
+        }
+
+        indicator.setText(changeSet.requiresProjectBuild()
+            ? "Compiling project"
+            : "Compiling pushed modules");
+        return changeSet.requiresProjectBuild()
+            ? compileProject(project, indicator)
+            : compileFiles(project, changeSet.getSourceFiles(), indicator);
     }
 
     private static void notify(
@@ -623,17 +645,20 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static final class PushChangeSet {
         private final List<VirtualFile> sourceFiles;
         private final List<String> relevantPaths;
+        private final List<String> commitIds;
         private final boolean hasRelevantChanges;
         private final boolean requiresProjectBuild;
 
         private PushChangeSet(
             List<VirtualFile> sourceFiles,
             List<String> relevantPaths,
+            List<String> commitIds,
             boolean hasRelevantChanges,
             boolean requiresProjectBuild
         ) {
             this.sourceFiles = sourceFiles;
             this.relevantPaths = relevantPaths;
+            this.commitIds = commitIds;
             this.hasRelevantChanges = hasRelevantChanges;
             this.requiresProjectBuild = requiresProjectBuild;
         }
@@ -652,6 +677,23 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
         private boolean requiresProjectBuild() {
             return requiresProjectBuild;
+        }
+
+        private String cacheKey() {
+            StringBuilder builder = new StringBuilder();
+            builder.append("projectBuild=").append(requiresProjectBuild).append('\n');
+            new TreeSet<>(commitIds).forEach(id -> builder.append("commit=").append(id).append('\n'));
+            new TreeSet<>(relevantPaths).forEach(path -> builder.append("path=").append(path).append('\n'));
+            sourceFiles.stream()
+                .filter(file -> file != null && file.isValid())
+                .sorted(java.util.Comparator.comparing(VirtualFile::getPath))
+                .forEach(file -> builder
+                    .append("stamp=")
+                    .append(file.getPath())
+                    .append('@')
+                    .append(file.getTimeStamp())
+                    .append('\n'));
+            return builder.toString();
         }
     }
 }

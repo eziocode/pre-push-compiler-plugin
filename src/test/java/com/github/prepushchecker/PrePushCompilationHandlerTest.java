@@ -5,15 +5,24 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 import java.util.List;
 
 public class PrePushCompilationHandlerTest extends BasePlatformTestCase {
-    public void testBackgroundCompilationMarkerIsRecognized() {
-        assertTrue(PrePushCompilationHandler.isBackgroundCompilation(
-            List.of(PrePushCompilationHandler.COMPILATION_RUNNING_IN_BACKGROUND)
-        ));
+    public void testPrePushResultCacheReusesMatchingKey() {
+        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+
+        service.recordPrePushResult("commit=a\npath=src/main/java/App.java\n", List.of("error"));
+
+        assertEquals(List.of("error"), service.tryReusePrePushResult("commit=a\npath=src/main/java/App.java\n"));
+        assertNull(service.tryReusePrePushResult("commit=b\npath=src/main/java/App.java\n"));
     }
 
-    public void testNormalCompilationErrorsAreNotBackgroundMarker() {
-        assertFalse(PrePushCompilationHandler.isBackgroundCompilation(
-            List.of("[src/main/java/App.java:10] cannot find symbol")
-        ));
+    public void testPrePushRunningKeyIsSingleFlight() {
+        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+
+        assertTrue(service.markPrePushCheckRunning("key"));
+        assertFalse(service.markPrePushCheckRunning("key"));
+        assertTrue(service.isPrePushCheckRunning("key"));
+
+        service.finishPrePushCheck("key");
+
+        assertFalse(service.isPrePushCheckRunning("key"));
     }
 }

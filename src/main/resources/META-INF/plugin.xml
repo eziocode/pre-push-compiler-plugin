@@ -135,12 +135,6 @@
         <registryKey key="prepushchecker.scope.modules.cap"
                      defaultValue="50"
                      description="Maximum number of modules (pushed modules plus their dependents) included in the pre-push compile scope. If exceeded, falls back to file scope to avoid churning the world when a widely-used utility module is pushed."/>
-        <registryKey key="prepushchecker.push.targeted.wait.seconds"
-                     defaultValue="20"
-                     description="Seconds the Git Push dialog waits for a targeted pre-push compile before stopping the current push and letting the compile continue in the background."/>
-        <registryKey key="prepushchecker.push.full.wait.seconds"
-                     defaultValue="30"
-                     description="Seconds the Git Push dialog waits for a full/project pre-push compile before stopping the current push and letting the compile continue in the background."/>
         <notificationGroup id="Pre-Push Compilation Checker"
                            displayType="BALLOON"
                            isLogByDefault="true"/>

@@ -14,7 +14,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Project-level service that holds the most recent compilation error list produced
@@ -41,6 +43,9 @@ public final class CompilationErrorService {
     private long lastComputedAt = 0L;
     private boolean lastScopeProject = false;
     private Map<String, Long> lastFileStamps = Collections.emptyMap();
+    private String lastPrePushKey = "";
+    private List<String> lastPrePushErrors = Collections.emptyList();
+    private final Set<String> runningPrePushKeys = ConcurrentHashMap.newKeySet();
 
     public static CompilationErrorService getInstance(@NotNull Project project) {
         return project.getService(CompilationErrorService.class);
@@ -112,6 +117,9 @@ public final class CompilationErrorService {
         this.lastComputedAt = 0L;
         this.lastScopeProject = false;
         this.lastFileStamps = Collections.emptyMap();
+        this.lastPrePushKey = "";
+        this.lastPrePushErrors = Collections.emptyList();
+        this.runningPrePushKeys.clear();
     }
 
     /**
@@ -141,6 +149,32 @@ public final class CompilationErrorService {
             if (f.getTimeStamp() != cached) return null;
         }
         return errors;
+    }
+
+    public synchronized @Nullable List<String> tryReusePrePushResult(@NotNull String key) {
+        return !key.isBlank() && key.equals(lastPrePushKey) ? lastPrePushErrors : null;
+    }
+
+    public boolean markPrePushCheckRunning(@NotNull String key) {
+        return !key.isBlank() && runningPrePushKeys.add(key);
+    }
+
+    public boolean isPrePushCheckRunning(@NotNull String key) {
+        return runningPrePushKeys.contains(key);
+    }
+
+    public void recordPrePushResult(@NotNull String key, @NotNull List<String> newErrors) {
+        List<String> snapshot = compactErrors(newErrors);
+        synchronized (this) {
+            this.lastPrePushKey = key;
+            this.lastPrePushErrors = snapshot;
+        }
+        runningPrePushKeys.remove(key);
+        setErrors(snapshot);
+    }
+
+    public void finishPrePushCheck(@NotNull String key) {
+        runningPrePushKeys.remove(key);
     }
 
     /** Capture timestamps for a collection of files. */

@@ -109,7 +109,9 @@ final class PrePushSnapshotGuard {
             );
             if (failureMessages.isEmpty()) {
                 LOG.info("Strict A/B snapshot compile failed, but no parsed errors matched pushed files.");
-                return SnapshotValidationResult.notChecked();
+                return SnapshotValidationResult.checked(List.of(
+                    "[snapshot] Strict A/B dependency check failed when compiling HEAD without local changes "
+                        + "(exit code " + build.exitCode() + "). See snapshot-build.log for details."));
             }
             return SnapshotValidationResult.checked(failureMessages);
         } catch (IOException | InterruptedException e) {
@@ -437,7 +439,9 @@ final class PrePushSnapshotGuard {
         );
         if (failureMessages.isEmpty()) {
             LOG.info("Strict A/B stash fallback compile failed, but no parsed errors matched pushed files.");
-            return SnapshotValidationResult.notChecked();
+            return SnapshotValidationResult.checked(List.of(
+                "[snapshot] Strict A/B stash fallback failed when compiling HEAD without local changes "
+                    + "(exit code " + build.exitCode() + "). See snapshot-build.log for details."));
         }
         return SnapshotValidationResult.checked(failureMessages);
     }
@@ -696,7 +700,8 @@ final class PrePushSnapshotGuard {
         List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
         List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
         if (!parsedErrors.isEmpty()) {
-            return filterSnapshotErrors(parsedErrors, relevantPaths);
+            List<String> filtered = filterSnapshotErrors(parsedErrors, relevantPaths);
+            return filtered.isEmpty() ? List.copyOf(parsedErrors) : filtered;
         }
         return commandFailure(summary, result, project, worktree);
     }
@@ -756,9 +761,14 @@ final class PrePushSnapshotGuard {
 
         String snapshotPath = PushValidationPaths.normalizePath(worktree.toString());
         String projectPath = PushValidationPaths.normalizePath(basePath);
+        // macOS canonicalizes /var/folders/... → /private/var/folders/...; javac/maven may print either form.
+        String privateSnapshotPath = snapshotPath.startsWith("/private") ? null : "/private" + snapshotPath;
         List<String> normalized = new ArrayList<>(lines.size());
         for (String line : lines) {
             String value = line == null ? "" : PushValidationPaths.normalizePath(line);
+            if (privateSnapshotPath != null) {
+                value = value.replace(privateSnapshotPath, projectPath);
+            }
             normalized.add(value.replace(snapshotPath, projectPath));
         }
         return normalized;

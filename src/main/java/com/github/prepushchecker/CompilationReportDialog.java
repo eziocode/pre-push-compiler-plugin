@@ -109,10 +109,6 @@ final class CompilationReportDialog extends DialogWrapper {
 
                     @Override
                     public void onSuccess() {
-                        if (updated != null && PrePushCompilationHandler.isBackgroundCompilation(updated)) {
-                            close(CANCEL_EXIT_CODE);
-                            return;
-                        }
                         listModel.clear();
                         if (updated == null || updated.isEmpty()) {
                             close(OK_EXIT_CODE);
