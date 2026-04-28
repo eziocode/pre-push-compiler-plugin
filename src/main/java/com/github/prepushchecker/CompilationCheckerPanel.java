@@ -119,8 +119,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JBCheckBox strictGuard = new JBCheckBox("Enable strict A/B dependency guard");
         strictGuard.setSelected(PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project));
         strictGuard.setToolTipText(
-            "Stores the per-project toggle for strict pushed-snapshot validation. " +
-                "Disabled by default to preserve the current fast push path.");
+            "Validates committed HEAD in a clean temporary worktree only when local " +
+                "source/build changes could mask pushed-snapshot failures.");
         strictGuard.addActionListener(event ->
             PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, strictGuard.isSelected()));
 

@@ -28,6 +28,7 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
 
     // Cache icons by lower-cased extension to avoid hitting FileTypeManager on every render.
     private static final Map<String, Icon> ICON_CACHE = new ConcurrentHashMap<>();
+    private static final int MAX_DISPLAY_TEXT_CHARS = 100;
 
     @Override
     public Component getListCellRendererComponent(
@@ -52,7 +53,7 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
 
         String fileName = path != null ? lastSegment(path) : null;
         if (fileName == null || fileName.isEmpty()) {
-            return entry;
+            return trimDisplayText(entry);
         }
 
         StringBuilder sb = new StringBuilder(fileName.length() + 64);
@@ -63,13 +64,20 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
         if (message != null && !message.isEmpty()) {
             sb.append("  —  ").append(message);
         }
-        return sb.toString();
+        return trimDisplayText(sb.toString());
     }
 
     private static String lastSegment(String path) {
         String normalized = path.replace('\\', '/');
         int slash = normalized.lastIndexOf('/');
         return slash >= 0 ? normalized.substring(slash + 1) : normalized;
+    }
+
+    private static String trimDisplayText(String text) {
+        if (text.length() <= MAX_DISPLAY_TEXT_CHARS) {
+            return text;
+        }
+        return text.substring(0, MAX_DISPLAY_TEXT_CHARS - 3) + "...";
     }
 
     /**

@@ -72,20 +72,29 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             CompilationErrorService errorService = CompilationErrorService.getInstance(project);
             Runnable abortCommitAction = buildAbortCommitAction(project, pushDetails);
 
-            List<String> strictGuardProblems = PrePushSnapshotGuard.collectBlockingMessages(project);
-            if (!strictGuardProblems.isEmpty()) {
-                errorService.setErrors(strictGuardProblems);
+            PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
+                PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, changeSet.getRelevantPaths(), indicator);
+            if (strictSnapshot.wasChecked()) {
+                List<String> snapshotErrors = strictSnapshot.errors();
+                if (snapshotErrors.isEmpty()) {
+                    errorService.setErrors(Collections.emptyList());
+                    return Result.OK;
+                }
+                errorService.setErrors(snapshotErrors);
                 boolean resolved = showDialog(
                     project,
                     indicator.getModalityState(),
-                    "Push Blocked - Strict A/B Dependency Guard",
-                    "Strict A/B dependency guard found local source/build changes outside the pushed snapshot. " +
-                        "A live-tree compile could pass even though the pushed commits fail on main:",
-                    strictGuardProblems,
-                    _ind -> PrePushSnapshotGuard.collectBlockingMessages(project),
+                    "Push Blocked - Pushed Snapshot Compilation Failed",
+                    "Strict A/B dependency check compiled the committed HEAD without local-only changes " +
+                        "and found failures that would reach the target branch:",
+                    snapshotErrors,
+                    freshInd -> PrePushSnapshotGuard
+                        .validateHeadSnapshotIfNeeded(project, changeSet.getRelevantPaths(), freshInd)
+                        .errors(),
                     abortCommitAction
                 );
-                if (!resolved) return Result.ABORT;
+                if (resolved) errorService.setErrors(Collections.emptyList());
+                return resolved ? Result.OK : Result.ABORT;
             }
 
             List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
@@ -185,7 +194,12 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             }
         }
 
-        return new PushChangeSet(new ArrayList<>(sourceFiles.values()), !relevantPaths.isEmpty(), requiresProjectBuild);
+        return new PushChangeSet(
+            new ArrayList<>(sourceFiles.values()),
+            new ArrayList<>(relevantPaths),
+            !relevantPaths.isEmpty(),
+            requiresProjectBuild
+        );
     }
 
     private static String extractPath(Change change) {
@@ -521,17 +535,28 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
     private static final class PushChangeSet {
         private final List<VirtualFile> sourceFiles;
+        private final List<String> relevantPaths;
         private final boolean hasRelevantChanges;
         private final boolean requiresProjectBuild;
 
-        private PushChangeSet(List<VirtualFile> sourceFiles, boolean hasRelevantChanges, boolean requiresProjectBuild) {
+        private PushChangeSet(
+            List<VirtualFile> sourceFiles,
+            List<String> relevantPaths,
+            boolean hasRelevantChanges,
+            boolean requiresProjectBuild
+        ) {
             this.sourceFiles = sourceFiles;
+            this.relevantPaths = relevantPaths;
             this.hasRelevantChanges = hasRelevantChanges;
             this.requiresProjectBuild = requiresProjectBuild;
         }
 
         private List<VirtualFile> getSourceFiles() {
             return sourceFiles;
+        }
+
+        private List<String> getRelevantPaths() {
+            return relevantPaths;
         }
 
         private boolean hasRelevantChanges() {

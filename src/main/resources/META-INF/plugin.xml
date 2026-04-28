@@ -43,9 +43,9 @@
         <h3>1.3.1</h3>
         <ul>
             <li><b>Active strict A/B dependency guard:</b> the side-panel toggle now has behavior.
-                When enabled, IDE pushes and external pushes routed through the running IDE are
-                blocked if relevant local source/build changes could make the live working tree
-                differ from the pushed snapshot.</li>
+                When enabled, IDE pushes and external pushes routed through the running IDE compile
+                committed <code>HEAD</code> in a clean temporary worktree only when relevant local
+                source/build changes could otherwise mask failures in the pushed snapshot.</li>
         </ul>
 
         <h3>1.3.0</h3>

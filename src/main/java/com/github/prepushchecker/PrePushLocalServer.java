@@ -205,6 +205,18 @@ public final class PrePushLocalServer implements Disposable {
     }
 
     private List<String> runCompile(List<String> requestedPaths) {
+        PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
+            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, null);
+        if (strictSnapshot.wasChecked()) {
+            List<String> snapshotErrors = strictSnapshot.errors();
+            ApplicationManager.getApplication().invokeAndWait(() -> {
+                if (!project.isDisposed()) {
+                    CompilationErrorService.getInstance(project).setErrors(snapshotErrors);
+                }
+            }, ModalityState.defaultModalityState());
+            return snapshotErrors;
+        }
+
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<List<String>> errorsRef = new AtomicReference<>(Collections.emptyList());
         AtomicBoolean fatal = new AtomicBoolean(false);
@@ -230,14 +242,6 @@ public final class PrePushLocalServer implements Disposable {
                 // external pushes piggyback on a just-completed manual check or an
                 // earlier push check without re-running javac.
                 CompilationErrorService svc = CompilationErrorService.getInstance(project);
-                List<String> strictGuardProblems = PrePushSnapshotGuard.collectBlockingMessages(project);
-                if (!strictGuardProblems.isEmpty()) {
-                    svc.setErrors(strictGuardProblems);
-                    errorsRef.set(strictGuardProblems);
-                    latch.countDown();
-                    return;
-                }
-
                 if (!files.isEmpty()) {
                     List<String> cached = svc.tryReuse(files);
                     if (cached != null) {
