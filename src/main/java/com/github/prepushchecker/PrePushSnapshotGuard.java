@@ -11,6 +11,7 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -78,6 +79,10 @@ final class PrePushSnapshotGuard {
             }
 
             CommandResult build = runSnapshotBuild(project, worktree, pushedPaths, indicator, tempRoot);
+            if (build.skipped()) {
+                LOG.info("Strict A/B dependency check skipped because no runnable snapshot build command was found.");
+                return SnapshotValidationResult.notChecked();
+            }
             if (build.succeeded()) {
                 LOG.info("Strict A/B dependency check passed against a clean HEAD snapshot.");
                 return SnapshotValidationResult.checked(List.of());
@@ -121,14 +126,12 @@ final class PrePushSnapshotGuard {
         String override = System.getenv("PRE_PUSH_CHECKER_COMMAND");
         List<String> command;
         if (override != null && !override.isBlank()) {
-            command = List.of("sh", "-c", override);
+            command = List.of("/bin/sh", "-c", override);
         } else {
             GitHookInstaller.BuildTool buildTool = GitHookInstaller.detectBuildTool(worktree.toString());
-            command = buildCommand(buildTool, pushedPaths);
+            command = resolveBuildCommand(worktree, buildCommand(buildTool, pushedPaths));
             if (command.isEmpty()) {
-                return CommandResult.failed(List.of(
-                    "No supported Gradle or Maven build file was found in the clean pushed snapshot. " +
-                        "Set PRE_PUSH_CHECKER_COMMAND or disable strict A/B dependency guard."));
+                return CommandResult.skippedResult();
             }
         }
 
@@ -139,6 +142,93 @@ final class PrePushSnapshotGuard {
             indicator,
             outputRoot.resolve("snapshot-build.log")
         );
+    }
+
+    static @NotNull List<String> resolveBuildCommand(
+        @NotNull Path worktree,
+        @NotNull List<String> command
+    ) {
+        if (command.isEmpty()) {
+            return List.of();
+        }
+
+        String executable = command.get(0);
+        List<String> args = command.subList(1, command.size());
+        if (executable.startsWith("./")) {
+            Path script = worktree.resolve(executable.substring(2));
+            if (!Files.isRegularFile(script)) {
+                return List.of();
+            }
+
+            List<String> resolved = new ArrayList<>(args.size() + 2);
+            resolved.add("/bin/sh");
+            resolved.add(script.toString());
+            resolved.addAll(args);
+            return resolved;
+        }
+
+        if (executable.contains("/") || executable.contains("\\")) {
+            Path path = Path.of(executable);
+            return Files.isExecutable(path) ? command : List.of();
+        }
+
+        Path resolvedExecutable = findExecutable(executable);
+        if (resolvedExecutable == null) {
+            return List.of();
+        }
+
+        List<String> resolved = new ArrayList<>(command.size());
+        resolved.add(resolvedExecutable.toString());
+        resolved.addAll(args);
+        return resolved;
+    }
+
+    @Nullable
+    private static Path findExecutable(@NotNull String executable) {
+        Set<Path> searchDirs = new LinkedHashSet<>();
+        addPathEntries(searchDirs, System.getenv("PATH"));
+        addToolHome(searchDirs, "MAVEN_HOME");
+        addToolHome(searchDirs, "M2_HOME");
+        addToolHome(searchDirs, "GRADLE_HOME");
+
+        String userHome = System.getProperty("user.home");
+        if (userHome != null && !userHome.isBlank()) {
+            searchDirs.add(Path.of(userHome, ".sdkman", "candidates", "maven", "current", "bin"));
+            searchDirs.add(Path.of(userHome, ".sdkman", "candidates", "gradle", "current", "bin"));
+        }
+
+        searchDirs.add(Path.of("/opt/homebrew/bin"));
+        searchDirs.add(Path.of("/usr/local/bin"));
+        searchDirs.add(Path.of("/opt/local/bin"));
+        searchDirs.add(Path.of("/usr/bin"));
+        searchDirs.add(Path.of("/bin"));
+
+        for (Path dir : searchDirs) {
+            Path candidate = dir.resolve(executable);
+            if (Files.isExecutable(candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static void addToolHome(@NotNull Set<Path> searchDirs, @NotNull String envName) {
+        String toolHome = System.getenv(envName);
+        if (toolHome != null && !toolHome.isBlank()) {
+            searchDirs.add(Path.of(toolHome, "bin"));
+        }
+    }
+
+    private static void addPathEntries(@NotNull Set<Path> searchDirs, @Nullable String pathValue) {
+        if (pathValue == null || pathValue.isBlank()) {
+            return;
+        }
+
+        for (String entry : pathValue.split(File.pathSeparator)) {
+            if (!entry.isBlank()) {
+                searchDirs.add(Path.of(entry));
+            }
+        }
     }
 
     static @NotNull List<String> buildCommand(
@@ -223,13 +313,14 @@ final class PrePushSnapshotGuard {
             long remainingNanos = deadlineNanos - System.nanoTime();
             if (remainingNanos <= 0) {
                 process.destroyForcibly();
-                return new CommandResult(false, -1, true, readOutputLines(outputFile));
+                return new CommandResult(false, -1, true, false, readOutputLines(outputFile));
             }
             long waitMillis = Math.min(WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
             if (process.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
                 return new CommandResult(
                     process.exitValue() == 0,
                     process.exitValue(),
+                    false,
                     false,
                     readOutputLines(outputFile)
                 );
@@ -414,9 +505,15 @@ final class PrePushSnapshotGuard {
         }
     }
 
-    private record CommandResult(boolean succeeded, int exitCode, boolean timedOut, List<String> outputLines) {
-        private static @NotNull CommandResult failed(@NotNull List<String> outputLines) {
-            return new CommandResult(false, -1, false, outputLines);
+    private record CommandResult(
+        boolean succeeded,
+        int exitCode,
+        boolean timedOut,
+        boolean skipped,
+        List<String> outputLines
+    ) {
+        private static @NotNull CommandResult skippedResult() {
+            return new CommandResult(false, -1, false, true, List.of());
         }
     }
 }

@@ -2,6 +2,9 @@ package com.github.prepushchecker;
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
 import java.util.List;
 
 public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
@@ -70,5 +73,31 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
                 List.of("src/test/java/AppTest.java")
             )
         );
+    }
+
+    public void testResolveBuildCommandRunsWrapperThroughShell() throws IOException {
+        File tempDir = Files.createTempDirectory("prepushchecker-wrapper").toFile();
+        File wrapper = new File(tempDir, "mvnw");
+        assertTrue(wrapper.createNewFile());
+
+        List<String> resolved = PrePushSnapshotGuard.resolveBuildCommand(
+            tempDir.toPath(),
+            List.of("./mvnw", "-q", "compile")
+        );
+
+        assertEquals("/bin/sh", resolved.get(0));
+        assertEquals(wrapper.toPath().toString(), resolved.get(1));
+        assertEquals(List.of("-q", "compile"), resolved.subList(2, resolved.size()));
+    }
+
+    public void testResolveBuildCommandSkipsMissingSystemExecutable() {
+        List<String> resolved = PrePushSnapshotGuard.resolveBuildCommand(
+            getProject().getBasePath() == null
+                ? new File(".").toPath()
+                : new File(getProject().getBasePath()).toPath(),
+            List.of("prepushchecker-tool-that-should-not-exist", "compile")
+        );
+
+        assertTrue(resolved.isEmpty());
     }
 }
