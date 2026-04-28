@@ -102,7 +102,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 LOG.info("Reusing cached compilation result (" + cached.size() + " error(s)).");
                 errors = cached;
             } else {
-                scheduleBackgroundPrePushCheck(project, changeSet, prePushKey);
+                scheduleBackgroundPrePushCheck(project, changeSet, prePushKey, pushDetails);
                 return Result.ABORT;
             }
 
@@ -355,19 +355,139 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         }
     }
 
-    private static void notifyBackgroundCompilationFinished(Project project, List<String> errors) {
-        boolean failed = !errors.isEmpty();
-        notify(
+    private static void handleBackgroundCompletion(
+        Project project,
+        List<String> errors,
+        List<PushInfo> pushDetails
+    ) {
+        if (errors.isEmpty()) {
+            notify(
+                project,
+                "Pre-push compilation finished",
+                "Background compilation passed. Auto-retrying the push...",
+                com.intellij.notification.NotificationType.INFORMATION
+            );
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                executeAutoPush(project, pushDetails);
+            });
+            return;
+        }
+
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            showFailureChoiceDialog(project, errors, pushDetails);
+        });
+    }
+
+    private static void showFailureChoiceDialog(
+        Project project,
+        List<String> errors,
+        List<PushInfo> pushDetails
+    ) {
+        String message = "Background compilation found " + errors.size()
+            + " error(s). What do you want to do?\n\n"
+            + "• Reset Commit — soft-reset the pushed commits, keep changes in the working tree.\n"
+            + "• Push Anyway — ignore errors and run git push now.\n"
+            + "• Leave Commit — keep the commit, do not push (you can retry later).\n"
+            + "• Cancel — close this dialog with no action.";
+        String[] options = {"Reset Commit", "Push Anyway", "Leave Commit", "Cancel"};
+        int choice = com.intellij.openapi.ui.Messages.showDialog(
             project,
-            failed ? "Pre-push compilation found errors" : "Pre-push compilation finished",
-            failed
-                ? "Background compilation finished with " + errors.size()
-                    + " error(s). Open the Compilation Checker tool window for details."
-                : "Background compilation passed. Retry the push; the cached result will be reused.",
-            failed
-                ? com.intellij.notification.NotificationType.ERROR
-                : com.intellij.notification.NotificationType.INFORMATION
+            message,
+            "Pre-Push Compilation Errors",
+            options,
+            3,
+            com.intellij.openapi.ui.Messages.getErrorIcon()
         );
+        switch (choice) {
+            case 0 -> {
+                Runnable reset = buildAbortCommitAction(project, pushDetails);
+                if (reset != null) reset.run();
+            }
+            case 1 -> executeAutoPush(project, pushDetails);
+            case 2, 3 -> { /* no-op */ }
+            default -> { /* dialog dismissed */ }
+        }
+    }
+
+    private static void executeAutoPush(Project project, List<PushInfo> pushDetails) {
+        java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
+        for (PushInfo info : pushDetails) {
+            for (VcsFullCommitDetails commit : info.getCommits()) {
+                VirtualFile root = commit.getRoot();
+                if (root != null) roots.add(root.getPath());
+            }
+        }
+        if (roots.isEmpty()) {
+            notify(
+                project,
+                "Auto-retry push skipped",
+                "No repository root resolved from push details.",
+                com.intellij.notification.NotificationType.WARNING
+            );
+            return;
+        }
+
+        ProgressManager.getInstance().run(new Task.Backgroundable(
+            project, "Auto-Retrying Push", true, PerformInBackgroundOption.ALWAYS_BACKGROUND
+        ) {
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                java.util.List<String> failures = new java.util.ArrayList<>();
+                java.util.List<String> successes = new java.util.ArrayList<>();
+                for (String root : roots) {
+                    indicator.setText("git push: " + root);
+                    String result = runGitPush(root);
+                    if (result == null) successes.add(root);
+                    else failures.add(root + ": " + result);
+                }
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (project.isDisposed()) return;
+                    if (failures.isEmpty()) {
+                        PrePushCompilationHandler.notify(
+                            project,
+                            "Push succeeded",
+                            "Auto-retry pushed " + successes.size() + " repository/repositories.",
+                            com.intellij.notification.NotificationType.INFORMATION
+                        );
+                    } else {
+                        PrePushCompilationHandler.notify(
+                            project,
+                            "Auto-retry push failed",
+                            String.join("\n", failures)
+                                + (successes.isEmpty() ? "" : "\nSucceeded: " + String.join(", ", successes)),
+                            com.intellij.notification.NotificationType.ERROR
+                        );
+                    }
+                });
+            }
+        });
+    }
+
+    private static @org.jetbrains.annotations.Nullable String runGitPush(String repoRoot) {
+        try {
+            Process p = new ProcessBuilder("git", "push")
+                .directory(new java.io.File(repoRoot))
+                .redirectErrorStream(true)
+                .start();
+            StringBuilder out = new StringBuilder();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (out.length() > 0) out.append('\n');
+                    out.append(line);
+                }
+            }
+            if (!p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                return "timed out";
+            }
+            return p.exitValue() == 0 ? null : out.toString().trim();
+        } catch (Exception e) {
+            return e.getMessage();
+        }
     }
 
     private static boolean requiresStrictSnapshotCheck(Project project, PushChangeSet changeSet) {
@@ -379,7 +499,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             .shouldValidateSnapshot();
     }
 
-    private static void scheduleBackgroundPrePushCheck(Project project, PushChangeSet changeSet, String key) {
+    private static void scheduleBackgroundPrePushCheck(Project project, PushChangeSet changeSet, String key, List<PushInfo> pushDetails) {
         CompilationErrorService errorService = CompilationErrorService.getInstance(project);
         if (!errorService.markPrePushCheckRunning(key)) {
             if (errorService.isPrePushCheckRunning(key)) {
@@ -419,7 +539,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
                 @Override
                 public void onSuccess() {
-                    notifyBackgroundCompilationFinished(project, result);
+                    handleBackgroundCompletion(project, result, pushDetails);
                 }
 
                 @Override
