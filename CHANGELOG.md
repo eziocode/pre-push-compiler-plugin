@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.1]
+
+### Fixed
+- Removed deprecated IntelliJ `PerformInBackgroundOption` usage from the background pre-push check and auto-retry push tasks while preserving the same always-background behavior through `Task.Backgroundable`'s default constructor. Plugin Verifier for IntelliJ IDEA 2026.1.1 now reports the plugin as compatible without deprecated API warnings.
+
+---
+
 ## [1.4.0]
 
 ### Added

@@ -13,7 +13,6 @@ import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
-import com.intellij.openapi.progress.PerformInBackgroundOption;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.ProcessCanceledException;
@@ -430,7 +429,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         }
 
         ProgressManager.getInstance().run(new Task.Backgroundable(
-            project, "Auto-Retrying Push", true, PerformInBackgroundOption.ALWAYS_BACKGROUND
+            project, "Auto-Retrying Push", true
         ) {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
@@ -525,8 +524,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             new Task.Backgroundable(
                 project,
                 "Pre-Push Compilation Checker",
-                true,
-                PerformInBackgroundOption.ALWAYS_BACKGROUND
+                true
             ) {
                 private List<String> result = Collections.emptyList();
 
