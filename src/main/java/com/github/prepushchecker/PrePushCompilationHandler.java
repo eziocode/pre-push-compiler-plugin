@@ -72,6 +72,22 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             CompilationErrorService errorService = CompilationErrorService.getInstance(project);
             Runnable abortCommitAction = buildAbortCommitAction(project, pushDetails);
 
+            List<String> strictGuardProblems = PrePushSnapshotGuard.collectBlockingMessages(project);
+            if (!strictGuardProblems.isEmpty()) {
+                errorService.setErrors(strictGuardProblems);
+                boolean resolved = showDialog(
+                    project,
+                    indicator.getModalityState(),
+                    "Push Blocked - Strict A/B Dependency Guard",
+                    "Strict A/B dependency guard found local source/build changes outside the pushed snapshot. " +
+                        "A live-tree compile could pass even though the pushed commits fail on main:",
+                    strictGuardProblems,
+                    _ind -> PrePushSnapshotGuard.collectBlockingMessages(project),
+                    abortCommitAction
+                );
+                if (!resolved) return Result.ABORT;
+            }
+
             List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
             if (!problemFiles.isEmpty()) {
                 errorService.setErrors(problemFiles);

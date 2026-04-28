@@ -230,6 +230,14 @@ public final class PrePushLocalServer implements Disposable {
                 // external pushes piggyback on a just-completed manual check or an
                 // earlier push check without re-running javac.
                 CompilationErrorService svc = CompilationErrorService.getInstance(project);
+                List<String> strictGuardProblems = PrePushSnapshotGuard.collectBlockingMessages(project);
+                if (!strictGuardProblems.isEmpty()) {
+                    svc.setErrors(strictGuardProblems);
+                    errorsRef.set(strictGuardProblems);
+                    latch.countDown();
+                    return;
+                }
+
                 if (!files.isEmpty()) {
                     List<String> cached = svc.tryReuse(files);
                     if (cached != null) {

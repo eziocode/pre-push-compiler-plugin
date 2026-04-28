@@ -48,7 +48,9 @@
             <li><b>Zero-cost warmup path:</b> debounced background compiles after source saves keep
                 compiler caches hot so most pre-push checks reuse a fresh verdict.</li>
             <li><b>Side-panel A/B guard toggle:</b> the Compilation Checker tool window now exposes
-                a per-project checkbox for the optional strict pushed-snapshot guard, disabled by default.</li>
+                a per-project checkbox, disabled by default. When enabled, pushes are blocked if
+                relevant local source/build changes could make the live working tree differ from
+                the pushed snapshot.</li>
             <li><b>Stronger dependency coverage:</b> targeted compile scopes now include dependent
                 modules, catching caller-side breakage without forcing full project builds for
                 ordinary source changes.</li>

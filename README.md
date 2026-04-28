@@ -88,7 +88,7 @@ When you push from a terminal or an external git client:
 Open **View → Tool Windows → Compilation Checker** (or click the side panel icon) to:
 
 - View errors from the last pre-push check or manual run, rendered as `FileName:line:col — message` with the full path available on hover
-- Toggle **Enable strict A/B dependency guard** for the project. It is off by default to preserve the current fast push path.
+- Toggle **Enable strict A/B dependency guard** for the project. It is off by default; when enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
 - See file-type icons for quick visual identification
 - **Run Check** button (hammer icon) — triggers a full project compile on demand
 - **Report Issue** button (warning icon) — opens the plugin's GitHub Issues page with a pre-populated title so you can file a bug in two clicks
