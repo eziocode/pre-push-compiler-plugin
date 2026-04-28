@@ -100,12 +100,18 @@ final class PrePushSnapshotGuard {
                 return SnapshotValidationResult.checked(List.of());
             }
 
-            return SnapshotValidationResult.checked(commandFailure(
+            List<String> failureMessages = snapshotBuildFailureMessages(
                 "Strict A/B dependency check failed when compiling HEAD without local changes.",
                 build,
                 project,
-                worktree
-            ));
+                worktree,
+                risk.pushedPaths()
+            );
+            if (failureMessages.isEmpty()) {
+                LOG.info("Strict A/B snapshot compile failed, but no parsed errors matched pushed files.");
+                return SnapshotValidationResult.notChecked();
+            }
+            return SnapshotValidationResult.checked(failureMessages);
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -378,12 +384,18 @@ final class PrePushSnapshotGuard {
             LOG.info("Strict A/B stash fallback check passed against HEAD.");
             return SnapshotValidationResult.checked(List.of());
         }
-        return SnapshotValidationResult.checked(commandFailure(
+        List<String> failureMessages = snapshotBuildFailureMessages(
             "Strict A/B stash fallback failed when compiling HEAD without local changes.",
             build,
             project,
-            projectRoot
-        ));
+            projectRoot,
+            pushedPaths
+        );
+        if (failureMessages.isEmpty()) {
+            LOG.info("Strict A/B stash fallback compile failed, but no parsed errors matched pushed files.");
+            return SnapshotValidationResult.notChecked();
+        }
+        return SnapshotValidationResult.checked(failureMessages);
     }
 
     private static boolean createdStash(@NotNull List<String> outputLines) {
@@ -628,6 +640,64 @@ final class PrePushSnapshotGuard {
             messages.add(CompilationErrorService.omittedErrorsMessage(normalizedOutput.size() - emitted));
         }
         return List.copyOf(messages);
+    }
+
+    private static @NotNull List<String> snapshotBuildFailureMessages(
+        @NotNull String summary,
+        @NotNull CommandResult result,
+        @NotNull Project project,
+        @NotNull Path worktree,
+        @NotNull Collection<String> relevantPaths
+    ) {
+        List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
+        List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
+        if (!parsedErrors.isEmpty()) {
+            return filterSnapshotErrors(parsedErrors, relevantPaths);
+        }
+        return commandFailure(summary, result, project, worktree);
+    }
+
+    static @NotNull List<String> filterSnapshotErrors(
+        @NotNull List<String> parsedErrors,
+        @NotNull Collection<String> relevantPaths
+    ) {
+        if (parsedErrors.isEmpty() || relevantPaths.isEmpty() || containsBuildFile(relevantPaths)) {
+            return List.copyOf(parsedErrors);
+        }
+
+        Set<String> relevantSourcePaths = new LinkedHashSet<>();
+        for (String path : relevantPaths) {
+            if (PushValidationPaths.isCompilableSource(path)) {
+                relevantSourcePaths.add(PushValidationPaths.normalizePath(path));
+            }
+        }
+        if (relevantSourcePaths.isEmpty()) {
+            return List.copyOf(parsedErrors);
+        }
+
+        List<String> filtered = new ArrayList<>();
+        for (String error : parsedErrors) {
+            String errorPath = CompilationEntryRenderer.extractPath(error);
+            if (errorPath != null && isRelevantErrorPath(errorPath, relevantSourcePaths)) {
+                filtered.add(error);
+            }
+        }
+        return List.copyOf(filtered);
+    }
+
+    private static boolean isRelevantErrorPath(
+        @NotNull String errorPath,
+        @NotNull Set<String> relevantSourcePaths
+    ) {
+        String normalizedErrorPath = PushValidationPaths.normalizePath(errorPath);
+        for (String relevantPath : relevantSourcePaths) {
+            if (normalizedErrorPath.equals(relevantPath)
+                || normalizedErrorPath.endsWith("/" + relevantPath)
+                || relevantPath.endsWith("/" + normalizedErrorPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static @NotNull List<String> normalizeSnapshotOutput(

@@ -53,9 +53,11 @@ public final class ExternalPushErrorLoader implements StartupActivity {
     // Gradle/javac: "/abs/or/rel/Path.java:123: error: message"
     // Gradle also emits:    "/abs/.../Path.java:123:45: error: message"
     // Kotlin compile:       "e: file:///.../Path.kt:123:45 message"
-    // Maven (surefire/failsafe skipped; javac via maven prints similar to javac).
+    // Maven compiler plugin: "[ERROR] /abs/.../Path.java:[123,45] cannot find symbol".
     private static final Pattern JAVAC_PATTERN =
         Pattern.compile("^(?<path>[^\\s:][^:]*\\.(?:java|kt|groovy|scala)):(?<line>\\d+)(?::(?<col>\\d+))?:\\s*(?:error|warning):?\\s*(?<msg>.+)$");
+    private static final Pattern MAVEN_COMPILER_PATTERN =
+        Pattern.compile("^(?:\\[ERROR]\\s*)?(?<path>[^\\s].*?\\.(?:java|kt|groovy|scala)):\\[(?<line>\\d+),(?<col>\\d+)]\\s*(?<msg>.*)$");
     private static final Pattern KOTLIN_PATTERN =
         Pattern.compile("^e:\\s+(?:file://)?(?<path>[^:]+\\.(?:kt|kts)):(?<line>\\d+):(?<col>\\d+)\\s+(?<msg>.+)$");
 
@@ -120,9 +122,8 @@ public final class ExternalPushErrorLoader implements StartupActivity {
     private static HookLogParseResult parseHookLog(@NotNull Project project, @NotNull Path logFile)
         throws IOException {
         try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
-            String basePath = project.getBasePath();
-            ErrorCollector collector = new ErrorCollector();
             Integer exitCode = null;
+            List<String> compilerLines = new ArrayList<>();
 
             String raw;
             while ((raw = reader.readLine()) != null) {
@@ -134,20 +135,36 @@ public final class ExternalPushErrorLoader implements StartupActivity {
                     continue;
                 }
 
-                collector.add(parseErrorLine(basePath, line));
+                compilerLines.add(line);
             }
-            return new HookLogParseResult(exitCode, collector.toList());
+            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines));
         }
     }
 
     static List<String> parseErrors(@NotNull Project project, @NotNull List<String> lines) {
         String basePath = project.getBasePath();
         ErrorCollector collector = new ErrorCollector();
+        String pending = null;
         for (String raw : lines) {
             String line = raw == null ? "" : raw.trim();
             if (line.isEmpty()) continue;
-            collector.add(parseErrorLine(basePath, line));
+            String parsed = parseErrorLine(basePath, line);
+            if (parsed != null) {
+                collector.add(pending);
+                pending = parsed;
+                continue;
+            }
+
+            String detail = parseMavenDetail(line);
+            if (pending != null && detail != null) {
+                pending = pending + " | " + detail;
+                continue;
+            }
+
+            collector.add(pending);
+            pending = null;
         }
+        collector.add(pending);
         return collector.toList();
     }
 
@@ -155,8 +172,11 @@ public final class ExternalPushErrorLoader implements StartupActivity {
     private static String parseErrorLine(@Nullable String basePath, @NotNull String line) {
         Matcher m = KOTLIN_PATTERN.matcher(line);
         if (!m.matches()) {
-            m = JAVAC_PATTERN.matcher(line);
-            if (!m.matches()) return null;
+            m = MAVEN_COMPILER_PATTERN.matcher(line);
+            if (!m.matches()) {
+                m = JAVAC_PATTERN.matcher(line);
+                if (!m.matches()) return null;
+            }
         }
 
         String path = m.group("path");
@@ -167,6 +187,15 @@ public final class ExternalPushErrorLoader implements StartupActivity {
         String relativePath = toProjectRelative(basePath, path);
         String position = col != null && !col.isEmpty() ? lineNo + ":" + col : lineNo;
         return "[" + relativePath + " (" + position.replace(":", ", ") + ")] " + msg;
+    }
+
+    @Nullable
+    private static String parseMavenDetail(@NotNull String line) {
+        String detail = line;
+        if (detail.startsWith("[ERROR]")) {
+            detail = detail.substring("[ERROR]".length()).trim();
+        }
+        return detail.startsWith("symbol:") || detail.startsWith("location:") ? detail : null;
     }
 
     private static final class ErrorCollector {
@@ -229,6 +258,15 @@ public final class ExternalPushErrorLoader implements StartupActivity {
         String normalizedPath = path.replace('\\', '/');
         if (normalizedPath.startsWith(normalizedBase + "/")) {
             return normalizedPath.substring(normalizedBase.length() + 1);
+        }
+        if (normalizedPath.startsWith("/private" + normalizedBase + "/")) {
+            return normalizedPath.substring(("/private" + normalizedBase).length() + 1);
+        }
+        if (normalizedBase.startsWith("/private/")) {
+            String publicBase = normalizedBase.substring("/private".length());
+            if (normalizedPath.startsWith(publicBase + "/")) {
+                return normalizedPath.substring(publicBase.length() + 1);
+            }
         }
         return normalizedPath;
     }

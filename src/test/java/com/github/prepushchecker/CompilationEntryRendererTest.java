@@ -13,4 +13,20 @@ public class CompilationEntryRendererTest extends BasePlatformTestCase {
         assertTrue(displayText.length() <= 100);
         assertTrue(displayText.endsWith("..."));
     }
+
+    public void testParseLineColumnUsesZeroBasedDescriptorCoordinates() {
+        int[] lineColumn = CompilationEntryRenderer.parseLineColumn("42:13");
+
+        assertNotNull(lineColumn);
+        assertEquals(41, lineColumn[0]);
+        assertEquals(12, lineColumn[1]);
+    }
+
+    public void testParseLineColumnHandlesLineOnlyPosition() {
+        int[] lineColumn = CompilationEntryRenderer.parseLineColumn("42");
+
+        assertNotNull(lineColumn);
+        assertEquals(41, lineColumn[0]);
+        assertEquals(0, lineColumn[1]);
+    }
 }

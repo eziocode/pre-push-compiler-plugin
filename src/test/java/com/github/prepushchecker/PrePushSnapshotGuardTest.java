@@ -116,4 +116,28 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
 
         assertTrue(resolved.isEmpty());
     }
+
+    public void testFilterSnapshotErrorsKeepsOnlySelectedSourceFiles() {
+        List<String> filtered = PrePushSnapshotGuard.filterSnapshotErrors(
+            List.of(
+                "[src/main/java/Selected.java (12, 4)] cannot find symbol",
+                "[src/main/java/Unrelated.java (8, 2)] cannot find symbol"
+            ),
+            List.of("src/main/java/Selected.java")
+        );
+
+        assertEquals(1, filtered.size());
+        assertTrue(filtered.get(0).contains("Selected.java"));
+    }
+
+    public void testFilterSnapshotErrorsKeepsAllForBuildFileChanges() {
+        List<String> errors = List.of(
+            "[src/main/java/Unrelated.java (8, 2)] cannot find symbol"
+        );
+
+        assertEquals(
+            errors,
+            PrePushSnapshotGuard.filterSnapshotErrors(errors, List.of("pom.xml"))
+        );
+    }
 }

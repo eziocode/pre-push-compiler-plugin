@@ -204,7 +204,25 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
             file = findFile(project.getBasePath() + "/" + path);
         }
         if (file != null) {
-            new OpenFileDescriptor(project, file).navigate(true);
+            int[] lineColumn = parseLineColumn(extractPosition(entry));
+            if (lineColumn == null) {
+                new OpenFileDescriptor(project, file).navigate(true);
+            } else {
+                new OpenFileDescriptor(project, file, lineColumn[0], lineColumn[1]).navigate(true);
+            }
+        }
+    }
+
+    @Nullable
+    static int[] parseLineColumn(@Nullable String position) {
+        if (position == null || position.isBlank()) return null;
+        String[] parts = position.split(":", 2);
+        try {
+            int line = Math.max(Integer.parseInt(parts[0]) - 1, 0);
+            int column = parts.length > 1 ? Math.max(Integer.parseInt(parts[1]) - 1, 0) : 0;
+            return new int[]{line, column};
+        } catch (NumberFormatException ignored) {
+            return null;
         }
     }
 
