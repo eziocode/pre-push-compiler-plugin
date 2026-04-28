@@ -109,9 +109,7 @@ final class PrePushSnapshotGuard {
             );
             if (failureMessages.isEmpty()) {
                 LOG.info("Strict A/B snapshot compile failed, but no parsed errors matched pushed files.");
-                return SnapshotValidationResult.checked(List.of(
-                    "[snapshot] Strict A/B dependency check failed when compiling HEAD without local changes "
-                        + "(exit code " + build.exitCode() + "). See snapshot-build.log for details."));
+                return SnapshotValidationResult.notChecked();
             }
             return SnapshotValidationResult.checked(failureMessages);
         } catch (IOException | InterruptedException e) {
@@ -439,9 +437,7 @@ final class PrePushSnapshotGuard {
         );
         if (failureMessages.isEmpty()) {
             LOG.info("Strict A/B stash fallback compile failed, but no parsed errors matched pushed files.");
-            return SnapshotValidationResult.checked(List.of(
-                "[snapshot] Strict A/B stash fallback failed when compiling HEAD without local changes "
-                    + "(exit code " + build.exitCode() + "). See snapshot-build.log for details."));
+            return SnapshotValidationResult.notChecked();
         }
         return SnapshotValidationResult.checked(failureMessages);
     }
@@ -700,8 +696,7 @@ final class PrePushSnapshotGuard {
         List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
         List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
         if (!parsedErrors.isEmpty()) {
-            List<String> filtered = filterSnapshotErrors(parsedErrors, relevantPaths);
-            return filtered.isEmpty() ? List.copyOf(parsedErrors) : filtered;
+            return filterSnapshotErrors(parsedErrors, relevantPaths);
         }
         return commandFailure(summary, result, project, worktree);
     }

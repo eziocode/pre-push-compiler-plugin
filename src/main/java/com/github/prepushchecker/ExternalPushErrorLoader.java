@@ -23,7 +23,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -99,9 +98,7 @@ public final class ExternalPushErrorLoader implements StartupActivity {
 
             List<String> errors = parsedLog.errors();
             if (errors.isEmpty()) {
-                errors = Collections.singletonList(
-                    "External pre-push check failed (exit " + exitCode + "). See "
-                        + GitHookInstaller.EXTERNAL_LOG_RELATIVE_PATH + " for full output.");
+                errors = buildRawLogFallback(exitCode, parsedLog.rawLines());
             }
             CompilationErrorService.getInstance(project).setErrors(errors);
             notifyUser(project, errors.size());
@@ -137,8 +134,23 @@ public final class ExternalPushErrorLoader implements StartupActivity {
 
                 compilerLines.add(line);
             }
-            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines));
+            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines), compilerLines);
         }
+    }
+
+    private static List<String> buildRawLogFallback(int exitCode, @NotNull List<String> rawLines) {
+        List<String> result = new ArrayList<>();
+        result.add("External pre-push check failed (exit " + exitCode + "). Hook output from "
+            + GitHookInstaller.EXTERNAL_LOG_RELATIVE_PATH + ":");
+        int limit = Math.min(rawLines.size(), CompilationErrorService.MAX_RETAINED_ERRORS - 1);
+        for (int i = 0; i < limit; i++) {
+            result.add(CompilationErrorService.compactError(rawLines.get(i)));
+        }
+        int omitted = rawLines.size() - limit;
+        if (omitted > 0) {
+            result.add(CompilationErrorService.omittedErrorsMessage(omitted));
+        }
+        return List.copyOf(result);
     }
 
     static List<String> parseErrors(@NotNull Project project, @NotNull List<String> lines) {
@@ -228,10 +240,13 @@ public final class ExternalPushErrorLoader implements StartupActivity {
     private static final class HookLogParseResult {
         private final Integer exitCode;
         private final List<String> errors;
+        private final List<String> rawLines;
 
-        private HookLogParseResult(@Nullable Integer exitCode, @NotNull List<String> errors) {
+        private HookLogParseResult(@Nullable Integer exitCode, @NotNull List<String> errors,
+                                   @NotNull List<String> rawLines) {
             this.exitCode = exitCode;
             this.errors = errors;
+            this.rawLines = rawLines;
         }
 
         private @Nullable Integer exitCode() {
@@ -240,6 +255,10 @@ public final class ExternalPushErrorLoader implements StartupActivity {
 
         private @NotNull List<String> errors() {
             return errors;
+        }
+
+        private @NotNull List<String> rawLines() {
+            return rawLines;
         }
     }
 
