@@ -140,22 +140,37 @@ final class PrePushSnapshotGuard {
         if (relevantPushedPaths.isEmpty()) {
             return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "pushed file list is unavailable");
         }
-        if (containsBuildFile(relevantPushedPaths)) {
-            return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "pushed build file changes affect compile graph");
+
+        List<LocalRelevantChange> unpushedLocalChanges =
+            excludePushedLocalChanges(localChanges, relevantPushedPaths);
+        if (unpushedLocalChanges.isEmpty()) {
+            return PushSnapshotRisk.notRisky(
+                relevantPushedPaths,
+                List.of(),
+                "all local source/build changes are included in the pushed snapshot"
+            );
         }
-        for (LocalRelevantChange localChange : localChanges) {
+
+        if (containsBuildFile(relevantPushedPaths)) {
+            return PushSnapshotRisk.risky(
+                relevantPushedPaths,
+                unpushedLocalChanges,
+                "pushed build file changes affect compile graph while local changes remain unpushed"
+            );
+        }
+        for (LocalRelevantChange localChange : unpushedLocalChanges) {
             if (localChange.isBuildFile()) {
-                return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "local build file changes can mask pushed snapshot failures");
+                return PushSnapshotRisk.risky(relevantPushedPaths, unpushedLocalChanges, "local build file changes can mask pushed snapshot failures");
             }
             if (localChange.isDeleteOrMove()) {
-                return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "local delete/move changes can mask pushed snapshot failures");
+                return PushSnapshotRisk.risky(relevantPushedPaths, unpushedLocalChanges, "local delete/move changes can mask pushed snapshot failures");
             }
         }
 
-        ModuleRisk moduleRisk = computeModuleRisk(project, relevantPushedPaths, localChanges);
+        ModuleRisk moduleRisk = computeModuleRisk(project, relevantPushedPaths, unpushedLocalChanges);
         return moduleRisk.risky()
-            ? PushSnapshotRisk.risky(relevantPushedPaths, localChanges, moduleRisk.reason())
-            : PushSnapshotRisk.notRisky(relevantPushedPaths, localChanges, moduleRisk.reason());
+            ? PushSnapshotRisk.risky(relevantPushedPaths, unpushedLocalChanges, moduleRisk.reason())
+            : PushSnapshotRisk.notRisky(relevantPushedPaths, unpushedLocalChanges, moduleRisk.reason());
     }
 
     private static @NotNull List<String> collectRelevantPushedPaths(
@@ -180,6 +195,35 @@ final class PrePushSnapshotGuard {
         }
 
         return List.copyOf(relevantLocalChanges);
+    }
+
+    private static @NotNull List<LocalRelevantChange> excludePushedLocalChanges(
+        @NotNull List<LocalRelevantChange> localChanges,
+        @NotNull Collection<String> relevantPushedPaths
+    ) {
+        List<LocalRelevantChange> unpushed = new ArrayList<>();
+        for (LocalRelevantChange localChange : localChanges) {
+            if (!isCoveredByPushedPaths(localChange.path(), relevantPushedPaths)) {
+                unpushed.add(localChange);
+            }
+        }
+        return List.copyOf(unpushed);
+    }
+
+    static boolean isCoveredByPushedPaths(
+        @NotNull String localPath,
+        @NotNull Collection<String> relevantPushedPaths
+    ) {
+        String normalizedLocalPath = PushValidationPaths.normalizePath(localPath);
+        for (String pushedPath : relevantPushedPaths) {
+            String normalizedPushedPath = PushValidationPaths.normalizePath(pushedPath);
+            if (normalizedLocalPath.equals(normalizedPushedPath)
+                || normalizedLocalPath.endsWith("/" + normalizedPushedPath)
+                || normalizedPushedPath.endsWith("/" + normalizedLocalPath)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static boolean containsBuildFile(@NotNull Collection<String> paths) {

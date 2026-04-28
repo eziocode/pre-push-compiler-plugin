@@ -44,6 +44,27 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
         assertTrue(risk.pushedPaths().isEmpty());
     }
 
+    public void testCoveredLocalPathDoesNotCountAsUnpushedRisk() {
+        assertTrue(PrePushSnapshotGuard.isCoveredByPushedPaths(
+            "src/main/java/App.java",
+            List.of("src/main/java/App.java")
+        ));
+    }
+
+    public void testAbsoluteLocalPathCanBeCoveredByProjectRelativePushedPath() {
+        assertTrue(PrePushSnapshotGuard.isCoveredByPushedPaths(
+            "/project/src/main/java/App.java",
+            List.of("src/main/java/App.java")
+        ));
+    }
+
+    public void testUnselectedLocalPathIsNotCoveredByPushedPath() {
+        assertFalse(PrePushSnapshotGuard.isCoveredByPushedPaths(
+            "src/main/java/Dependency.java",
+            List.of("src/main/java/App.java")
+        ));
+    }
+
     public void testSnapshotBuildCommandUsesNarrowGradleTaskForSourceChanges() {
         assertEquals(
             List.of("./gradlew", "--console=plain", "--quiet", "--parallel", "--build-cache", "classes"),
