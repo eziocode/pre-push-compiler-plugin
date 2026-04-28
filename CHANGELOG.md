@@ -6,13 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.3.1]
+
+### Added
+- **Active strict A/B dependency guard.** The side-panel toggle now has behavior: when enabled, IDE pushes and external pushes routed through the running IDE are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
+
+---
+
 ## [1.3.0]
 
 ### Added
 - **External pushes can now reuse IntelliJ's incremental compiler.** The managed hook contacts a local loopback server when the IDE is open, so terminal and GUI-client pushes can validate with JPS before falling back to Gradle or Maven.
 - **Debounced warmup compiles** run after source saves, keeping compiler caches hot so pre-push checks can usually reuse a fresh verdict.
 - **Dependent-module compile scopes** include modules that depend on changed modules, catching caller-side breakage without forcing a full project build on ordinary pushes.
-- **Side-panel toggle for strict A/B dependency guard.** The Compilation Checker tool window now exposes a per-project checkbox, disabled by default. When enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
 
 ### Changed
 - External push handling now bounds concurrent client workers and caps requested path lists, falling back to project-scope compilation when a request is too large to keep memory usage predictable.
