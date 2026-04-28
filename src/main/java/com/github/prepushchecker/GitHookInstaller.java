@@ -2,7 +2,11 @@ package com.github.prepushchecker;
 
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.startup.StartupActivity;
+import com.intellij.openapi.startup.ProjectActivity;
+import kotlin.Unit;
+import kotlin.coroutines.Continuation;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -16,7 +20,7 @@ import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
-public final class GitHookInstaller implements StartupActivity {
+public final class GitHookInstaller implements ProjectActivity {
     private static final Logger LOG = Logger.getInstance(GitHookInstaller.class);
     static final String HOOK_MARKER = "pre-push-compilation-checker-plugin";
     static final String MANAGED_HOOK_NAME = "pre-push-prepushchecker";
@@ -32,16 +36,16 @@ public final class GitHookInstaller implements StartupActivity {
     );
 
     @Override
-    public void runActivity(Project project) {
+    public @Nullable Object execute(@NotNull Project project, @NotNull Continuation<? super Unit> continuation) {
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
-            return;
+            return Unit.INSTANCE;
         }
 
         Path hooksDirectory = resolveHooksDirectory(basePath);
         if (hooksDirectory == null) {
             LOG.info("Could not resolve a git hooks directory under " + basePath + "; skipping hook installation.");
-            return;
+            return Unit.INSTANCE;
         }
 
         Path mainHook = hooksDirectory.resolve("pre-push");
@@ -62,13 +66,13 @@ public final class GitHookInstaller implements StartupActivity {
                     Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
                     makeExecutable(mainHook.toFile());
                     LOG.info("Refreshed managed pre-push hook at " + mainHook);
-                    return;
+                    return Unit.INSTANCE;
                 }
 
                 Files.writeString(mainHook, existingContent + buildDelegatingSnippet(), StandardCharsets.UTF_8);
                 makeExecutable(mainHook.toFile());
                 LOG.info("Chained the managed pre-push checker into an existing hook at " + mainHook);
-                return;
+                return Unit.INSTANCE;
             }
 
             Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
@@ -81,6 +85,7 @@ public final class GitHookInstaller implements StartupActivity {
 
         // Keep plugin-owned files out of `git status` / Sublime Merge untracked lists.
         addToRepoLocalExclude(basePath, hooksDirectory);
+        return Unit.INSTANCE;
     }
 
     /**

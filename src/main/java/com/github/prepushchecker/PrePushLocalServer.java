@@ -9,11 +9,14 @@ import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.startup.StartupActivity;
+import com.intellij.openapi.startup.ProjectActivity;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.problems.WolfTheProblemSolver;
+import kotlin.Unit;
+import kotlin.coroutines.Continuation;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -367,12 +370,13 @@ public final class PrePushLocalServer implements Disposable {
     }
 
     /** Starts the per-project server on project open. */
-    public static final class Starter implements StartupActivity {
+    public static final class Starter implements ProjectActivity {
         @Override
-        public void runActivity(@NotNull Project project) {
+        public @Nullable Object execute(@NotNull Project project, @NotNull Continuation<? super Unit> continuation) {
             PrePushLocalServer srv = new PrePushLocalServer(project);
             srv.start();
             com.intellij.openapi.util.Disposer.register(project, srv);
+            return Unit.INSTANCE;
         }
     }
 }

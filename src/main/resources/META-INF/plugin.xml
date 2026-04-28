@@ -154,10 +154,10 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <prePushHandler implementation="com.github.prepushchecker.PrePushCompilationHandler"/>
-        <postStartupActivity implementation="com.github.prepushchecker.GitHookInstaller"/>
-        <postStartupActivity implementation="com.github.prepushchecker.ExternalPushErrorLoader"/>
-        <postStartupActivity implementation="com.github.prepushchecker.PrePushLocalServer$Starter"/>
-        <postStartupActivity implementation="com.github.prepushchecker.CompilationWarmupService$Starter"/>
+        <projectActivity implementation="com.github.prepushchecker.GitHookInstaller"/>
+        <projectActivity implementation="com.github.prepushchecker.ExternalPushErrorLoader"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushLocalServer$Starter"/>
+        <projectActivity implementation="com.github.prepushchecker.CompilationWarmupService$Starter"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationWarmupService"/>
         <registryKey key="prepushchecker.warmup.enabled"

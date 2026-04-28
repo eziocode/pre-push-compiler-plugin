@@ -8,12 +8,14 @@ import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.startup.StartupActivity;
+import com.intellij.openapi.startup.ProjectActivity;
 import com.intellij.openapi.vfs.AsyncFileListener;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.openapi.wm.ToolWindowManager;
+import kotlin.Unit;
+import kotlin.coroutines.Continuation;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -38,7 +40,7 @@ import java.util.regex.Pattern;
  * appends a final {@code [pre-push-checker] exit=N} trailer; we only surface entries when
  * {@code N != 0}.
  */
-public final class ExternalPushErrorLoader implements StartupActivity {
+public final class ExternalPushErrorLoader implements ProjectActivity {
 
     private static final Logger LOG = Logger.getInstance(ExternalPushErrorLoader.class);
     private static final String NOTIFICATION_GROUP_ID = "Pre-Push Compilation Checker";
@@ -61,10 +63,10 @@ public final class ExternalPushErrorLoader implements StartupActivity {
         Pattern.compile("^e:\\s+(?:file://)?(?<path>[^:]+\\.(?:kt|kts)):(?<line>\\d+):(?<col>\\d+)\\s+(?<msg>.+)$");
 
     @Override
-    public void runActivity(@NotNull Project project) {
+    public @Nullable Object execute(@NotNull Project project, @NotNull Continuation<? super Unit> continuation) {
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
-            return;
+            return Unit.INSTANCE;
         }
         Path logFile = Path.of(basePath, GitHookInstaller.EXTERNAL_LOG_RELATIVE_PATH);
 
@@ -74,6 +76,7 @@ public final class ExternalPushErrorLoader implements StartupActivity {
         // Listen for future hook runs while the IDE is open.
         VirtualFileManager.getInstance().addAsyncFileListener(
             new HookLogListener(project, logFile), project);
+        return Unit.INSTANCE;
     }
 
     static void loadFromLogIfFailed(@NotNull Project project, @NotNull Path logFile) {
