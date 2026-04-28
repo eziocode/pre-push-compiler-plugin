@@ -38,14 +38,19 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 public final class PrePushCompilationHandler implements PrePushHandler {
     private static final Logger LOG = Logger.getInstance(PrePushCompilationHandler.class);
     private static final long WAIT_SLICE_MILLIS = 250L;
-    private static final long TARGETED_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(2);
-    private static final long FULL_BUILD_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final String TARGETED_WAIT_SECONDS_KEY = "prepushchecker.push.targeted.wait.seconds";
+    private static final String FULL_BUILD_WAIT_SECONDS_KEY = "prepushchecker.push.full.wait.seconds";
+    private static final int DEFAULT_TARGETED_WAIT_SECONDS = 20;
+    private static final int DEFAULT_FULL_BUILD_WAIT_SECONDS = 30;
+    static final String COMPILATION_RUNNING_IN_BACKGROUND =
+        "Compilation is still running in the background. Retry the push after the background check finishes.";
 
     @Override
     public @NotNull String getPresentableName() {
@@ -124,11 +129,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 errors = changeSet.requiresProjectBuild()
                     ? compileProject(project, indicator)
                     : compileFiles(project, changeSet.getSourceFiles(), indicator);
-                errorService.recordCompletion(
-                    changeSet.requiresProjectBuild(),
-                    CompilationErrorService.snapshotStamps(changeSet.getSourceFiles()),
-                    errors
-                );
+                if (isBackgroundCompilation(errors)) {
+                    return Result.ABORT;
+                }
             }
 
             if (!errors.isEmpty()) {
@@ -247,10 +250,13 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         CompileScope scope = ApplicationManager.getApplication().runReadAction(
             (Computable<CompileScope>) () -> buildPushScope(project, sourceFiles, compilerManager)
         );
+        Map<String, Long> stamps = CompilationErrorService.snapshotStamps(sourceFiles);
         return runCompilation(
             project,
             indicator,
-            TARGETED_TIMEOUT_MILLIS,
+            waitBudgetMillis(TARGETED_WAIT_SECONDS_KEY, DEFAULT_TARGETED_WAIT_SECONDS),
+            false,
+            stamps,
             notification -> compilerManager.make(scope, notification)
         );
     }
@@ -318,7 +324,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return runCompilation(
             project,
             indicator,
-            FULL_BUILD_TIMEOUT_MILLIS,
+            waitBudgetMillis(FULL_BUILD_WAIT_SECONDS_KEY, DEFAULT_FULL_BUILD_WAIT_SECONDS),
+            true,
+            Collections.emptyMap(),
             notification -> compilerManager.make(scope, notification)
         );
     }
@@ -326,19 +334,35 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static List<String> runCompilation(
         Project project,
         ProgressIndicator indicator,
-        long timeoutMillis,
+        long waitBudgetMillis,
+        boolean projectScope,
+        Map<String, Long> stamps,
         CompilationStarter compilationStarter
     ) {
         CountDownLatch latch = new CountDownLatch(1);
         AtomicReference<List<String>> errors = new AtomicReference<>(Collections.emptyList());
+        AtomicBoolean movedToBackground = new AtomicBoolean(false);
 
         Runnable startCompilation = () -> compilationStarter.start((aborted, errorCount, warnings, compileContext) -> {
+            List<String> result;
             if (aborted) {
-                errors.set(Collections.singletonList("Compilation was aborted."));
+                result = Collections.singletonList("Compilation was aborted.");
             } else if (errorCount > 0) {
-                errors.set(formatCompilerMessages(project, compileContext.getMessages(CompilerMessageCategory.ERROR)));
+                result = formatCompilerMessages(project, compileContext.getMessages(CompilerMessageCategory.ERROR));
+            } else {
+                result = Collections.emptyList();
+            }
+            errors.set(result);
+            CompilationErrorService errorService = CompilationErrorService.getInstance(project);
+            if (aborted) {
+                errorService.setErrors(result);
+            } else {
+                errorService.recordCompletion(projectScope, stamps, result);
             }
             latch.countDown();
+            if (movedToBackground.get()) {
+                notifyBackgroundCompilationFinished(project, result);
+            }
         });
 
         Application application = ApplicationManager.getApplication();
@@ -352,13 +376,21 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             application.invokeAndWait(startCompilation, modality);
         }
 
-        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
+        long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(waitBudgetMillis);
         try {
             while (true) {
                 indicator.checkCanceled();
                 long remainingNanos = deadlineNanos - System.nanoTime();
                 if (remainingNanos <= 0) {
-                    return Collections.singletonList("Compilation check timed out.");
+                    if (latch.await(0, TimeUnit.MILLISECONDS)) {
+                        return errors.get();
+                    }
+                    movedToBackground.set(true);
+                    if (latch.await(0, TimeUnit.MILLISECONDS)) {
+                        return errors.get();
+                    }
+                    notifyCompilationMovedToBackground(project, waitBudgetMillis);
+                    return Collections.singletonList(COMPILATION_RUNNING_IN_BACKGROUND);
                 }
 
                 long waitMillis = Math.min(WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
@@ -370,6 +402,61 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             Thread.currentThread().interrupt();
             return Collections.singletonList("Compilation check was interrupted.");
         }
+    }
+
+    static boolean isBackgroundCompilation(List<String> errors) {
+        return errors.size() == 1 && COMPILATION_RUNNING_IN_BACKGROUND.equals(errors.get(0));
+    }
+
+    private static long waitBudgetMillis(String registryKey, int defaultSeconds) {
+        int seconds;
+        try {
+            seconds = Registry.intValue(registryKey, defaultSeconds);
+        } catch (Throwable ignored) {
+            seconds = defaultSeconds;
+        }
+        return TimeUnit.SECONDS.toMillis(Math.max(1, seconds));
+    }
+
+    private static void notifyCompilationMovedToBackground(Project project, long waitBudgetMillis) {
+        int waitSeconds = Math.max(1, (int) TimeUnit.MILLISECONDS.toSeconds(waitBudgetMillis));
+        notify(
+            project,
+            "Pre-push compilation still running",
+            "The current push was stopped after " + waitSeconds + "s so the IDE is not blocked. "
+                + "Compilation is continuing in the background; retry push after it finishes.",
+            com.intellij.notification.NotificationType.INFORMATION
+        );
+    }
+
+    private static void notifyBackgroundCompilationFinished(Project project, List<String> errors) {
+        boolean failed = !errors.isEmpty();
+        notify(
+            project,
+            failed ? "Pre-push compilation found errors" : "Pre-push compilation finished",
+            failed
+                ? "Background compilation finished with " + errors.size()
+                    + " error(s). Open the Compilation Checker tool window for details."
+                : "Background compilation passed. Retry the push; the cached result will be reused.",
+            failed
+                ? com.intellij.notification.NotificationType.ERROR
+                : com.intellij.notification.NotificationType.INFORMATION
+        );
+    }
+
+    private static void notify(
+        Project project,
+        String title,
+        String message,
+        com.intellij.notification.NotificationType type
+    ) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            com.intellij.notification.NotificationGroupManager.getInstance()
+                .getNotificationGroup("Pre-Push Compilation Checker")
+                .createNotification(title, message, type)
+                .notify(project);
+        });
     }
 
     static List<String> formatCompilerMessages(Project project, CompilerMessage[] messages) {

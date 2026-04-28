@@ -2,3 +2,5 @@ build/
 .gradle/
 .DS_Store
 *.class
+graphify-out/
+.graphify_cache/
