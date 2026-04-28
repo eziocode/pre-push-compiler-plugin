@@ -60,6 +60,18 @@ final class PrePushSnapshotGuard {
         LOG.info("Strict A/B dependency check escalated to clean snapshot validation: " + risk.reason());
 
         indicatorCheckCanceled(indicator);
+
+        List<String> unpushedPaths = new ArrayList<>(risk.localChanges().size());
+        for (LocalRelevantChange change : risk.localChanges()) {
+            unpushedPaths.add(change.path());
+        }
+        List<String> symbolicMatches = SymbolicAbCheck.detect(project, risk.pushedPaths(), unpushedPaths);
+        if (!symbolicMatches.isEmpty()) {
+            LOG.info("Strict A/B symbolic check found " + symbolicMatches.size()
+                + " reference(s) to unpushed-only declarations.");
+            return SnapshotValidationResult.checked(symbolicMatches);
+        }
+
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
             return SnapshotValidationResult.checked(List.of(
