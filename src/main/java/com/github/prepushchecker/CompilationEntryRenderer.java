@@ -40,8 +40,15 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
         String entry = value instanceof String ? (String) value : "";
         label.setIcon(iconForEntry(entry));
         label.setText(displayText(entry));
-        label.setToolTipText(entry.isEmpty() ? null : entry);
+        label.setToolTipText(tooltipText(entry));
         return label;
+    }
+
+    @Nullable
+    private static String tooltipText(String entry) {
+        if (entry == null || entry.isEmpty()) return null;
+        String escaped = entry.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+        return "<html><body style='width: 480px'>" + escaped + "</body></html>";
     }
 
     /** Builds a human-friendly label for the list: "FileName:line:col — message". */
