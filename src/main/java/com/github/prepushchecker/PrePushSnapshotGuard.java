@@ -1,12 +1,20 @@
 package com.github.prepushchecker;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.module.Module;
+import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.roots.ModuleRootManager;
+import com.intellij.openapi.roots.ProjectFileIndex;
+import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.openapi.vcs.changes.ContentRevision;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -16,9 +24,11 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -43,10 +53,11 @@ final class PrePushSnapshotGuard {
             return SnapshotValidationResult.notChecked();
         }
 
-        List<String> localPaths = collectRelevantLocalPaths(project);
-        if (localPaths.isEmpty()) {
+        PushSnapshotRisk risk = analyzeSnapshotRisk(project, pushedPaths);
+        if (!risk.shouldValidateSnapshot()) {
             return SnapshotValidationResult.notChecked();
         }
+        LOG.info("Strict A/B dependency check escalated to clean snapshot validation: " + risk.reason());
 
         indicatorCheckCanceled(indicator);
         String basePath = project.getBasePath();
@@ -70,15 +81,16 @@ final class PrePushSnapshotGuard {
                 tempRoot.resolve("worktree-add.log")
             );
             if (!checkout.succeeded()) {
-                return SnapshotValidationResult.checked(commandFailure(
-                    "Strict A/B dependency check could not create a clean pushed snapshot.",
-                    checkout,
-                    project,
-                    worktree
-                ));
+                if (PrePushCheckerSettings.isStashSnapshotFallbackEnabled(project)) {
+                    LOG.info("Strict A/B worktree validation unavailable; using explicit stash fallback.");
+                    return validateWithStashFallback(
+                        project, projectRoot, risk.pushedPaths(), indicator, tempRoot);
+                }
+                LOG.info("Strict A/B dependency check skipped because a clean worktree could not be created.");
+                return SnapshotValidationResult.notChecked();
             }
 
-            CommandResult build = runSnapshotBuild(project, worktree, pushedPaths, indicator, tempRoot);
+            CommandResult build = runSnapshotBuild(project, worktree, risk.pushedPaths(), indicator, tempRoot);
             if (build.skipped()) {
                 LOG.info("Strict A/B dependency check skipped because no runnable snapshot build command was found.");
                 return SnapshotValidationResult.notChecked();
@@ -106,14 +118,161 @@ final class PrePushSnapshotGuard {
         }
     }
 
-    private static @NotNull List<String> collectRelevantLocalPaths(@NotNull Project project) {
-        Set<String> relevantLocalPaths = new LinkedHashSet<>();
-        ChangeListManager changeListManager = ChangeListManager.getInstance(project);
-        for (Change change : changeListManager.getAllChanges()) {
-            addRelevantPath(project, extractPath(change), relevantLocalPaths);
+    static @NotNull PushSnapshotRisk analyzeSnapshotRisk(
+        @NotNull Project project,
+        @NotNull Collection<String> pushedPaths
+    ) {
+        List<String> relevantPushedPaths = collectRelevantPushedPaths(project, pushedPaths);
+        List<LocalRelevantChange> localChanges = collectRelevantLocalChanges(project);
+
+        if (localChanges.isEmpty()) {
+            return PushSnapshotRisk.notRisky(relevantPushedPaths, localChanges, "no local source/build changes");
+        }
+        if (!pushedPaths.isEmpty() && relevantPushedPaths.isEmpty()) {
+            return PushSnapshotRisk.notRisky(relevantPushedPaths, localChanges, "no pushed source/build changes");
+        }
+        if (relevantPushedPaths.isEmpty()) {
+            return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "pushed file list is unavailable");
+        }
+        if (containsBuildFile(relevantPushedPaths)) {
+            return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "pushed build file changes affect compile graph");
+        }
+        for (LocalRelevantChange localChange : localChanges) {
+            if (localChange.isBuildFile()) {
+                return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "local build file changes can mask pushed snapshot failures");
+            }
+            if (localChange.isDeleteOrMove()) {
+                return PushSnapshotRisk.risky(relevantPushedPaths, localChanges, "local delete/move changes can mask pushed snapshot failures");
+            }
         }
 
-        return List.copyOf(relevantLocalPaths);
+        ModuleRisk moduleRisk = computeModuleRisk(project, relevantPushedPaths, localChanges);
+        return moduleRisk.risky()
+            ? PushSnapshotRisk.risky(relevantPushedPaths, localChanges, moduleRisk.reason())
+            : PushSnapshotRisk.notRisky(relevantPushedPaths, localChanges, moduleRisk.reason());
+    }
+
+    private static @NotNull List<String> collectRelevantPushedPaths(
+        @NotNull Project project,
+        @NotNull Collection<String> pushedPaths
+    ) {
+        Set<String> relevantPushedPaths = new LinkedHashSet<>();
+        for (String path : pushedPaths) {
+            String displayPath = toProjectRelativePath(project, path == null ? "" : path);
+            if (!displayPath.isEmpty() && PushValidationPaths.isRelevantPath(displayPath)) {
+                relevantPushedPaths.add(displayPath);
+            }
+        }
+        return List.copyOf(relevantPushedPaths);
+    }
+
+    private static @NotNull List<LocalRelevantChange> collectRelevantLocalChanges(@NotNull Project project) {
+        Set<LocalRelevantChange> relevantLocalChanges = new LinkedHashSet<>();
+        ChangeListManager changeListManager = ChangeListManager.getInstance(project);
+        for (Change change : changeListManager.getAllChanges()) {
+            addRelevantChange(project, change, relevantLocalChanges);
+        }
+
+        return List.copyOf(relevantLocalChanges);
+    }
+
+    private static boolean containsBuildFile(@NotNull Collection<String> paths) {
+        for (String path : paths) {
+            if (PushValidationPaths.isBuildFile(path)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static @NotNull ModuleRisk computeModuleRisk(
+        @NotNull Project project,
+        @NotNull List<String> pushedPaths,
+        @NotNull List<LocalRelevantChange> localChanges
+    ) {
+        return ApplicationManager.getApplication().runReadAction((Computable<ModuleRisk>) () -> {
+            ProjectFileIndex index = ProjectFileIndex.getInstance(project);
+            ModuleManager moduleManager = ModuleManager.getInstance(project);
+            Set<Module> pushedModules = new LinkedHashSet<>();
+            Set<Module> localModules = new LinkedHashSet<>();
+
+            for (String pushedPath : pushedPaths) {
+                if (!PushValidationPaths.isCompilableSource(pushedPath)) {
+                    continue;
+                }
+                Module module = moduleForPath(project, index, pushedPath);
+                if (module == null) {
+                    return ModuleRisk.risky("pushed source module could not be resolved");
+                }
+                pushedModules.add(module);
+            }
+
+            for (LocalRelevantChange localChange : localChanges) {
+                if (!localChange.isCompilableSource()) {
+                    continue;
+                }
+                Module module = moduleForPath(project, index, localChange.path());
+                if (module == null) {
+                    return ModuleRisk.risky("local source module could not be resolved");
+                }
+                localModules.add(module);
+            }
+
+            if (pushedModules.isEmpty() || localModules.isEmpty()) {
+                return ModuleRisk.notRisky("no source module overlap");
+            }
+
+            Set<Module> connectedModules = connectedModules(pushedModules, moduleManager);
+            for (Module localModule : localModules) {
+                if (connectedModules.contains(localModule)) {
+                    return ModuleRisk.risky("local source changes are connected to pushed modules");
+                }
+            }
+            return ModuleRisk.notRisky("local source changes are outside the pushed module graph");
+        });
+    }
+
+    private static @NotNull Set<Module> connectedModules(
+        @NotNull Set<Module> seedModules,
+        @NotNull ModuleManager moduleManager
+    ) {
+        Set<Module> visited = new LinkedHashSet<>(seedModules);
+        Deque<Module> queue = new ArrayDeque<>(seedModules);
+        while (!queue.isEmpty()) {
+            Module module = queue.removeFirst();
+            for (Module dependency : ModuleRootManager.getInstance(module).getDependencies()) {
+                if (visited.add(dependency)) {
+                    queue.addLast(dependency);
+                }
+            }
+            for (Module dependent : moduleManager.getModuleDependentModules(module)) {
+                if (visited.add(dependent)) {
+                    queue.addLast(dependent);
+                }
+            }
+        }
+        return visited;
+    }
+
+    @Nullable
+    private static Module moduleForPath(
+        @NotNull Project project,
+        @NotNull ProjectFileIndex index,
+        @NotNull String path
+    ) {
+        VirtualFile file = findVirtualFile(project, path);
+        return file == null ? null : index.getModuleForFile(file, false);
+    }
+
+    @Nullable
+    private static VirtualFile findVirtualFile(@NotNull Project project, @NotNull String path) {
+        String normalized = PushValidationPaths.normalizePath(path);
+        LocalFileSystem localFileSystem = LocalFileSystem.getInstance();
+        VirtualFile file = localFileSystem.findFileByPath(normalized);
+        if (file == null && project.getBasePath() != null) {
+            file = localFileSystem.findFileByPath(project.getBasePath() + "/" + normalized);
+        }
+        return file != null && !file.isDirectory() ? file : null;
     }
 
     private static @NotNull CommandResult runSnapshotBuild(
@@ -142,6 +301,98 @@ final class PrePushSnapshotGuard {
             indicator,
             outputRoot.resolve("snapshot-build.log")
         );
+    }
+
+    private static @NotNull SnapshotValidationResult validateWithStashFallback(
+        @NotNull Project project,
+        @NotNull Path projectRoot,
+        @NotNull Collection<String> pushedPaths,
+        @Nullable ProgressIndicator indicator,
+        @NotNull Path outputRoot
+    ) throws IOException, InterruptedException {
+        CommandResult stash = runCommand(
+            projectRoot,
+            List.of(
+                "git",
+                "stash",
+                "push",
+                "--include-untracked",
+                "--message",
+                "prepushchecker-strict-ab-snapshot"
+            ),
+            GIT_TIMEOUT_MILLIS,
+            indicator,
+            outputRoot.resolve("stash-push.log")
+        );
+        if (!stash.succeeded()) {
+            return SnapshotValidationResult.checked(commandFailure(
+                "Strict A/B stash fallback could not save local changes.",
+                stash,
+                project,
+                projectRoot
+            ));
+        }
+        if (!createdStash(stash.outputLines())) {
+            return SnapshotValidationResult.notChecked();
+        }
+
+        CommandResult build = null;
+        CommandResult restore = null;
+        Exception restoreFailure = null;
+        try {
+            build = runSnapshotBuild(project, projectRoot, pushedPaths, indicator, outputRoot);
+        } finally {
+            try {
+                restore = runCommand(
+                    projectRoot,
+                    List.of("git", "stash", "pop", "--index"),
+                    GIT_TIMEOUT_MILLIS,
+                    null,
+                    outputRoot.resolve("stash-pop.log")
+                );
+            } catch (IOException | InterruptedException e) {
+                restoreFailure = e;
+                if (e instanceof InterruptedException) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        if (restoreFailure != null) {
+            return SnapshotValidationResult.checked(List.of(
+                "[snapshot] Strict A/B stash fallback could not restore local changes: "
+                    + restoreFailure.getMessage()));
+        }
+        if (restore != null && !restore.succeeded()) {
+            return SnapshotValidationResult.checked(commandFailure(
+                "Strict A/B stash fallback could not restore local changes.",
+                restore,
+                project,
+                projectRoot
+            ));
+        }
+        if (build == null || build.skipped()) {
+            return SnapshotValidationResult.notChecked();
+        }
+        if (build.succeeded()) {
+            LOG.info("Strict A/B stash fallback check passed against HEAD.");
+            return SnapshotValidationResult.checked(List.of());
+        }
+        return SnapshotValidationResult.checked(commandFailure(
+            "Strict A/B stash fallback failed when compiling HEAD without local changes.",
+            build,
+            project,
+            projectRoot
+        ));
+    }
+
+    private static boolean createdStash(@NotNull List<String> outputLines) {
+        for (String line : outputLines) {
+            if (line != null && line.contains("Saved working directory")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static @NotNull List<String> resolveBuildCommand(
@@ -446,14 +697,14 @@ final class PrePushSnapshotGuard {
         }
     }
 
-    private static void addRelevantPath(
+    private static void addRelevantChange(
         @NotNull Project project,
-        @NotNull String path,
-        @NotNull Set<String> relevantPaths
+        @NotNull Change change,
+        @NotNull Set<LocalRelevantChange> relevantChanges
     ) {
-        String displayPath = toProjectRelativePath(project, path);
+        String displayPath = toProjectRelativePath(project, extractPath(change));
         if (!displayPath.isEmpty() && PushValidationPaths.isRelevantPath(displayPath)) {
-            relevantPaths.add(displayPath);
+            relevantChanges.add(new LocalRelevantChange(displayPath, change.getType()));
         }
     }
 
@@ -502,6 +753,81 @@ final class PrePushSnapshotGuard {
 
         @NotNull List<String> errors() {
             return errors;
+        }
+    }
+
+    static final class PushSnapshotRisk {
+        private final boolean shouldValidateSnapshot;
+        private final List<String> pushedPaths;
+        private final List<LocalRelevantChange> localChanges;
+        private final String reason;
+
+        private PushSnapshotRisk(
+            boolean shouldValidateSnapshot,
+            @NotNull List<String> pushedPaths,
+            @NotNull List<LocalRelevantChange> localChanges,
+            @NotNull String reason
+        ) {
+            this.shouldValidateSnapshot = shouldValidateSnapshot;
+            this.pushedPaths = List.copyOf(pushedPaths);
+            this.localChanges = List.copyOf(localChanges);
+            this.reason = reason;
+        }
+
+        private static @NotNull PushSnapshotRisk risky(
+            @NotNull List<String> pushedPaths,
+            @NotNull List<LocalRelevantChange> localChanges,
+            @NotNull String reason
+        ) {
+            return new PushSnapshotRisk(true, pushedPaths, localChanges, reason);
+        }
+
+        private static @NotNull PushSnapshotRisk notRisky(
+            @NotNull List<String> pushedPaths,
+            @NotNull List<LocalRelevantChange> localChanges,
+            @NotNull String reason
+        ) {
+            return new PushSnapshotRisk(false, pushedPaths, localChanges, reason);
+        }
+
+        boolean shouldValidateSnapshot() {
+            return shouldValidateSnapshot;
+        }
+
+        @NotNull List<String> pushedPaths() {
+            return pushedPaths;
+        }
+
+        @NotNull List<LocalRelevantChange> localChanges() {
+            return localChanges;
+        }
+
+        @NotNull String reason() {
+            return reason;
+        }
+    }
+
+    private record LocalRelevantChange(@NotNull String path, @NotNull Change.Type type) {
+        private boolean isBuildFile() {
+            return PushValidationPaths.isBuildFile(path);
+        }
+
+        private boolean isCompilableSource() {
+            return PushValidationPaths.isCompilableSource(path);
+        }
+
+        private boolean isDeleteOrMove() {
+            return type == Change.Type.DELETED || type == Change.Type.MOVED;
+        }
+    }
+
+    private record ModuleRisk(boolean risky, @NotNull String reason) {
+        private static @NotNull ModuleRisk risky(@NotNull String reason) {
+            return new ModuleRisk(true, reason);
+        }
+
+        private static @NotNull ModuleRisk notRisky(@NotNull String reason) {
+            return new ModuleRisk(false, reason);
         }
     }
 

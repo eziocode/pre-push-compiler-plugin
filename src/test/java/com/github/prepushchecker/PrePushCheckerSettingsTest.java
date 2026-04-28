@@ -18,4 +18,20 @@ public class PrePushCheckerSettingsTest extends BasePlatformTestCase {
             PrePushCheckerSettings.setStrictSnapshotGuardEnabled(getProject(), false);
         }
     }
+
+    public void testStashSnapshotFallbackDefaultsToDisabled() {
+        assertFalse(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(getProject()));
+    }
+
+    public void testStashSnapshotFallbackCanBeToggled() {
+        try {
+            PrePushCheckerSettings.setStashSnapshotFallbackEnabled(getProject(), true);
+            assertTrue(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(getProject()));
+
+            PrePushCheckerSettings.setStashSnapshotFallbackEnabled(getProject(), false);
+            assertFalse(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(getProject()));
+        } finally {
+            PrePushCheckerSettings.setStashSnapshotFallbackEnabled(getProject(), false);
+        }
+    }
 }

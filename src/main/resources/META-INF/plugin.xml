@@ -13,11 +13,17 @@
                 <code>prePushHandler</code> extension point. Checks whether the IDE already knows
                 about problems in the pushed files, then compiles the affected modules and their dependents.
                 A full project build is used only when build files or file deletions are involved.</li>
+            <li><b>Strict A/B preflight:</b> When enabled, the plugin escalates only risky pushes
+                to exact pushed-snapshot validation, so local-only dependent changes cannot silently
+                hide a compile failure in the pushed commits.</li>
             <li><b>Terminal Push Guard:</b> On project open, the plugin installs a managed
                 <code>pre-push</code> Git hook that reuses the running IDE compiler when available,
                 then falls back to a fast Gradle or Maven compile before allowing any push from a
                 terminal or external git client.</li>
         </ul>
+
+        <p><b>Important:</b> The plugin is a local preflight. Required Merge Request CI with
+        branch protection should remain the authoritative gate before changes reach main/master.</p>
 
         <h3>Features</h3>
         <ul>
@@ -28,6 +34,7 @@
             <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
             <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
             <li>Gradle (wrapper or system) and Maven (wrapper or system) support</li>
+            <li>Optional stash fallback for strict A/B validation when detached worktrees are unavailable</li>
             <li>Respects <code>PRE_PUSH_CHECKER_COMMAND</code> env variable for custom check commands</li>
         </ul>
 
@@ -42,10 +49,13 @@
     <change-notes><![CDATA[
         <h3>1.3.1</h3>
         <ul>
-            <li><b>Active strict A/B dependency guard:</b> the side-panel toggle now has behavior.
-                When enabled, IDE pushes and external pushes routed through the running IDE compile
-                committed <code>HEAD</code> in a clean temporary worktree only when relevant local
-                source/build changes could otherwise mask failures in the pushed snapshot.</li>
+            <li><b>Risk-scoped strict A/B dependency guard:</b> the side-panel toggle now escalates
+                only when local source/build changes can plausibly mask pushed-snapshot failures.
+                Risky pushes are validated against committed <code>HEAD</code> in a clean temporary
+                worktree; an explicit advanced stash fallback is available when worktrees cannot be
+                created.</li>
+            <li><b>CI remains authoritative:</b> required Merge Request CI and branch protection are
+                documented as the non-bypassable safety net before main/master accepts changes.</li>
         </ul>
 
         <h3>1.3.0</h3>

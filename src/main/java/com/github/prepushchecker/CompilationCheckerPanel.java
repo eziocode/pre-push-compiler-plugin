@@ -121,12 +121,29 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         strictGuard.setToolTipText(
             "Validates committed HEAD in a clean temporary worktree only when local " +
                 "source/build changes could mask pushed-snapshot failures.");
-        strictGuard.addActionListener(event ->
-            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, strictGuard.isSelected()));
+
+        JBCheckBox stashFallback = new JBCheckBox("Allow stash fallback when snapshot worktree is unavailable");
+        stashFallback.setSelected(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(project));
+        stashFallback.setEnabled(strictGuard.isSelected());
+        stashFallback.setToolTipText(
+            "Advanced fallback: temporarily stashes local changes, compiles HEAD, then restores them. " +
+                "Disabled by default because detached worktree validation is safer.");
+
+        strictGuard.addActionListener(event -> {
+            boolean selected = strictGuard.isSelected();
+            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, selected);
+            stashFallback.setEnabled(selected);
+        });
+        stashFallback.addActionListener(event ->
+            PrePushCheckerSettings.setStashSnapshotFallbackEnabled(project, stashFallback.isSelected()));
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(0, 6, 6, 6));
-        panel.add(strictGuard, BorderLayout.WEST);
+        JPanel options = new JPanel();
+        options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
+        options.add(strictGuard);
+        options.add(stashFallback);
+        panel.add(options, BorderLayout.WEST);
         return panel;
     }
 

@@ -28,6 +28,22 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
         assertEquals("src/main/java/App.java", path);
     }
 
+    public void testSnapshotRiskSkipsWhenNoLocalRelevantChangesExist() {
+        PrePushSnapshotGuard.PushSnapshotRisk risk =
+            PrePushSnapshotGuard.analyzeSnapshotRisk(getProject(), List.of("src/main/java/App.java"));
+
+        assertFalse(risk.shouldValidateSnapshot());
+        assertEquals(List.of("src/main/java/App.java"), risk.pushedPaths());
+    }
+
+    public void testSnapshotRiskSkipsIrrelevantPushedPaths() {
+        PrePushSnapshotGuard.PushSnapshotRisk risk =
+            PrePushSnapshotGuard.analyzeSnapshotRisk(getProject(), List.of("README.md"));
+
+        assertFalse(risk.shouldValidateSnapshot());
+        assertTrue(risk.pushedPaths().isEmpty());
+    }
+
     public void testSnapshotBuildCommandUsesNarrowGradleTaskForSourceChanges() {
         assertEquals(
             List.of("./gradlew", "--console=plain", "--quiet", "--parallel", "--build-cache", "classes"),
