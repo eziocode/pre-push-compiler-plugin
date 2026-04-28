@@ -466,11 +466,17 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     }
 
     private static @org.jetbrains.annotations.Nullable String runGitPush(String repoRoot) {
+        long startNanos = System.nanoTime();
         try {
-            Process p = new ProcessBuilder("git", "push")
+            ProcessBuilder pb = new ProcessBuilder("git", "push")
                 .directory(new java.io.File(repoRoot))
                 .redirectErrorStream(true)
-                .start();
+                .redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
+            // Fail fast on credential prompt instead of hanging until timeout.
+            pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+            pb.environment().put("GIT_ASKPASS", "");
+            pb.environment().put("SSH_ASKPASS", "");
+            Process p = pb.start();
             StringBuilder out = new StringBuilder();
             try (java.io.BufferedReader r = new java.io.BufferedReader(
                 new java.io.InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
@@ -482,8 +488,10 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             }
             if (!p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
                 p.destroyForcibly();
-                return "timed out";
+                return "timed out after 120s";
             }
+            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            LOG.info("git push at " + repoRoot + " exit=" + p.exitValue() + " elapsedMs=" + elapsedMs);
             return p.exitValue() == 0 ? null : out.toString().trim();
         } catch (Exception e) {
             return e.getMessage();
