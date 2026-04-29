@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.3]
+
+### Fixed
+- Managed hook now includes full PATH reconstruction (`bootstrap_build_tool_path`) for GUI git clients (Sublime Merge, SourceTree, GitHub Desktop) that launch hooks with a stripped environment. Sources the user's shell rc files (`.zshrc`, `.bash_profile`, etc.) and appends known install locations (`/opt/homebrew/bin`, SDKMAN, jenv, asdf) so `mvn`/`gradle` resolve correctly without a Maven or Gradle wrapper present.
+
+---
+
+## [1.4.2]
+
+### Changed
+- No functional changes. Version bump for distribution.
+
+---
+
 ## [1.4.1]
 
 ### Fixed
