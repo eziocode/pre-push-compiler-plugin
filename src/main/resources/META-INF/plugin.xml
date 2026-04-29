@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.4.2</version>
+    <version>1.4.5</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,18 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.4.5</h3>
+        <ul>
+            <li><b>External IntelliJ fast-path false positives fixed:</b> terminal,
+                Sublime Merge, and other external git clients no longer block pushes from
+                stale IntelliJ editor problem-cache entries. The loopback server now reuses
+                only cached successful compile verdicts; cached failures are rechecked with
+                <code>CompilerManager.make</code> before the hook reports an error. This
+                prevents stale generated-symbol failures for Lombok-style getters, setters,
+                and builders from persisting until the user manually runs the IntelliJ
+                compilation check.</li>
+        </ul>
+
         <h3>1.4.4</h3>
         <ul>
             <li><b>Lombok ghost errors in the Maven fallback fixed:</b> when the IDE socket

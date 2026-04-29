@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.5]
+
+### Fixed
+- **External IntelliJ fast-path false positives.** Terminal, Sublime Merge, and other external git clients no longer block pushes from stale IntelliJ editor problem-cache entries. The loopback server now reuses only cached successful compile verdicts; cached failures are rechecked with `CompilerManager.make` before the hook reports an error. This prevents stale generated-symbol failures for Lombok-style getters, setters, and builders from persisting until the user manually runs the IntelliJ compilation check.
+
+---
+
 ## [1.4.4]
 
 ### Fixed
