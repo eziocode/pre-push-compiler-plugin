@@ -54,6 +54,37 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.4.4</h3>
+        <ul>
+            <li><b>Lombok ghost errors in the Maven fallback fixed:</b> when the IDE socket
+                is unreachable and the hook (or the in-IDE strict snapshot guard) falls back
+                to <code>mvn</code> / <code>./mvnw</code>, Maven's incremental compiler could
+                re-compile a consumer against a stale <code>target/classes</code> copy of an
+                <code>@Getter</code> / <code>@Setter</code> class — emitting false
+                <code>cannot find symbol</code> errors (e.g. <code>setCloseIcon</code>,
+                <code>setFromSheetView</code>, <code>isFromSheetView</code>) immediately
+                after a merge that introduced new Lombok-generated members. Both Maven
+                invocation sites now pass
+                <code>-Dmaven.compiler.useIncrementalCompilation=false</code> so annotation
+                processing always sees fresh sources. The IDE fast path
+                (<code>PrePushLocalServer</code> &rarr; <code>CompilerManager.make</code>)
+                was unaffected and is still used whenever IntelliJ is running.</li>
+        </ul>
+
+        <h3>1.4.3</h3>
+        <ul>
+            <li><b>GUI git client PATH reconstruction:</b> the managed hook now sources the
+                user's shell rc files (<code>.zshenv</code>, <code>.zprofile</code>,
+                <code>.zshrc</code>, <code>.bash_profile</code>, <code>.bashrc</code>,
+                <code>.profile</code>) and appends known install locations
+                (<code>/opt/homebrew/bin</code>, SDKMAN, jenv, asdf,
+                <code>$MAVEN_HOME/bin</code>, <code>$GRADLE_HOME/bin</code>) so that
+                <code>mvn</code> and <code>gradle</code> resolve correctly when the hook is
+                launched from Sublime Merge, SourceTree, GitHub Desktop, or any other GUI
+                client that strips the user's interactive PATH. No effect on repos that ship
+                a <code>./mvnw</code> or <code>./gradlew</code> wrapper.</li>
+        </ul>
+
         <h3>1.4.2</h3>
         <ul>
             <li><b>IntelliJ 2026.1 fix:</b> All four <code>projectActivity</code> entrypoints
