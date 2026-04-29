@@ -20,7 +20,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("PRE_PUSH_CHECKER_COMMAND"));
         assertTrue(script.contains("No source or build changes detected. Skipping compilation check."));
         assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $GRADLE_TASKS"));
-        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true \"$MAVEN_GOAL\""));
+        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false \"$MAVEN_GOAL\""));
     }
 
     public void testDelegatingSnippetCallsManagedHook() {

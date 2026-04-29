@@ -97,14 +97,16 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
 
     public void testSnapshotBuildCommandUsesMavenCompileGoals() {
         assertEquals(
-            List.of("mvn", "-q", "-T1C", "-Dmaven.javadoc.skip=true", "compile"),
+            List.of("mvn", "-q", "-T1C", "-Dmaven.javadoc.skip=true",
+                "-Dmaven.compiler.useIncrementalCompilation=false", "compile"),
             PrePushSnapshotGuard.buildCommand(
                 GitHookInstaller.BuildTool.MAVEN,
                 List.of("src/main/java/App.java")
             )
         );
         assertEquals(
-            List.of("./mvnw", "-q", "-T1C", "-Dmaven.javadoc.skip=true", "test-compile"),
+            List.of("./mvnw", "-q", "-T1C", "-Dmaven.javadoc.skip=true",
+                "-Dmaven.compiler.useIncrementalCompilation=false", "test-compile"),
             PrePushSnapshotGuard.buildCommand(
                 GitHookInstaller.BuildTool.MAVEN_WRAPPER,
                 List.of("src/test/java/AppTest.java")

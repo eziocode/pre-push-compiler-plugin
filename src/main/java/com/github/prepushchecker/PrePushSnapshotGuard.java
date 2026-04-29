@@ -592,11 +592,15 @@ final class PrePushSnapshotGuard {
     }
 
     private static @NotNull List<String> mavenCommand(@NotNull String executable, boolean includeTests) {
+        // -Dmaven.compiler.useIncrementalCompilation=false avoids a class of false
+        // "cannot find symbol" errors on Lombok-annotated code where the consumer is
+        // recompiled against a stale target/classes copy of the @Getter/@Setter source.
         return List.of(
             executable,
             "-q",
             "-T1C",
             "-Dmaven.javadoc.skip=true",
+            "-Dmaven.compiler.useIncrementalCompilation=false",
             includeTests ? "test-compile" : "compile"
         );
     }
