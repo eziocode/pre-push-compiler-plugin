@@ -129,6 +129,15 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             "Advanced fallback: temporarily stashes local changes, compiles HEAD, then restores them. " +
                 "Disabled by default because detached worktree validation is safer.");
 
+        JBCheckBox disableFallback = new JBCheckBox("Disable build-tool fallback (skip check when IntelliJ is not running)");
+        disableFallback.setSelected(PrePushCheckerSettings.isBuildToolFallbackDisabled(project));
+        disableFallback.setToolTipText(
+            "When enabled, pushes from terminal/Sublime Merge/etc. are skipped rather than " +
+            "falling back to Maven/Gradle if IntelliJ is not open. " +
+            "Prevents false-positive compile errors from annotation processors " +
+            "(e.g. Lombok @Builder/@Getter/@Setter) that Maven cannot resolve without " +
+            "IntelliJ's incremental annotation-processing setup.");
+
         strictGuard.addActionListener(event -> {
             boolean selected = strictGuard.isSelected();
             PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, selected);
@@ -136,6 +145,10 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         });
         stashFallback.addActionListener(event ->
             PrePushCheckerSettings.setStashSnapshotFallbackEnabled(project, stashFallback.isSelected()));
+        disableFallback.addActionListener(event -> {
+            PrePushCheckerSettings.setBuildToolFallbackDisabled(project, disableFallback.isSelected());
+            PrePushCheckerSettings.syncSettingsFile(project);
+        });
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createEmptyBorder(0, 6, 6, 6));
@@ -143,6 +156,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
         options.add(strictGuard);
         options.add(stashFallback);
+        options.add(disableFallback);
         panel.add(options, BorderLayout.WEST);
         return panel;
     }

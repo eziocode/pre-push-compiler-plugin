@@ -11,9 +11,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
-import com.intellij.problems.WolfTheProblemSolver;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -238,29 +236,17 @@ public final class PrePushLocalServer implements Disposable {
                     LocalFileSystem.getInstance().refreshFiles(files);
                 }
 
-                // Reuse a recent compile verdict when nothing has moved on disk. Lets
+                // Reuse a recent successful compile verdict when nothing has moved on disk. Lets
                 // external pushes piggyback on a just-completed manual check or an
-                // earlier push check without re-running javac.
+                // earlier push check without re-running javac. Cached failures are deliberately
+                // rechecked: IntelliJ's problem cache and narrow warmup compiles can hold stale
+                // generated-symbol errors (Lombok getters/setters/builders) until a real compile
+                // clears them.
                 CompilationErrorService svc = CompilationErrorService.getInstance(project);
                 if (!files.isEmpty()) {
                     List<String> cached = svc.tryReuse(files);
-                    if (cached != null) {
+                    if (cached != null && cached.isEmpty()) {
                         errorsRef.set(cached);
-                        latch.countDown();
-                        return;
-                    }
-                }
-
-                // Fast-fail: if the IDE already has an editor-flagged problem on any pushed
-                // file (red squiggle / unresolved symbol / ...), report it immediately.
-                // This is essentially free and catches the case where JPS's incremental cache
-                // would have silently declared the file "up-to-date".
-                if (!files.isEmpty()) {
-                    List<String> wolfProblems = collectWolfProblems(files);
-                    if (!wolfProblems.isEmpty()) {
-                        svc.recordCompletion(false,
-                            CompilationErrorService.snapshotStamps(files), wolfProblems);
-                        errorsRef.set(wolfProblems);
                         latch.countDown();
                         return;
                     }
@@ -315,19 +301,6 @@ public final class PrePushLocalServer implements Disposable {
         return fatal.get() ? null : errorsRef.get();
     }
 
-    private List<String> collectWolfProblems(List<VirtualFile> files) {
-        WolfTheProblemSolver wolf = WolfTheProblemSolver.getInstance(project);
-        List<String> out = new ArrayList<>();
-        for (VirtualFile f : files) {
-            if (wolf.isProblemFile(f)) {
-                out.add("[" + PrePushCompilationHandler.toDisplayPath(project, f)
-                    + "] Unresolved references / compilation problems reported by IDE. "
-                    + "Open the file to see the red-flagged issues.");
-            }
-        }
-        return out;
-    }
-
     private static List<VirtualFile> resolveFiles(List<String> paths) {
         if (paths.isEmpty()) return Collections.emptyList();
         LocalFileSystem lfs = LocalFileSystem.getInstance();
@@ -368,6 +341,7 @@ public final class PrePushLocalServer implements Disposable {
 
     /** Starts the per-project server on project open. Invoked by the Kotlin {@code ProjectActivity} bridge. */
     public static void runStartup(@NotNull Project project) {
+        PrePushCheckerSettings.syncSettingsFile(project);
         PrePushLocalServer srv = new PrePushLocalServer(project);
         srv.start();
         com.intellij.openapi.util.Disposer.register(project, srv);
