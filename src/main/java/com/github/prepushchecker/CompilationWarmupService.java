@@ -12,14 +12,10 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileDocumentManagerListener;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.startup.ProjectActivity;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.VirtualFile;
-import kotlin.Unit;
-import kotlin.coroutines.Continuation;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
 import java.util.Collections;
 import java.util.LinkedHashSet;
@@ -193,12 +189,8 @@ public final class CompilationWarmupService implements Disposable {
     }
 
     /** Creates the project service on startup so the listener has somewhere to route events. */
-    public static final class Starter implements ProjectActivity {
-        @Override
-        public @Nullable Object execute(@NotNull Project project, @NotNull Continuation<? super Unit> continuation) {
-            CompilationWarmupService svc = getInstance(project);
-            Disposer.register(project, svc);
-            return Unit.INSTANCE;
-        }
+    public static void runStartup(@NotNull Project project) {
+        CompilationWarmupService svc = getInstance(project);
+        Disposer.register(project, svc);
     }
 }

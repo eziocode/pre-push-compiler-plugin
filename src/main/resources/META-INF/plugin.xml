@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.4.1</version>
+    <version>1.4.2</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,21 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.4.2</h3>
+        <ul>
+            <li><b>IntelliJ 2026.1 fix:</b> All four <code>projectActivity</code> entrypoints
+                (managed pre-push hook installer, external hook log loader, local TCP server,
+                warmup service) are now Kotlin <code>ProjectActivity</code> implementations
+                that delegate to the existing Java logic. IntelliJ 2026.1 silently stopped
+                invoking Java <code>ProjectActivity</code> implementations, which caused the
+                local TCP server to never start — terminal / Sublime Merge / SourceTree pushes
+                fell through to the raw Maven/Gradle fallback (and surfaced false "cannot find
+                symbol" errors in projects whose Maven build relies on the IDE for Lombok-style
+                annotation processing). After upgrading and restarting the IDE,
+                <code>.idea/pre-push-checker/server.port</code> is written again and external
+                pushes reuse IntelliJ's incremental compiler.</li>
+        </ul>
+
         <h3>1.4.1</h3>
         <ul>
             <li><b>Marketplace compatibility cleanup:</b> removed deprecated
@@ -163,10 +178,10 @@
 
     <extensions defaultExtensionNs="com.intellij">
         <prePushHandler implementation="com.github.prepushchecker.PrePushCompilationHandler"/>
-        <projectActivity implementation="com.github.prepushchecker.GitHookInstaller"/>
-        <projectActivity implementation="com.github.prepushchecker.ExternalPushErrorLoader"/>
-        <projectActivity implementation="com.github.prepushchecker.PrePushLocalServer$Starter"/>
-        <projectActivity implementation="com.github.prepushchecker.CompilationWarmupService$Starter"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$GitHookInstallerActivity"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$ExternalPushErrorLoaderActivity"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$PrePushLocalServerActivity"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$CompilationWarmupServiceActivity"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationWarmupService"/>
         <registryKey key="prepushchecker.warmup.enabled"

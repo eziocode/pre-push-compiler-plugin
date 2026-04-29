@@ -1,5 +1,6 @@
 plugins {
     id("java")
+    kotlin("jvm") version "1.9.25"
     id("org.jetbrains.intellij") version "1.17.4"
 }
 
@@ -22,6 +23,12 @@ tasks {
         sourceCompatibility = "17"
         targetCompatibility = "17"
         options.encoding = "UTF-8"
+    }
+
+    withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
 
     patchPluginXml {
