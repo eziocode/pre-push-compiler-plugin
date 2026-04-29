@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+---
+
+## [1.4.4]
+
+### Fixed
+- **Lombok ghost errors in the Maven fallback.** When the IDE socket is unreachable and the hook (or the in-IDE strict snapshot guard) falls back to `mvn` / `./mvnw`, Maven's incremental compiler could re-compile a consumer against a stale `target/classes` copy of an `@Getter` / `@Setter` class — emitting false `cannot find symbol` errors (e.g. `setCloseIcon`, `setFromSheetView`, `isFromSheetView`) immediately after a merge that introduced new Lombok-generated members. Both Maven invocation sites now pass `-Dmaven.compiler.useIncrementalCompilation=false` so annotation processing always sees fresh sources. The IDE fast path (`PrePushLocalServer` → `CompilerManager.make`) was unaffected and is still used whenever IntelliJ is running.
+
+---
+
 ## [1.4.3]
 
 ### Fixed
