@@ -3,9 +3,11 @@ package com.github.prepushchecker;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.compiler.CompileContext;
 import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
+import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
@@ -253,9 +255,38 @@ public final class PrePushLocalServer implements Disposable {
                 }
 
                 final List<VirtualFile> recordedFiles = files;
-                com.intellij.openapi.compiler.CompileStatusNotification callback =
-                    (aborted, errorCount, warningCount, ctx) -> {
+                class RetryingCompileCallback implements CompileStatusNotification {
+                    private boolean projectScope;
+
+                    private RetryingCompileCallback(boolean projectScope) {
+                        this.projectScope = projectScope;
+                    }
+
+                    @Override
+                    public void finished(boolean aborted, int errorCount, int warningCount, CompileContext ctx) {
+                        boolean retryingAsProject = false;
                         try {
+                            if (shouldRetryProjectScopeAfterScopedFailure(projectScope, aborted, errorCount)) {
+                                retryingAsProject = true;
+                                projectScope = true;
+                                LOG.info("External pre-push scoped compile reported errors; retrying project compile before reporting them.");
+                                ApplicationManager.getApplication().invokeLater(() -> {
+                                    try {
+                                        if (project.isDisposed()) {
+                                            fatal.set(true);
+                                            latch.countDown();
+                                            return;
+                                        }
+                                        cm.make(cm.createProjectCompileScope(project), this);
+                                    } catch (Throwable t) {
+                                        LOG.warn("CompilerManager project retry failed", t);
+                                        fatal.set(true);
+                                        latch.countDown();
+                                    }
+                                }, ModalityState.defaultModalityState());
+                                return;
+                            }
+
                             List<String> result;
                             if (aborted) {
                                 result = Collections.singletonList("Compilation was aborted.");
@@ -268,14 +299,21 @@ public final class PrePushLocalServer implements Disposable {
                             errorsRef.set(result);
                             if (!aborted) {
                                 svc.recordCompletion(
-                                    recordedFiles.isEmpty(),
-                                    CompilationErrorService.snapshotStamps(recordedFiles),
+                                    projectScope,
+                                    projectScope
+                                        ? Collections.emptyMap()
+                                        : CompilationErrorService.snapshotStamps(recordedFiles),
                                     result);
                             }
                         } finally {
-                            latch.countDown();
+                            if (!retryingAsProject) {
+                                latch.countDown();
+                            }
                         }
-                    };
+                    }
+                }
+
+                CompileStatusNotification callback = new RetryingCompileCallback(files.isEmpty());
 
                 if (!files.isEmpty()) {
                     // Same adaptive scope as the in-IDE push path: include dependent modules so
@@ -299,6 +337,10 @@ public final class PrePushLocalServer implements Disposable {
             return null;
         }
         return fatal.get() ? null : errorsRef.get();
+    }
+
+    static boolean shouldRetryProjectScopeAfterScopedFailure(boolean projectScope, boolean aborted, int errorCount) {
+        return !projectScope && !aborted && errorCount > 0;
     }
 
     private static List<VirtualFile> resolveFiles(List<String> paths) {

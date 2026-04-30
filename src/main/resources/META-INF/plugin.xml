@@ -63,7 +63,9 @@
                 <code>CompilerManager.make</code> before the hook reports an error. This
                 prevents stale generated-symbol failures for Lombok-style getters, setters,
                 and builders from persisting until the user manually runs the IntelliJ
-                compilation check.</li>
+                compilation check. If the external fast-path's scoped make still reports
+                errors, it now retries once with the same project-scope make used by the
+                tool-window compilation check before blocking the push.</li>
         </ul>
 
         <h3>1.4.4</h3>
