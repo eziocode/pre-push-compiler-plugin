@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.6]
+
+### Changed
+- **Prefer IDE compilation more reliably when IntelliJ is running in background.** If the first socket attempt fails, the managed pre-push hook now detects a running IntelliJ process and retries IDE compile checks briefly before falling back to Gradle/Maven.
+
+### Performance
+- **Fallback compile result reuse for unchanged HEAD.** When fallback mode is used (IDE unavailable), the hook now reuses the last successful fallback result for the same `HEAD` and compile mode (`main`/`test`/`all`), avoiding redundant rebuilds on repeat pushes with no new commits.
+
+---
+
 ## [1.4.5]
 
 ### Fixed

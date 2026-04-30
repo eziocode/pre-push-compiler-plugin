@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.4.5</version>
+    <version>1.4.6</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.4.6</h3>
+        <ul>
+            <li><b>External hook now waits for a running IntelliJ before fallback:</b> when the
+                first IDE socket probe fails, the managed pre-push hook now detects an active
+                IntelliJ process and retries the IDE compile request for a short window before
+                dropping to Gradle/Maven fallback. This reduces false fallback usage when the IDE
+                is running in the background and the loopback service is still initializing.</li>
+            <li><b>Fallback compile cache for unchanged HEAD:</b> when IntelliJ is unavailable and
+                the hook uses build-tool fallback, successful results are now reused for identical
+                HEAD + compile mode (main/test/all). Repeated pushes without new commits avoid
+                redundant backend compiles while preserving existing failure behavior.</li>
+        </ul>
+
         <h3>1.4.5</h3>
         <ul>
             <li><b>External IntelliJ fast-path false positives fixed:</b> terminal,
