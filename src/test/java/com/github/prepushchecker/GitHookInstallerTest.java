@@ -21,6 +21,8 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("No source or build changes detected. Skipping compilation check."));
         assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $GRADLE_TASKS"));
         assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false \"$MAVEN_GOAL\""));
+        assertTrue(script.contains("setup_maven_java_home"));
+        assertTrue(script.contains("preferredJavaHome="));
         assertTrue(script.contains("try_ide_compile_with_retry"));
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
         assertTrue(script.contains("LAST_FALLBACK_OK_HEAD_FILE"));

@@ -2,6 +2,8 @@ package com.github.prepushchecker;
 
 import com.intellij.ide.util.PropertiesComponent;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.projectRoots.Sdk;
+import com.intellij.openapi.roots.ProjectRootManager;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -61,11 +63,25 @@ final class PrePushCheckerSettings {
         try {
             Files.createDirectories(settingsFile.getParent());
             boolean disableFallback = isBuildToolFallbackDisabled(project);
-            Files.writeString(settingsFile,
-                "disableBuildToolFallback=" + disableFallback + "\n",
-                StandardCharsets.UTF_8);
+            StringBuilder content = new StringBuilder();
+            content.append("disableBuildToolFallback=").append(disableFallback).append('\n');
+            String preferredJavaHome = resolveProjectJavaHome(project);
+            if (preferredJavaHome != null) {
+                content.append("preferredJavaHome=").append(preferredJavaHome).append('\n');
+            }
+            Files.writeString(settingsFile, content.toString(), StandardCharsets.UTF_8);
         } catch (IOException ignored) {
             // Non-fatal; hook falls back to default (fallback enabled).
         }
+    }
+
+    private static String resolveProjectJavaHome(@NotNull Project project) {
+        Sdk sdk = ProjectRootManager.getInstance(project).getProjectSdk();
+        if (sdk == null) return null;
+        String homePath = sdk.getHomePath();
+        if (homePath == null || homePath.isBlank()) return null;
+        Path javaBin = Path.of(homePath, "bin", "java");
+        if (!Files.isExecutable(javaBin)) return null;
+        return homePath;
     }
 }
