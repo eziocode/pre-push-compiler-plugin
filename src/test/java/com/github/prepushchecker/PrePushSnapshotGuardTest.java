@@ -163,4 +163,43 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
             PrePushSnapshotGuard.filterSnapshotErrors(errors, List.of("pom.xml"))
         );
     }
+
+    public void testLombokGeneratedSymbolErrorDetectsGetterPattern() {
+        assertTrue(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (42, 13)] cannot find symbol | symbol:   method isSkipClickModuleAndSelectingRecords()"));
+        assertTrue(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (10, 5)] cannot find symbol | symbol:   method getFieldName()"));
+        assertTrue(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (10, 5)] cannot find symbol | symbol:   method setFieldName()"));
+    }
+
+    public void testLombokGeneratedSymbolErrorDetectsBuilderPattern() {
+        assertTrue(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (42, 13)] cannot find symbol | symbol:   class ApprovalProcessRuleBuilder"));
+    }
+
+    public void testLombokGeneratedSymbolErrorRejectsNonGeneratedMethod() {
+        assertFalse(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (42, 13)] cannot find symbol | symbol:   method doSomething()"));
+        assertFalse(PrePushSnapshotGuard.isLikelyLombokGeneratedSymbolError(
+            "[src/main/java/App.java (10, 5)] ';' expected"));
+    }
+
+    public void testAllLombokGeneratedSymbolErrorsSuppressesAllMatchingErrors() {
+        assertTrue(PrePushSnapshotGuard.allLombokGeneratedSymbolErrors(List.of(
+            "[src/main/java/App.java (42, 13)] cannot find symbol | symbol:   method isFlag()",
+            "[src/main/java/App.java (50, 8)] cannot find symbol | symbol:   method getName()"
+        )));
+    }
+
+    public void testAllLombokGeneratedSymbolErrorsRejectsMixedErrors() {
+        assertFalse(PrePushSnapshotGuard.allLombokGeneratedSymbolErrors(List.of(
+            "[src/main/java/App.java (42, 13)] cannot find symbol | symbol:   method isFlag()",
+            "[src/main/java/App.java (50, 8)] cannot find symbol | symbol:   method doSomething()"
+        )));
+    }
+
+    public void testAllLombokGeneratedSymbolErrorsRejectsEmpty() {
+        assertFalse(PrePushSnapshotGuard.allLombokGeneratedSymbolErrors(List.of()));
+    }
 }

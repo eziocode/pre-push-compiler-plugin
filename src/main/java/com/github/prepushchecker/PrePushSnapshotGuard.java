@@ -33,6 +33,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 final class PrePushSnapshotGuard {
     private static final Logger LOG = Logger.getInstance(PrePushSnapshotGuard.class);
@@ -40,6 +41,11 @@ final class PrePushSnapshotGuard {
     private static final long WAIT_SLICE_MILLIS = 250L;
     private static final long GIT_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(60);
     private static final long SNAPSHOT_BUILD_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(5);
+
+    private static final Pattern LOMBOK_GENERATED_SYMBOL = Pattern.compile(
+        "symbol:\\s+(method\\s+(get|set|is)[A-Za-z0-9_]*|class\\s+[A-Za-z0-9_.$]*Builder)",
+        Pattern.CASE_INSENSITIVE
+    );
 
     private PrePushSnapshotGuard() {
     }
@@ -712,7 +718,12 @@ final class PrePushSnapshotGuard {
         List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
         List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
         if (!parsedErrors.isEmpty()) {
-            return filterSnapshotErrors(parsedErrors, relevantPaths);
+            List<String> filtered = filterSnapshotErrors(parsedErrors, relevantPaths);
+            if (!filtered.isEmpty() && projectUsesLombok(worktree) && allLombokGeneratedSymbolErrors(filtered)) {
+                LOG.info("Snapshot build reported only Lombok-generated symbol errors; suppressing false positives.");
+                return List.of();
+            }
+            return filtered;
         }
         return commandFailure(summary, result, project, worktree);
     }
@@ -758,6 +769,46 @@ final class PrePushSnapshotGuard {
             }
         }
         return false;
+    }
+
+    static boolean isLikelyLombokGeneratedSymbolError(@NotNull String parsedError) {
+        return parsedError.contains("cannot find symbol")
+            && LOMBOK_GENERATED_SYMBOL.matcher(parsedError).find();
+    }
+
+    static boolean allLombokGeneratedSymbolErrors(@NotNull List<String> errors) {
+        if (errors.isEmpty()) return false;
+        for (String error : errors) {
+            if (!isLikelyLombokGeneratedSymbolError(error)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean projectUsesLombok(@NotNull Path projectRoot) {
+        if (Files.exists(projectRoot.resolve("lombok.config"))) return true;
+        if (fileContainsText(projectRoot.resolve("pom.xml"), "lombok")) return true;
+        if (fileContainsText(projectRoot.resolve("build.gradle"), "lombok")) return true;
+        if (fileContainsText(projectRoot.resolve("build.gradle.kts"), "lombok")) return true;
+        // Multi-module Maven: check one level of submodule poms.
+        File[] children = projectRoot.toFile().listFiles();
+        if (children != null) {
+            for (File child : children) {
+                if (child.isDirectory() && fileContainsText(child.toPath().resolve("pom.xml"), "lombok")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean fileContainsText(@NotNull Path path, @NotNull String needle) {
+        try {
+            return Files.exists(path) && Files.readString(path).contains(needle);
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     private static @NotNull List<String> normalizeSnapshotOutput(

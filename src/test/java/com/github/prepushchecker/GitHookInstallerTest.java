@@ -29,6 +29,9 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
         assertTrue(script.contains("compile_failure_touches_pushed_files"));
         assertTrue(script.contains("looks_like_generated_symbol_false_positive"));
+        assertTrue(script.contains("project_uses_lombok"));
+        assertTrue(script.contains("only_generated_symbol_errors"));
+        assertTrue(script.contains("Build-tool fallback reported only Lombok-generated symbol errors"));
         assertTrue(script.contains("Build-tool fallback reported generated-symbol errors outside pushed files"));
     }
 
