@@ -433,35 +433,224 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         ) {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
-                java.util.List<String> failures = new java.util.ArrayList<>();
+                java.util.List<String> otherFailures = new java.util.ArrayList<>();
                 java.util.List<String> successes = new java.util.ArrayList<>();
+                // roots that failed because the remote is ahead (rebase/merge needed)
+                java.util.LinkedHashMap<String, String> rebaseNeeded = new java.util.LinkedHashMap<>();
                 for (String root : roots) {
                     indicator.setText("git push: " + root);
                     String result = runGitPush(root);
-                    if (result == null) successes.add(root);
-                    else failures.add(root + ": " + result);
+                    if (result == null) {
+                        successes.add(root);
+                    } else if (isRebaseRequired(result)) {
+                        rebaseNeeded.put(root, result);
+                    } else {
+                        otherFailures.add(root + ": " + result);
+                    }
                 }
                 ApplicationManager.getApplication().invokeLater(() -> {
                     if (project.isDisposed()) return;
-                    if (failures.isEmpty()) {
+
+                    // Show error notification for non-rebase failures
+                    if (!otherFailures.isEmpty()) {
+                        PrePushCompilationHandler.notify(
+                            project,
+                            "Auto-retry push failed",
+                            String.join("\n", otherFailures)
+                                + (successes.isEmpty() ? "" : "\nSucceeded: " + String.join(", ", successes)),
+                            com.intellij.notification.NotificationType.ERROR
+                        );
+                    } else if (rebaseNeeded.isEmpty()) {
                         PrePushCompilationHandler.notify(
                             project,
                             "Push succeeded",
                             "Auto-retry pushed " + successes.size() + " repository/repositories.",
                             com.intellij.notification.NotificationType.INFORMATION
                         );
-                    } else {
-                        PrePushCompilationHandler.notify(
-                            project,
-                            "Auto-retry push failed",
-                            String.join("\n", failures)
-                                + (successes.isEmpty() ? "" : "\nSucceeded: " + String.join(", ", successes)),
-                            com.intellij.notification.NotificationType.ERROR
-                        );
+                    }
+
+                    // Prompt user per root that needs rebase/merge
+                    for (var entry : rebaseNeeded.entrySet()) {
+                        showRebaseOrMergeDialog(project, entry.getKey(), entry.getValue());
                     }
                 });
             }
         });
+    }
+
+    private static boolean isRebaseRequired(String gitOutput) {
+        if (gitOutput == null) return false;
+        String lower = gitOutput.toLowerCase(java.util.Locale.ROOT);
+        return lower.contains("non-fast-forward")
+            || lower.contains("fetch first")
+            || lower.contains("the tip of your current branch is behind")
+            || lower.contains("the remote contains work that you do not have locally");
+    }
+
+    private static void showRebaseOrMergeDialog(Project project, String root, String errorOutput) {
+        String shortRoot = new java.io.File(root).getName();
+        String message = "Push to '" + shortRoot + "' was rejected because the remote contains newer commits.\n\n"
+            + "How would you like to resolve this?\n\n"
+            + "• Rebase & Push — rebase your commits on top of the remote, then push.\n"
+            + "• Merge & Push — merge remote changes into your branch, then push.\n"
+            + "• Force Push — force-push with lease (overwrites remote; use with caution).\n"
+            + "• Cancel — do nothing.\n\n"
+            + "Git output:\n" + errorOutput;
+        String[] options = {"Rebase & Push", "Merge & Push", "Force Push", "Cancel"};
+        int choice = com.intellij.openapi.ui.Messages.showDialog(
+            project,
+            message,
+            "Push Rejected — Remote Has Newer Commits",
+            options,
+            0,
+            com.intellij.openapi.ui.Messages.getWarningIcon()
+        );
+        switch (choice) {
+            case 0 -> executeRebaseAndPush(project, root);
+            case 1 -> executeMergeAndPush(project, root);
+            case 2 -> executeForcePush(project, root);
+            default -> { /* cancel / dialog dismissed */ }
+        }
+    }
+
+    private static void executeRebaseAndPush(Project project, String root) {
+        ProgressManager.getInstance().run(new Task.Backgroundable(
+            project, "Rebasing & Pushing", true
+        ) {
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                indicator.setText("git pull --rebase: " + root);
+                String pullResult = runGitCommand(root, "git", "pull", "--rebase");
+                if (pullResult != null) {
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (project.isDisposed()) return;
+                        PrePushCompilationHandler.notify(project, "Rebase failed",
+                            root + ": " + pullResult + "\n\nResolve conflicts manually and push again.",
+                            com.intellij.notification.NotificationType.ERROR);
+                    });
+                    refreshVfs(root);
+                    return;
+                }
+                refreshVfs(root);
+                indicator.setText("git push: " + root);
+                String pushResult = runGitPush(root);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (project.isDisposed()) return;
+                    if (pushResult == null) {
+                        PrePushCompilationHandler.notify(project, "Push succeeded",
+                            "Rebased and pushed " + root + " successfully.",
+                            com.intellij.notification.NotificationType.INFORMATION);
+                    } else {
+                        PrePushCompilationHandler.notify(project, "Push failed after rebase",
+                            root + ": " + pushResult,
+                            com.intellij.notification.NotificationType.ERROR);
+                    }
+                });
+            }
+        });
+    }
+
+    private static void executeMergeAndPush(Project project, String root) {
+        ProgressManager.getInstance().run(new Task.Backgroundable(
+            project, "Merging & Pushing", true
+        ) {
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                indicator.setText("git pull --no-rebase: " + root);
+                String pullResult = runGitCommand(root, "git", "pull", "--no-rebase");
+                if (pullResult != null) {
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (project.isDisposed()) return;
+                        PrePushCompilationHandler.notify(project, "Merge failed",
+                            root + ": " + pullResult + "\n\nResolve conflicts manually and push again.",
+                            com.intellij.notification.NotificationType.ERROR);
+                    });
+                    refreshVfs(root);
+                    return;
+                }
+                refreshVfs(root);
+                indicator.setText("git push: " + root);
+                String pushResult = runGitPush(root);
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (project.isDisposed()) return;
+                    if (pushResult == null) {
+                        PrePushCompilationHandler.notify(project, "Push succeeded",
+                            "Merged and pushed " + root + " successfully.",
+                            com.intellij.notification.NotificationType.INFORMATION);
+                    } else {
+                        PrePushCompilationHandler.notify(project, "Push failed after merge",
+                            root + ": " + pushResult,
+                            com.intellij.notification.NotificationType.ERROR);
+                    }
+                });
+            }
+        });
+    }
+
+    private static void executeForcePush(Project project, String root) {
+        ProgressManager.getInstance().run(new Task.Backgroundable(
+            project, "Force Pushing", true
+        ) {
+            @Override
+            public void run(@NotNull ProgressIndicator indicator) {
+                indicator.setText("git push --force-with-lease: " + root);
+                String result = runGitCommand(root, "git", "push", "--force-with-lease");
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (project.isDisposed()) return;
+                    if (result == null) {
+                        PrePushCompilationHandler.notify(project, "Force push succeeded",
+                            "Force-pushed " + root + " successfully.",
+                            com.intellij.notification.NotificationType.INFORMATION);
+                    } else {
+                        PrePushCompilationHandler.notify(project, "Force push failed",
+                            root + ": " + result,
+                            com.intellij.notification.NotificationType.ERROR);
+                    }
+                });
+            }
+        });
+    }
+
+    /**
+     * Runs an arbitrary git command and returns null on success or the combined output on failure.
+     * Mirrors the same timeout/credential-guard behaviour as {@link #runGitPush}.
+     */
+    private static @org.jetbrains.annotations.Nullable String runGitCommand(String repoRoot, String... command) {
+        long startNanos = System.nanoTime();
+        try {
+            ProcessBuilder pb = new ProcessBuilder(command)
+                .directory(new java.io.File(repoRoot))
+                .redirectErrorStream(true)
+                .redirectInput(ProcessBuilder.Redirect.from(new java.io.File("/dev/null")));
+            pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+            pb.environment().put("GIT_ASKPASS", "");
+            pb.environment().put("SSH_ASKPASS", "");
+            Process p = pb.start();
+            StringBuilder out = new StringBuilder();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(p.getInputStream(), java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    if (out.length() > 0) out.append('\n');
+                    out.append(line);
+                }
+            }
+            if (!p.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                p.destroyForcibly();
+                return "timed out after 120s";
+            }
+            long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            LOG.info(String.join(" ", command) + " at " + repoRoot
+                + " exit=" + p.exitValue() + " elapsedMs=" + elapsedMs);
+            return p.exitValue() == 0 ? null : out.toString().trim();
+        } catch (Exception e) {
+            return e.getMessage();
+        }
+    }
+
+    private static void refreshVfs(String repoRoot) {
+        LocalFileSystem.getInstance().refreshIoFiles(
+            java.util.Collections.singletonList(new java.io.File(repoRoot)), true, true, null);
     }
 
     private static @org.jetbrains.annotations.Nullable String runGitPush(String repoRoot) {
