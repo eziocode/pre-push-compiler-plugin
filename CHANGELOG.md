@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.4.8]
+
+### Fixed
+- **Reduced false push-blocks in external fallback compilation.** When IntelliJ socket compilation is unavailable and the managed hook falls back to Maven/Gradle, failures that look like generated-symbol noise (for example Lombok-style `get*`/`set*`/`is*` or `*Builder` `cannot find symbol`) are no longer treated as blocking if they do not reference files included in the outgoing push.
+
+### Changed
+- Refactored managed hook fallback checks into explicit script helpers (`compile_failure_touches_pushed_files`, `looks_like_generated_symbol_false_positive`) and tracked build-file changes separately so strict blocking behavior is preserved for build-graph edits.
+
+---
+
 ## [1.4.6]
 
 ### Changed

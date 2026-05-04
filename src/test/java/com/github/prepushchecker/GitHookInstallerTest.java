@@ -27,6 +27,9 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
         assertTrue(script.contains("LAST_FALLBACK_OK_HEAD_FILE"));
         assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
+        assertTrue(script.contains("compile_failure_touches_pushed_files"));
+        assertTrue(script.contains("looks_like_generated_symbol_false_positive"));
+        assertTrue(script.contains("Build-tool fallback reported generated-symbol errors outside pushed files"));
     }
 
     public void testDelegatingSnippetCallsManagedHook() {
