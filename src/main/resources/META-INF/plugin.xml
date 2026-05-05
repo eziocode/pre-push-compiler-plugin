@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.5.0</version>
+    <version>1.5.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,23 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.5.1</h3>
+        <ul>
+            <li><b>External push race fix (Sublime Merge / terminal):</b> the managed hook now
+                waits longer for IntelliJ's local compiler socket before falling back to Maven/Gradle,
+                preventing first-attempt false failures that succeeded on immediate retry.</li>
+            <li><b>Generated-symbol fallback rescue:</b> when build-tool fallback reports
+                getter/setter-style generated symbol errors (<code>get*</code>, <code>set*</code>,
+                <code>is*</code>) and IntelliJ is running, the hook retries IntelliJ incremental
+                compile once before aborting the push.</li>
+            <li><b>Explicit fallback diagnostics:</b> hook logs now include the reason IntelliJ
+                incremental compile was unavailable, so external push failures are easier to debug
+                from <code>.idea/pre-push-checker/last-run.log</code>.</li>
+            <li><b>Proactive uninstall cleanup:</b> the plugin now tracks managed repos and cleans
+                their managed hook/cache/exclude artifacts during uninstall, including repos that are
+                not currently open in the IDE.</li>
+        </ul>
+
         <h3>1.5.0</h3>
         <ul>
             <li><b>Self-cleanup on uninstall:</b> when the plugin is uninstalled, a global marker

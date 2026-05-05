@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.5.1]
+
+### Fixed
+- **External push false-block race (Sublime Merge / terminal).** The managed hook now waits longer for IntelliJ's local compile service to come online before falling back to Maven/Gradle, which fixes first-attempt push failures that were passing on an immediate second push.
+- **Generated getter/setter fallback noise.** When build-tool fallback reports generated-symbol style `cannot find symbol` failures (`get*`/`set*`/`is*`) and IntelliJ is running, the hook now retries IntelliJ incremental compile once before aborting the push.
+- **Uninstall leftovers in previously-open repos.** The plugin now tracks managed repositories globally and proactively cleans their managed hook/cache/exclude entries on uninstall, not only for projects currently open in the IDE.
+
+### Changed
+- Added explicit fallback reason logging when IntelliJ incremental compile cannot be reached, making Sublime/terminal hook failures directly diagnosable from `.idea/pre-push-checker/last-run.log`.
+
+---
+
 ## [1.4.8]
 
 ### Fixed
