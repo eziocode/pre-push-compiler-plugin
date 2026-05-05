@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.4.6</version>
+    <version>1.5.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,25 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.5.0</h3>
+        <ul>
+            <li><b>Self-cleanup on uninstall:</b> when the plugin is uninstalled, a global marker
+                (<code>~/.prepush-checker/installed</code>) is removed. Orphaned hooks in repos
+                that were not open during uninstall now detect the missing marker on the next push
+                and automatically remove themselves, the managed hook script, the cache directory,
+                and the <code>.git/info/exclude</code> block. No manual cleanup needed.</li>
+            <li><b>Push Anyway (IDE):</b> the compilation error dialog now includes a
+                <em>Push Anyway</em> button in both the synchronous (cached errors, IDE problems)
+                and background compilation paths. A one-shot bypass token is written so the git
+                hook also allows the push through.</li>
+            <li><b>Force Next Push (terminal / Sublime Merge / external clients):</b> a new toggle
+                action in the Compilation Checker toolbar lets users skip the compilation check for
+                the next push attempt. The bypass is single-use (consumed on the next push) and
+                expires after 1 hour to prevent stale flags.</li>
+            <li><b>Settings panel reorganized:</b> checkboxes are now grouped under a titled
+                &ldquo;Settings&rdquo; border for a cleaner, more organized look.</li>
+        </ul>
+
         <h3>1.4.6</h3>
         <ul>
             <li><b>External hook now waits for a running IntelliJ before fallback:</b> when the

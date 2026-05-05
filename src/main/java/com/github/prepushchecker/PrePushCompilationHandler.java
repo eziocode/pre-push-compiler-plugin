@@ -19,6 +19,7 @@ import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
+import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.registry.Registry;
@@ -53,6 +54,8 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return "Pre-Push Compilation Checker";
     }
 
+    enum DialogOutcome { RESOLVED, ABORT, PUSH_ANYWAY }
+
     @Override
     public @NotNull Result handle(
         @NotNull Project project,
@@ -77,7 +80,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
             if (!problemFiles.isEmpty()) {
                 errorService.setErrors(problemFiles);
-                boolean resolved = showDialog(
+                DialogOutcome outcome = showDialog(
                     project,
                     indicator.getModalityState(),
                     "Push Blocked - IDE Problems Found",
@@ -86,7 +89,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     _ind -> collectKnownProblemFiles(project, changeSet.getSourceFiles()),
                     abortCommitAction
                 );
-                if (!resolved) return Result.ABORT;
+                if (outcome == DialogOutcome.PUSH_ANYWAY) {
+                    PrePushCheckerSettings.setForcePushBypass(project);
+                    return Result.OK;
+                }
+                if (outcome != DialogOutcome.RESOLVED) return Result.ABORT;
             }
 
             // Reuse a recent compile verdict when nothing has moved on disk since it ran.
@@ -107,7 +114,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
             if (!errors.isEmpty()) {
                 errorService.setErrors(errors);
-                boolean resolved = showDialog(
+                DialogOutcome outcome = showDialog(
                     project,
                     indicator.getModalityState(),
                     "Push Blocked - Compilation Errors Found",
@@ -118,8 +125,12 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                         : compileFiles(project, changeSet.getSourceFiles(), freshInd),
                     abortCommitAction
                 );
-                if (resolved) errorService.setErrors(Collections.emptyList());
-                return resolved ? Result.OK : Result.ABORT;
+                if (outcome == DialogOutcome.PUSH_ANYWAY) {
+                    PrePushCheckerSettings.setForcePushBypass(project);
+                    return Result.OK;
+                }
+                if (outcome == DialogOutcome.RESOLVED) errorService.setErrors(Collections.emptyList());
+                return outcome == DialogOutcome.RESOLVED ? Result.OK : Result.ABORT;
             }
 
             errorService.setErrors(Collections.emptyList());
@@ -404,7 +415,10 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 Runnable reset = buildAbortCommitAction(project, pushDetails);
                 if (reset != null) reset.run();
             }
-            case 1 -> executeAutoPush(project, pushDetails);
+            case 1 -> {
+                PrePushCheckerSettings.setForcePushBypass(project);
+                executeAutoPush(project, pushDetails);
+            }
             case 2, 3 -> { /* no-op */ }
             default -> { /* dialog dismissed */ }
         }
@@ -849,7 +863,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return relativePath != null ? relativePath : file.getPath();
     }
 
-    private static boolean showDialog(
+    private static DialogOutcome showDialog(
         Project project,
         ModalityState modalityState,
         String title,
@@ -858,13 +872,21 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         Function<ProgressIndicator, List<String>> refreshAction,
         @org.jetbrains.annotations.Nullable Runnable abortCommitAction
     ) {
-        boolean[] result = {false};
+        DialogOutcome[] result = {DialogOutcome.ABORT};
         ApplicationManager.getApplication().invokeAndWait(
             () -> {
                 CompilationReportDialog dialog = new CompilationReportDialog(
                     project, title, header, items, refreshAction, abortCommitAction
                 );
-                result[0] = dialog.showAndGet();
+                dialog.show();
+                int exitCode = dialog.getExitCode();
+                if (exitCode == DialogWrapper.OK_EXIT_CODE) {
+                    result[0] = DialogOutcome.RESOLVED;
+                } else if (exitCode == CompilationReportDialog.PUSH_ANYWAY_EXIT_CODE) {
+                    result[0] = DialogOutcome.PUSH_ANYWAY;
+                } else {
+                    result[0] = DialogOutcome.ABORT;
+                }
             },
             modalityState
         );

@@ -26,6 +26,11 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
                 || !OUR_PLUGIN_ID.equals(descriptor.getPluginId().getIdString())) {
             return;
         }
+
+        // Remove the global marker so orphaned hooks in repos that are not currently
+        // open will self-cleanup on their next invocation.
+        GitHookInstaller.removeGlobalMarker();
+
         for (Project project : ProjectManager.getInstance().getOpenProjects()) {
             if (project.isDisposed()) continue;
             String basePath = project.getBasePath();

@@ -19,6 +19,9 @@ final class PrePushCheckerSettings {
     private static final String DISABLE_BUILD_TOOL_FALLBACK_KEY =
         "prepushchecker.buildToolFallback.disabled";
 
+    private static final String BYPASS_TOKEN_NAME = "bypass-token";
+    private static final long BYPASS_TOKEN_MAX_AGE_MS = 60 * 60 * 1000L; // 1 hour
+
     private PrePushCheckerSettings() {
     }
 
@@ -73,6 +76,50 @@ final class PrePushCheckerSettings {
         } catch (IOException ignored) {
             // Non-fatal; hook falls back to default (fallback enabled).
         }
+    }
+
+    /**
+     * Creates a one-shot bypass token so the next push attempt skips the compilation
+     * check. The hook consumes (deletes) the token, making it single-use. Expires
+     * after {@link #BYPASS_TOKEN_MAX_AGE_MS} to avoid stale flags.
+     */
+    static void setForcePushBypass(@NotNull Project project) {
+        String basePath = project.getBasePath();
+        if (basePath == null || basePath.isBlank()) return;
+        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
+        try {
+            Files.createDirectories(tokenFile.getParent());
+            Files.writeString(tokenFile, String.valueOf(System.currentTimeMillis()) + '\n',
+                StandardCharsets.UTF_8);
+        } catch (IOException ignored) {}
+    }
+
+    /**
+     * Returns {@code true} if a valid (non-expired) bypass token exists.
+     */
+    static boolean isForcePushBypassActive(@NotNull Project project) {
+        String basePath = project.getBasePath();
+        if (basePath == null || basePath.isBlank()) return false;
+        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
+        if (!Files.exists(tokenFile)) return false;
+        try {
+            String content = Files.readString(tokenFile, StandardCharsets.UTF_8).trim();
+            long timestamp = Long.parseLong(content);
+            return (System.currentTimeMillis() - timestamp) < BYPASS_TOKEN_MAX_AGE_MS;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Removes the bypass token (called when the user toggles the force push off,
+     * or after the token has been consumed by a push).
+     */
+    static void clearForcePushBypass(@NotNull Project project) {
+        String basePath = project.getBasePath();
+        if (basePath == null || basePath.isBlank()) return;
+        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
+        try { Files.deleteIfExists(tokenFile); } catch (IOException ignored) {}
     }
 
     private static String resolveProjectJavaHome(@NotNull Project project) {

@@ -8,6 +8,8 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.actionSystem.Presentation;
+import com.intellij.openapi.actionSystem.Toggleable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompilerManager;
@@ -55,6 +57,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         group.add(new RunCheckAction());
         group.addSeparator();
         group.add(new RebuildCachesAction());
+        group.addSeparator();
+        group.add(new ForceNextPushAction());
         group.addSeparator();
         group.add(new ReportAction());
         var toolbar = ActionManager.getInstance()
@@ -150,13 +154,19 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             PrePushCheckerSettings.syncSettingsFile(project);
         });
 
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(0, 6, 6, 6));
         JPanel options = new JPanel();
         options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
         options.add(strictGuard);
+        options.add(Box.createVerticalStrut(2));
         options.add(stashFallback);
+        options.add(Box.createVerticalStrut(2));
         options.add(disableFallback);
+
+        JPanel panel = new JPanel(new BorderLayout());
+        panel.setBorder(BorderFactory.createCompoundBorder(
+            BorderFactory.createTitledBorder(
+                BorderFactory.createEtchedBorder(), "Settings"),
+            BorderFactory.createEmptyBorder(2, 4, 4, 4)));
         panel.add(options, BorderLayout.WEST);
         return panel;
     }
@@ -272,6 +282,38 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                             true, java.util.Collections.emptyMap(), result.get());
                     }
                 });
+        }
+    }
+
+    private final class ForceNextPushAction extends AnAction implements Toggleable {
+
+        ForceNextPushAction() {
+            super("Force Next Push",
+                "Skip compilation check for the next push attempt (single-use, expires in 1 hour)",
+                AllIcons.Debugger.MuteBreakpoints);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            Presentation p = e.getPresentation();
+            boolean active = PrePushCheckerSettings.isForcePushBypassActive(project);
+            Toggleable.setSelected(p, active);
+            p.setText(active ? "Force Next Push (Active)" : "Force Next Push");
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            boolean currentlyActive = PrePushCheckerSettings.isForcePushBypassActive(project);
+            if (currentlyActive) {
+                PrePushCheckerSettings.clearForcePushBypass(project);
+            } else {
+                PrePushCheckerSettings.setForcePushBypass(project);
+            }
         }
     }
 

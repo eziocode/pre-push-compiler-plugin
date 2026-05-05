@@ -35,6 +35,26 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("Build-tool fallback reported generated-symbol errors outside pushed files"));
     }
 
+    public void testManagedHookContainsSelfCleanup() {
+        String script = GitHookInstaller.buildManagedHookScript();
+
+        assertTrue("Hook should check global marker",
+            script.contains(".prepush-checker/installed"));
+        assertTrue("Hook should self-remove managed hook on uninstall",
+            script.contains("Plugin uninstalled. Cleaned up hooks and cache."));
+        assertTrue("Hook should resolve hooks dir via git",
+            script.contains("git rev-parse --git-path hooks"));
+    }
+
+    public void testManagedHookContainsBypassTokenCheck() {
+        String script = GitHookInstaller.buildManagedHookScript();
+
+        assertTrue("Hook should check for bypass-token file",
+            script.contains("bypass-token"));
+        assertTrue("Hook should skip compilation when bypass is active",
+            script.contains("Force-push bypass active. Skipping compilation check."));
+    }
+
     public void testDelegatingSnippetCallsManagedHook() {
         String snippet = GitHookInstaller.buildDelegatingSnippet();
 

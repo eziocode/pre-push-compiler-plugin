@@ -21,6 +21,8 @@ public final class GitHookInstaller {
     static final String HOOK_MARKER = "pre-push-compilation-checker-plugin";
     static final String MANAGED_HOOK_NAME = "pre-push-prepushchecker";
     static final String EXTERNAL_LOG_RELATIVE_PATH = ".idea/pre-push-checker/last-run.log";
+    private static final Path GLOBAL_INSTALL_MARKER = Path.of(
+        System.getProperty("user.home"), ".prepush-checker", "installed");
     private static final Set<PosixFilePermission> HOOK_PERMISSIONS = EnumSet.of(
         PosixFilePermission.OWNER_READ,
         PosixFilePermission.OWNER_WRITE,
@@ -37,6 +39,8 @@ public final class GitHookInstaller {
      * (required for IntelliJ 2026.1+) can call it directly.
      */
     public static void runStartup(@NotNull Project project) {
+        touchGlobalMarker();
+
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
             return;
@@ -391,6 +395,70 @@ public final class GitHookInstaller {
             "",
             "REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"",
             "cd \"$REPO_ROOT\" || exit 1",
+            "",
+            "# ── Self-cleanup: if the plugin was uninstalled, remove ourselves and exit ─────",
+            "GLOBAL_MARKER=\"$HOME/.prepush-checker/installed\"",
+            "if [ ! -f \"$GLOBAL_MARKER\" ]; then",
+            "  # Only self-remove when IntelliJ is NOT running — avoids premature cleanup",
+            "  # during a brief window between IDE restart and marker refresh.",
+            "  _ide_running=0",
+            "  if command -v pgrep >/dev/null 2>&1; then",
+            "    _uid=\"$(id -u 2>/dev/null || printf '')\"",
+            "    if [ -n \"$_uid\" ]; then",
+            "      pgrep -u \"$_uid\" -f 'IntelliJ IDEA|idea\\.app|idea64|com\\.jetbrains\\.idea' >/dev/null 2>&1 && _ide_running=1",
+            "    else",
+            "      pgrep -f 'IntelliJ IDEA|idea\\.app|idea64|com\\.jetbrains\\.idea' >/dev/null 2>&1 && _ide_running=1",
+            "    fi",
+            "  fi",
+            "  if [ \"$_ide_running\" -eq 0 ]; then",
+            "    # Resolve hooks dir the same way the plugin does.",
+            "    _hooks_dir=\"$(git rev-parse --git-path hooks 2>/dev/null)\"",
+            "    [ -z \"$_hooks_dir\" ] && _hooks_dir=\"$(git rev-parse --git-dir 2>/dev/null)/hooks\"",
+            "    if [ -n \"$_hooks_dir\" ] && [ -d \"$_hooks_dir\" ]; then",
+            "      rm -f \"$_hooks_dir/" + MANAGED_HOOK_NAME + "\" 2>/dev/null",
+            "      # If pre-push is our plain wrapper, remove it; otherwise strip our snippet.",
+            "      if [ -f \"$_hooks_dir/pre-push\" ]; then",
+            "        if grep -qF '" + HOOK_MARKER + "' \"$_hooks_dir/pre-push\" 2>/dev/null; then",
+            "          _other_content=\"$(grep -vF '" + HOOK_MARKER + "' \"$_hooks_dir/pre-push\" | grep -v '" + MANAGED_HOOK_NAME + "' | grep -v 'SCRIPT_DIR=.*CDPATH' | sed '/^$/N;/^\\n$/d')\"",
+            "          if [ -z \"$(printf '%s' \"$_other_content\" | tr -d '[:space:]')\" ]; then",
+            "            rm -f \"$_hooks_dir/pre-push\" 2>/dev/null",
+            "          else",
+            "            printf '%s\\n' \"$_other_content\" > \"$_hooks_dir/pre-push\" 2>/dev/null",
+            "          fi",
+            "        fi",
+            "      fi",
+            "    fi",
+            "    rm -rf \"$REPO_ROOT/.idea/pre-push-checker\" 2>/dev/null",
+            "    # Strip plugin block from .git/info/exclude.",
+            "    _git_dir=\"$(git rev-parse --git-common-dir 2>/dev/null)\"",
+            "    [ -z \"$_git_dir\" ] && _git_dir=\"$(git rev-parse --git-dir 2>/dev/null)\"",
+            "    _exclude=\"${_git_dir}/info/exclude\"",
+            "    if [ -f \"$_exclude\" ]; then",
+            "      sed -i.bak '/# BEGIN " + HOOK_MARKER + "/,/# END " + HOOK_MARKER + "/d' \"$_exclude\" 2>/dev/null",
+            "      rm -f \"${_exclude}.bak\" 2>/dev/null",
+            "    fi",
+            "    printf '[pre-push] Plugin uninstalled. Cleaned up hooks and cache. Push allowed.\\n' >&2",
+            "    exit 0",
+            "  fi",
+            "fi",
+            "",
+            "# ── Force-push bypass: skip check if the user requested it from the IDE ────────",
+            "BYPASS_TOKEN=\"$REPO_ROOT/.idea/pre-push-checker/bypass-token\"",
+            "if [ -f \"$BYPASS_TOKEN\" ]; then",
+            "  _token_ms=\"$(head -n1 \"$BYPASS_TOKEN\" 2>/dev/null | tr -d '[:space:]')\"",
+            "  _now_s=\"$(date +%s 2>/dev/null || printf '0')\"",
+            "  # Token stores millis; convert to seconds for comparison.",
+            "  _token_s=$(( ${_token_ms:-0} / 1000 ))",
+            "  _age=$(( _now_s - _token_s ))",
+            "  if [ \"$_age\" -ge 0 ] && [ \"$_age\" -lt 3600 ] 2>/dev/null; then",
+            "    rm -f \"$BYPASS_TOKEN\" 2>/dev/null",
+            "    printf '[pre-push] Force-push bypass active. Skipping compilation check.\\n' >&2",
+            "    exit 0",
+            "  else",
+            "    rm -f \"$BYPASS_TOKEN\" 2>/dev/null",
+            "  fi",
+            "fi",
+            "",
             "LOG_DIR=\"$REPO_ROOT/.idea/pre-push-checker\"",
             "LOG_FILE=\"$LOG_DIR/last-run.log\"",
             "mkdir -p \"$LOG_DIR\" 2>/dev/null || true",
@@ -847,6 +915,42 @@ public final class GitHookInstaller {
             "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\" || exit $?",
             ""
         );
+    }
+
+    /**
+     * Creates/refreshes the global install marker so hook scripts in any repository
+     * can detect that the plugin is still installed — even repos that were closed when
+     * the IDE started. Called on every project open.
+     */
+    static void touchGlobalMarker() {
+        try {
+            Files.createDirectories(GLOBAL_INSTALL_MARKER.getParent());
+            Files.writeString(GLOBAL_INSTALL_MARKER,
+                String.valueOf(System.currentTimeMillis()) + '\n',
+                StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            LOG.warn("Could not write global install marker: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Deletes the global install marker so orphaned hooks in other repositories
+     * self-remove on their next invocation. Called when the plugin is uninstalled.
+     */
+    static void removeGlobalMarker() {
+        try {
+            Files.deleteIfExists(GLOBAL_INSTALL_MARKER);
+            Path parent = GLOBAL_INSTALL_MARKER.getParent();
+            if (parent != null && Files.isDirectory(parent)) {
+                try (var stream = Files.list(parent)) {
+                    if (stream.findFirst().isEmpty()) {
+                        Files.deleteIfExists(parent);
+                    }
+                }
+            }
+        } catch (IOException e) {
+            LOG.warn("Could not remove global install marker: " + e.getMessage());
+        }
     }
 
     private static void makeExecutable(File file) throws IOException {

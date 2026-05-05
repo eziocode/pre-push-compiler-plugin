@@ -22,6 +22,7 @@ import java.util.function.Function;
 
 final class CompilationReportDialog extends DialogWrapper {
 
+    static final int PUSH_ANYWAY_EXIT_CODE = NEXT_USER_EXIT_CODE;
     private static final int DIALOG_WIDTH = 640;
     private static final int DIALOG_HEIGHT = 340;
 
@@ -120,8 +121,17 @@ final class CompilationReportDialog extends DialogWrapper {
             }
         };
 
+        AbstractAction pushAnyway = new AbstractAction("Push Anyway") {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                close(PUSH_ANYWAY_EXIT_CODE);
+            }
+        };
+        pushAnyway.putValue(Action.SHORT_DESCRIPTION,
+            "Ignore errors and proceed with the push. The bypass is single-use.");
+
         if (abortCommitAction == null) {
-            return new Action[]{refresh, getCancelAction()};
+            return new Action[]{refresh, pushAnyway, getCancelAction()};
         }
 
         AbstractAction abortCommit = new AbstractAction("Abort Commit") {
@@ -133,6 +143,6 @@ final class CompilationReportDialog extends DialogWrapper {
         };
         abortCommit.putValue(Action.SHORT_DESCRIPTION,
             "Soft-reset the commits you were trying to push; changes stay in your working tree.");
-        return new Action[]{refresh, abortCommit, getCancelAction()};
+        return new Action[]{refresh, pushAnyway, abortCommit, getCancelAction()};
     }
 }
