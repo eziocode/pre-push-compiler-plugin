@@ -28,6 +28,8 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("preferredJavaHome="));
         assertTrue(script.contains("try_ide_compile_with_retry"));
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
+        assertTrue(script.contains("IntelliJ incremental compile unavailable"));
+        assertTrue(script.contains("Fallback reported generated-symbol errors; retrying IntelliJ incremental compile once before aborting"));
         assertTrue(script.contains("LAST_FALLBACK_OK_HEAD_FILE"));
         assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
         assertTrue(script.contains("compile_failure_touches_pushed_files"));
