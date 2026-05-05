@@ -27,9 +27,10 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
             return;
         }
 
-        // Remove the global marker so orphaned hooks in repos that are not currently
-        // open will self-cleanup on their next invocation.
+        // Remove the global marker and proactively clean previously managed repos,
+        // including those that are not currently open in this IDE session.
         GitHookInstaller.removeGlobalMarker();
+        GitHookInstaller.uninstallTrackedRepos();
 
         for (Project project : ProjectManager.getInstance().getOpenProjects()) {
             if (project.isDisposed()) continue;

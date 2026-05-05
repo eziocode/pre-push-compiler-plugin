@@ -4,6 +4,9 @@ import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 public class GitHookInstallerTest extends BasePlatformTestCase {
     public void testDetectBuildToolPrefersGradleWrapper() throws IOException {
@@ -60,6 +63,66 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
 
         assertTrue(snippet.contains(GitHookInstaller.MANAGED_HOOK_NAME));
         assertTrue(snippet.contains(GitHookInstaller.HOOK_MARKER));
+    }
+
+    public void testUninstallRemovesWrapperHookCacheAndExcludeBlock() throws Exception {
+        File repo = createTempDir("prepushchecker-uninstall-wrapper");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Path infoDir = repoPath.resolve(".git").resolve("info");
+        Files.createDirectories(hooksDir);
+        Files.createDirectories(infoDir);
+
+        Path managedHook = hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Path mainHook = hooksDir.resolve("pre-push");
+        Files.writeString(managedHook, "#!/usr/bin/env sh\n", StandardCharsets.UTF_8);
+        Files.writeString(mainHook, GitHookInstaller.buildWrapperHookScript(), StandardCharsets.UTF_8);
+
+        Path cacheFile = repoPath.resolve(".idea").resolve("pre-push-checker").resolve("last-run.log");
+        Files.createDirectories(cacheFile.getParent());
+        Files.writeString(cacheFile, "error", StandardCharsets.UTF_8);
+
+        Path excludeFile = infoDir.resolve("exclude");
+        Files.writeString(excludeFile,
+            "*.iml\n# BEGIN " + GitHookInstaller.HOOK_MARKER + "\n/.idea/pre-push-checker/\n# END "
+                + GitHookInstaller.HOOK_MARKER + "\n.DS_Store\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.uninstall(repo.getAbsolutePath());
+
+        assertFalse(Files.exists(managedHook));
+        assertFalse(Files.exists(mainHook));
+        assertFalse(Files.exists(repoPath.resolve(".idea").resolve("pre-push-checker")));
+
+        String exclude = Files.readString(excludeFile, StandardCharsets.UTF_8);
+        assertFalse(exclude.contains("# BEGIN " + GitHookInstaller.HOOK_MARKER));
+        assertFalse(exclude.contains("# END " + GitHookInstaller.HOOK_MARKER));
+        assertTrue(exclude.contains("*.iml"));
+        assertTrue(exclude.contains(".DS_Store"));
+    }
+
+    public void testUninstallStripsDelegatingSnippetButKeepsUserHookLogic() throws Exception {
+        File repo = createTempDir("prepushchecker-uninstall-chained");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        String originalUserLogic = "#!/usr/bin/env sh\necho \"user-hook\"\n";
+        String chained = originalUserLogic + GitHookInstaller.buildDelegatingSnippet() + "echo \"tail\"\n";
+        Files.writeString(mainHook, chained, StandardCharsets.UTF_8);
+        Files.writeString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), "#!/usr/bin/env sh\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.uninstall(repo.getAbsolutePath());
+
+        assertFalse(Files.exists(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+        assertTrue(Files.exists(mainHook));
+        String updated = Files.readString(mainHook, StandardCharsets.UTF_8);
+        assertTrue(updated.contains("echo \"user-hook\""));
+        assertTrue(updated.contains("echo \"tail\""));
+        assertFalse(updated.contains(GitHookInstaller.HOOK_MARKER));
+        assertFalse(updated.contains(GitHookInstaller.MANAGED_HOOK_NAME));
     }
 
     private static File createTempDir(String prefix) {

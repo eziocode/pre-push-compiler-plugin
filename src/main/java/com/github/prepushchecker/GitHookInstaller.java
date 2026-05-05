@@ -12,6 +12,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -21,8 +25,10 @@ public final class GitHookInstaller {
     static final String HOOK_MARKER = "pre-push-compilation-checker-plugin";
     static final String MANAGED_HOOK_NAME = "pre-push-prepushchecker";
     static final String EXTERNAL_LOG_RELATIVE_PATH = ".idea/pre-push-checker/last-run.log";
-    private static final Path GLOBAL_INSTALL_MARKER = Path.of(
-        System.getProperty("user.home"), ".prepush-checker", "installed");
+    private static final Path GLOBAL_STATE_DIR = Path.of(System.getProperty("user.home"), ".prepush-checker");
+    private static final Path GLOBAL_INSTALL_MARKER = GLOBAL_STATE_DIR.resolve("installed");
+    private static final Path GLOBAL_TRACKED_REPOS = GLOBAL_STATE_DIR.resolve("repos.txt");
+    private static final Object GLOBAL_REPO_LOCK = new Object();
     private static final Set<PosixFilePermission> HOOK_PERMISSIONS = EnumSet.of(
         PosixFilePermission.OWNER_READ,
         PosixFilePermission.OWNER_WRITE,
@@ -51,6 +57,7 @@ public final class GitHookInstaller {
             LOG.info("Could not resolve a git hooks directory under " + basePath + "; skipping hook installation.");
             return;
         }
+        trackRepo(basePath);
 
         Path mainHook = hooksDirectory.resolve("pre-push");
         Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
@@ -205,7 +212,22 @@ public final class GitHookInstaller {
             }
         }
 
+        untrackRepo(basePath);
         LOG.info("Pre-Push Compilation Checker: cleaned hooks and cache under " + basePath);
+    }
+
+    /**
+     * Best-effort cleanup for repos that were managed by this plugin but are not currently open.
+     * Called on uninstall/disable so stale hook files do not survive until the next manual push.
+     */
+    static void uninstallTrackedRepos() {
+        for (String repoPath : snapshotTrackedRepos()) {
+            try {
+                uninstall(repoPath);
+            } catch (Throwable t) {
+                LOG.warn("Cleanup failed for tracked repo " + repoPath, t);
+            }
+        }
     }
 
     private static String stripDelegatingLines(String content) {
@@ -924,7 +946,7 @@ public final class GitHookInstaller {
      */
     static void touchGlobalMarker() {
         try {
-            Files.createDirectories(GLOBAL_INSTALL_MARKER.getParent());
+            Files.createDirectories(GLOBAL_STATE_DIR);
             Files.writeString(GLOBAL_INSTALL_MARKER,
                 String.valueOf(System.currentTimeMillis()) + '\n',
                 StandardCharsets.UTF_8);
@@ -940,16 +962,88 @@ public final class GitHookInstaller {
     static void removeGlobalMarker() {
         try {
             Files.deleteIfExists(GLOBAL_INSTALL_MARKER);
-            Path parent = GLOBAL_INSTALL_MARKER.getParent();
-            if (parent != null && Files.isDirectory(parent)) {
-                try (var stream = Files.list(parent)) {
-                    if (stream.findFirst().isEmpty()) {
-                        Files.deleteIfExists(parent);
-                    }
-                }
-            }
+            deleteGlobalStateDirIfEmpty();
         } catch (IOException e) {
             LOG.warn("Could not remove global install marker: " + e.getMessage());
+        }
+    }
+
+    private static void trackRepo(String basePath) {
+        String normalized = normalizePath(basePath);
+        if (normalized == null) return;
+        synchronized (GLOBAL_REPO_LOCK) {
+            LinkedHashSet<String> repos = readTrackedRepos();
+            if (!repos.add(normalized)) return;
+            writeTrackedRepos(repos);
+        }
+    }
+
+    private static void untrackRepo(String basePath) {
+        String normalized = normalizePath(basePath);
+        if (normalized == null) return;
+        synchronized (GLOBAL_REPO_LOCK) {
+            LinkedHashSet<String> repos = readTrackedRepos();
+            if (!repos.remove(normalized)) return;
+            writeTrackedRepos(repos);
+        }
+    }
+
+    private static List<String> snapshotTrackedRepos() {
+        synchronized (GLOBAL_REPO_LOCK) {
+            return new ArrayList<>(readTrackedRepos());
+        }
+    }
+
+    private static LinkedHashSet<String> readTrackedRepos() {
+        LinkedHashSet<String> repos = new LinkedHashSet<>();
+        if (!Files.isRegularFile(GLOBAL_TRACKED_REPOS)) return repos;
+        try {
+            for (String line : Files.readAllLines(GLOBAL_TRACKED_REPOS, StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (!trimmed.isEmpty()) repos.add(trimmed);
+            }
+        } catch (IOException ignored) {
+            // Best-effort bookkeeping only.
+        }
+        return repos;
+    }
+
+    private static void writeTrackedRepos(Set<String> repos) {
+        try {
+            if (repos.isEmpty()) {
+                Files.deleteIfExists(GLOBAL_TRACKED_REPOS);
+                deleteGlobalStateDirIfEmpty();
+                return;
+            }
+            Files.createDirectories(GLOBAL_STATE_DIR);
+            List<String> sorted = new ArrayList<>(repos);
+            sorted.sort(Comparator.naturalOrder());
+            Files.writeString(
+                GLOBAL_TRACKED_REPOS,
+                String.join("\n", sorted) + '\n',
+                StandardCharsets.UTF_8
+            );
+        } catch (IOException ignored) {
+            // Best-effort bookkeeping only.
+        }
+    }
+
+    private static void deleteGlobalStateDirIfEmpty() throws IOException {
+        if (!Files.isDirectory(GLOBAL_STATE_DIR)) return;
+        try (var stream = Files.list(GLOBAL_STATE_DIR)) {
+            if (stream.findFirst().isEmpty()) {
+                Files.deleteIfExists(GLOBAL_STATE_DIR);
+            }
+        }
+    }
+
+    @org.jetbrains.annotations.Nullable
+    private static String normalizePath(@org.jetbrains.annotations.Nullable String path) {
+        if (path == null || path.isBlank()) return null;
+        try {
+            return Path.of(path).toAbsolutePath().normalize().toString();
+        } catch (RuntimeException ignored) {
+            return null;
         }
     }
 
