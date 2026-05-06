@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.5.1</version>
+    <version>1.5.2</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,15 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.5.2</h3>
+        <ul>
+            <li><b>First-time warmup compile:</b> on the first project open after plugin install,
+                a full background compile now runs automatically once indexing finishes. This primes
+                the compiler cache so the first push from a terminal or GUI git client (Sublime Merge,
+                SourceTree, GitHub Desktop) immediately reuses IntelliJ's incremental result instead
+                of falling back to Maven/Gradle with a cold cache. Subsequent opens are unaffected.</li>
+        </ul>
+
         <h3>1.5.1</h3>
         <ul>
             <li><b>External push race fix (Sublime Merge / terminal):</b> the managed hook now
