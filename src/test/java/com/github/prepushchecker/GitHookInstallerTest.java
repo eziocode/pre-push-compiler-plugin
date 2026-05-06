@@ -22,8 +22,9 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
 
         assertTrue(script.contains("PRE_PUSH_CHECKER_COMMAND"));
         assertTrue(script.contains("No source or build changes detected. Skipping compilation check."));
-        assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $GRADLE_TASKS"));
-        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false \"$MAVEN_GOAL\""));
+        assertTrue(script.contains("run_build_tool_command"));
+        assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $_gradle_tasks"));
+        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false \"$_maven_goal\""));
         assertTrue(script.contains("setup_maven_java_home"));
         assertTrue(script.contains("preferredJavaHome="));
         assertTrue(script.contains("try_ide_compile_with_retry"));
@@ -34,9 +35,12 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
         assertTrue(script.contains("compile_failure_touches_pushed_files"));
         assertTrue(script.contains("looks_like_generated_symbol_false_positive"));
-        assertTrue(script.contains("project_uses_lombok"));
         assertTrue(script.contains("only_generated_symbol_errors"));
-        assertTrue(script.contains("Build-tool fallback reported only Lombok-generated symbol errors"));
+        assertTrue(script.contains("retrying full compile scope once"));
+        assertTrue(script.contains("run_build_tool_command \"classes testClasses\" \"test-compile\" \"$TMP_OUT\""));
+        assertTrue(script.contains("if [ $rc -ne 0 ] && only_generated_symbol_errors \"$TMP_OUT\"; then"));
+        assertFalse(script.contains("project_uses_lombok && only_generated_symbol_errors"));
+        assertTrue(script.contains("Build-tool fallback reported only generated setter/getter/builder symbol errors"));
         assertTrue(script.contains("Build-tool fallback reported generated-symbol errors outside pushed files"));
     }
 

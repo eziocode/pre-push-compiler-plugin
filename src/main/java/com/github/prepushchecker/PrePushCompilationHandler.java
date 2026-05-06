@@ -608,6 +608,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setText("git push --force-with-lease: " + root);
+                PrePushCheckerSettings.setForcePushBypass(project);
                 String result = runGitCommand(root, "git", "push", "--force-with-lease");
                 ApplicationManager.getApplication().invokeLater(() -> {
                     if (project.isDisposed()) return;
