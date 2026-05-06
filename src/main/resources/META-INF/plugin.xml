@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.5.2</version>
+    <version>1.5.3</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.5.3</h3>
+        <ul>
+            <li><b>Generated getter/setter/builder false positives fixed:</b> when terminal,
+                force-push, or GUI git client fallback compilation reports only generated-style
+                <code>get*</code>, <code>set*</code>, <code>is*</code>, or <code>*Builder</code>
+                missing-symbol errors, the hook now retries once with full compile scope before
+                treating the output as a non-blocking generated-symbol false positive. This avoids
+                the common &ldquo;first push fails, second push succeeds&rdquo; flow.</li>
+            <li><b>Force Push retry fixed:</b> the plugin's force-push action now writes the
+                one-shot bypass token before running <code>git push --force-with-lease</code>, so
+                the retry is not blocked again by the managed pre-push hook.</li>
+        </ul>
+
         <h3>1.5.2</h3>
         <ul>
             <li><b>First-time warmup compile:</b> on the first project open after plugin install,

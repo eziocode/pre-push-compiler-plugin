@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.5.3]
+
+### Fixed
+- **Generated getter/setter/builder false positives on first push.** Terminal, force-push, and GUI git client fallback compilation now retries once with full compile scope (`classes testClasses` / `test-compile`) when the narrow compile reports only generated-style missing-symbol errors (`get*`, `set*`, `is*`, `*Builder`). If the full retry still contains only those generated-symbol errors, the hook treats the output as a non-blocking false positive instead of requiring a second push.
+- **Force Push retry bypass.** The plugin's force-push action now writes the one-shot bypass token before running `git push --force-with-lease`, preventing the managed hook from blocking the force-push retry.
+
+---
+
 ## [1.5.1]
 
 ### Fixed
