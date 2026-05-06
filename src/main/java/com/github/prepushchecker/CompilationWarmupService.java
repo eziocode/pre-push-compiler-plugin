@@ -15,6 +15,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ide.util.PropertiesComponent;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Collections;
@@ -46,6 +47,7 @@ public final class CompilationWarmupService implements Disposable {
 
     private static final Logger LOG = Logger.getInstance(CompilationWarmupService.class);
     private static final String REGISTRY_KEY = "prepushchecker.warmup.enabled";
+    private static final String INITIALIZED_KEY = "prepushchecker.initialized";
     private static final long DEBOUNCE_MS = 4_000L;
 
     private final Project project;
@@ -192,5 +194,49 @@ public final class CompilationWarmupService implements Disposable {
     public static void runStartup(@NotNull Project project) {
         CompilationWarmupService svc = getInstance(project);
         Disposer.register(project, svc);
+
+        PropertiesComponent props = PropertiesComponent.getInstance(project);
+        if (!props.getBoolean(INITIALIZED_KEY, false)) {
+            props.setValue(INITIALIZED_KEY, true);
+            svc.triggerInitialWarmup();
+        }
+    }
+
+    /**
+     * Runs a full-project compile once — on the first project open after plugin install —
+     * so the compiler cache is hot before the user's first push from a terminal or GUI git client.
+     * Deferred until indexing finishes and runs in the background without blocking the UI.
+     */
+    private void triggerInitialWarmup() {
+        if (!isEnabled()) return;
+        DumbService.getInstance(project).runWhenSmart(() -> {
+            if (project.isDisposed() || com.intellij.ide.PowerSaveMode.isEnabled()) return;
+            if (!inFlight.compareAndSet(false, true)) {
+                rerun.set(true);
+                return;
+            }
+            ApplicationManager.getApplication().invokeLater(() -> {
+                try {
+                    if (project.isDisposed()) { finish(); return; }
+                    LOG.info("Pre-Push Checker: running first-time warmup compile for '" + project.getName() + "'");
+                    CompilerManager.getInstance(project).make((aborted, errorCount, warnings, ctx) -> {
+                        try {
+                            if (aborted) return;
+                            List<String> result = errorCount > 0
+                                ? PrePushCompilationHandler.formatCompilerMessages(
+                                    project, ctx.getMessages(CompilerMessageCategory.ERROR))
+                                : Collections.emptyList();
+                            CompilationErrorService.getInstance(project).recordCompletion(
+                                true, Collections.emptyMap(), result);
+                        } finally {
+                            finish();
+                        }
+                    });
+                } catch (Throwable t) {
+                    LOG.debug("First-time warmup compile failed", t);
+                    finish();
+                }
+            }, ModalityState.defaultModalityState());
+        });
     }
 }
