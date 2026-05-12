@@ -11,6 +11,7 @@ import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessage;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.progress.ProgressIndicator;
@@ -368,9 +369,12 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static void handleBackgroundCompletion(
         Project project,
         List<String> errors,
-        List<PushInfo> pushDetails
+        List<PushInfo> pushDetails,
+        Map<String, String> preCompileSnapshots,
+        CompilationErrorService.CompileScopeKind scope
     ) {
         if (errors.isEmpty()) {
+            recordCleanCommitsIfStillValid(project, preCompileSnapshots, scope);
             notify(
                 project,
                 "Pre-push compilation finished",
@@ -388,6 +392,53 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             if (project.isDisposed()) return;
             showFailureChoiceDialog(project, errors, pushDetails);
         });
+    }
+
+    /**
+     * Snapshot HEAD SHA per push root, but only for roots whose working tree is
+     * fully clean. Roots with dirty trees, ongoing operations, or missing SHAs
+     * are excluded — they will simply not contribute a ledger entry later.
+     */
+    private static Map<String, String> captureCleanRootSnapshots(List<PushInfo> pushDetails) {
+        java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
+        for (PushInfo info : pushDetails) {
+            for (VcsFullCommitDetails commit : info.getCommits()) {
+                VirtualFile root = commit.getRoot();
+                if (root != null) roots.add(root.getPath());
+            }
+        }
+        if (roots.isEmpty()) return Collections.emptyMap();
+        Map<String, String> snapshots = new java.util.LinkedHashMap<>(roots.size() * 2);
+        for (String root : roots) {
+            if (!GitOperations.isWorkingTreeFullyClean(root)) continue;
+            String sha = GitOperations.headSha(root);
+            if (sha != null) snapshots.put(root, sha);
+        }
+        return snapshots;
+    }
+
+    /**
+     * Record clean ledger entries for every captured pre-snapshot whose root
+     * is still at the same HEAD with a clean working tree. Any root that
+     * mutated during compile is silently dropped — better to lose a cache
+     * entry than to record a stale one.
+     */
+    private static void recordCleanCommitsIfStillValid(
+        Project project,
+        Map<String, String> preSnapshots,
+        CompilationErrorService.CompileScopeKind scope
+    ) {
+        if (preSnapshots.isEmpty()) return;
+        CompilationErrorService service = CompilationErrorService.getInstance(project);
+        for (Map.Entry<String, String> entry : preSnapshots.entrySet()) {
+            String root = entry.getKey();
+            String preSha = entry.getValue();
+            String postSha = GitOperations.headSha(root);
+            if (postSha != null && postSha.equals(preSha)
+                && GitOperations.isWorkingTreeFullyClean(root)) {
+                service.recordCleanCommit(root, preSha, scope);
+            }
+        }
     }
 
     private static void showFailureChoiceDialog(
@@ -546,20 +597,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     return;
                 }
                 refreshVfs(root);
-                indicator.setText("git push: " + root);
-                String pushResult = runGitPush(root);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    if (project.isDisposed()) return;
-                    if (pushResult == null) {
-                        PrePushCompilationHandler.notify(project, "Push succeeded",
-                            "Rebased and pushed " + root + " successfully.",
-                            com.intellij.notification.NotificationType.INFORMATION);
-                    } else {
-                        PrePushCompilationHandler.notify(project, "Push failed after rebase",
-                            root + ": " + pushResult,
-                            com.intellij.notification.NotificationType.ERROR);
-                    }
-                });
+                recompileThenPush(project, root, "rebase", indicator);
             }
         });
     }
@@ -571,7 +609,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setText("git pull --no-rebase: " + root);
-                String pullResult = runGitCommand(root, "git", "pull", "--no-rebase");
+                // --no-edit + GIT_MERGE_AUTOEDIT=no (set in runGitCommand env) keep the
+                // merge non-interactive when git would otherwise open an editor.
+                String pullResult = runGitCommand(root, "git", "pull", "--no-rebase", "--no-edit");
                 if (pullResult != null) {
                     ApplicationManager.getApplication().invokeLater(() -> {
                         if (project.isDisposed()) return;
@@ -583,20 +623,167 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     return;
                 }
                 refreshVfs(root);
-                indicator.setText("git push: " + root);
-                String pushResult = runGitPush(root);
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    if (project.isDisposed()) return;
-                    if (pushResult == null) {
-                        PrePushCompilationHandler.notify(project, "Push succeeded",
-                            "Merged and pushed " + root + " successfully.",
-                            com.intellij.notification.NotificationType.INFORMATION);
-                    } else {
-                        PrePushCompilationHandler.notify(project, "Push failed after merge",
-                            root + ": " + pushResult,
-                            com.intellij.notification.NotificationType.ERROR);
-                    }
-                });
+                recompileThenPush(project, root, "merge", indicator);
+            }
+        });
+    }
+
+    /**
+     * After a successful {@code git pull --rebase} / {@code --no-rebase}, validate
+     * the integrated tree before pushing. The original pre-push compile is now
+     * stale because the post-pull HEAD may include remote commits that interact
+     * with local changes in ways individual side-by-side compiles cannot detect
+     * (semantic merge conflicts).
+     *
+     * <p>Flow:
+     * <ol>
+     *   <li>Resolve post-pull HEAD SHA and verify the working tree is fully clean.
+     *       If the WT is dirty after pull, refuse to auto-push — a passing compile
+     *       could be due to uncommitted local edits that are not part of the tree
+     *       being pushed.</li>
+     *   <li>If the clean-commit ledger already has a {@code PROJECT}-scope clean
+     *       entry for this SHA, skip recompile and push immediately.</li>
+     *   <li>Otherwise run a project-scope compile against the integrated tree.
+     *       Project scope is the safest default — file-scope reconstruction from
+     *       {@code @{u}..HEAD} can miss files that broke only because of the
+     *       remote-side change.</li>
+     *   <li>On clean compile, verify HEAD did not move and the WT is still clean,
+     *       then push. On any errors or state drift, surface a notification and
+     *       leave the user to retry.</li>
+     * </ol>
+     */
+    private static void recompileThenPush(
+        Project project,
+        String root,
+        String operationLabel,
+        ProgressIndicator indicator
+    ) {
+        indicator.setText("Validating post-" + operationLabel + " tree: " + root);
+        String preSha = GitOperations.headSha(root);
+        if (preSha == null) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project, "Push aborted",
+                    root + ": could not resolve HEAD after " + operationLabel
+                        + ". Push manually after verifying repository state.",
+                    com.intellij.notification.NotificationType.ERROR);
+            });
+            return;
+        }
+        if (!GitOperations.isWorkingTreeFullyClean(root)) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project, "Push aborted — working tree not clean",
+                    root + ": the working tree is not clean after " + operationLabel
+                        + " (uncommitted changes, untracked files, or an in-progress operation). "
+                        + "Commit/stash/resolve and push again.",
+                    com.intellij.notification.NotificationType.WARNING);
+            });
+            return;
+        }
+
+        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
+        CompilationErrorService.CompileScopeKind ledgerHit =
+            errorService.tryReuseCleanCommit(root, preSha);
+        if (ledgerHit == CompilationErrorService.CompileScopeKind.PROJECT) {
+            LOG.info("Post-" + operationLabel + " ledger hit for " + root + " @ " + preSha
+                + " — skipping recompile.");
+            pushAfterStateVerify(project, root, preSha, operationLabel, indicator);
+            return;
+        }
+
+        // Save any open documents so the compile sees the same content as the
+        // recorded ledger entry (which is gated on a clean WT).
+        ApplicationManager.getApplication().invokeAndWait(
+            () -> FileDocumentManager.getInstance().saveAllDocuments(),
+            ModalityState.defaultModalityState()
+        );
+
+        indicator.setText("Compiling integrated tree: " + root);
+        List<String> errors;
+        try {
+            errors = compileProject(project, indicator);
+        } catch (ProcessCanceledException pce) {
+            throw pce;
+        } catch (Throwable t) {
+            LOG.warn("Post-" + operationLabel + " compile failed", t);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project, "Post-" + operationLabel + " compile failed",
+                    root + ": " + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage()),
+                    com.intellij.notification.NotificationType.ERROR);
+            });
+            return;
+        }
+
+        if (!errors.isEmpty()) {
+            errorService.setErrors(errors);
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project,
+                    "Push blocked — integrated tree has compile errors",
+                    root + ": " + errors.size() + " error(s) after " + operationLabel + ". "
+                        + "See the Pre-Push Compilation Checker tool window. Fix and push again.",
+                    com.intellij.notification.NotificationType.ERROR);
+            });
+            return;
+        }
+
+        // Verify state did not drift during the compile.
+        String postSha = GitOperations.headSha(root);
+        if (postSha == null || !postSha.equals(preSha)
+            || !GitOperations.isWorkingTreeFullyClean(root)) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project, "Push aborted — repository state changed",
+                    root + ": HEAD or working tree changed during compile. Push manually after verifying.",
+                    com.intellij.notification.NotificationType.WARNING);
+            });
+            return;
+        }
+
+        errorService.recordCleanCommit(root, preSha,
+            CompilationErrorService.CompileScopeKind.PROJECT);
+        pushAfterStateVerify(project, root, preSha, operationLabel, indicator);
+    }
+
+    /**
+     * Final pre-push guard: re-verify HEAD/WT immediately before pushing so a
+     * local mutation between compile and push cannot smuggle an unvalidated
+     * tree out. Remote-side races (a teammate pushing between our compile and
+     * our push) are still possible, but {@code git push} will reject those and
+     * the user re-enters the existing rebase/merge dialog.
+     */
+    private static void pushAfterStateVerify(
+        Project project,
+        String root,
+        String expectedSha,
+        String operationLabel,
+        ProgressIndicator indicator
+    ) {
+        String currentSha = GitOperations.headSha(root);
+        if (currentSha == null || !currentSha.equals(expectedSha)
+            || !GitOperations.isWorkingTreeFullyClean(root)) {
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (project.isDisposed()) return;
+                PrePushCompilationHandler.notify(project, "Push aborted — repository state changed",
+                    root + ": HEAD or working tree changed before push. Verify and push manually.",
+                    com.intellij.notification.NotificationType.WARNING);
+            });
+            return;
+        }
+        indicator.setText("git push: " + root);
+        String pushResult = runGitPush(root);
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            if (pushResult == null) {
+                PrePushCompilationHandler.notify(project, "Push succeeded",
+                    "Validated and pushed " + root + " after " + operationLabel + ".",
+                    com.intellij.notification.NotificationType.INFORMATION);
+            } else {
+                PrePushCompilationHandler.notify(project, "Push failed after " + operationLabel,
+                    root + ": " + pushResult,
+                    com.intellij.notification.NotificationType.ERROR);
             }
         });
     }
@@ -664,8 +851,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     }
 
     private static void refreshVfs(String repoRoot) {
+        // Synchronous refresh: the integrated post-pull tree must be visible to
+        // the IDE before we hand it to the compiler. An async refresh would let
+        // the compile start against a stale VFS snapshot.
         LocalFileSystem.getInstance().refreshIoFiles(
-            java.util.Collections.singletonList(new java.io.File(repoRoot)), true, true, null);
+            java.util.Collections.singletonList(new java.io.File(repoRoot)), false, true, null);
     }
 
     private static @org.jetbrains.annotations.Nullable String runGitPush(String repoRoot) {
@@ -731,9 +921,19 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 true
             ) {
                 private List<String> result = Collections.emptyList();
+                private Map<String, String> preCompileSnapshots = Collections.emptyMap();
+                private CompilationErrorService.CompileScopeKind scopeKind =
+                    CompilationErrorService.CompileScopeKind.FILE_SCOPE;
 
                 @Override
                 public void run(@NotNull ProgressIndicator indicator) {
+                    // Capture pre-compile per-root snapshot so we can decide later
+                    // whether the clean ledger may be updated. Only roots with a
+                    // clean WT at this moment are eligible.
+                    preCompileSnapshots = captureCleanRootSnapshots(pushDetails);
+                    scopeKind = changeSet.requiresProjectBuild()
+                        ? CompilationErrorService.CompileScopeKind.PROJECT
+                        : CompilationErrorService.CompileScopeKind.FILE_SCOPE;
                     try {
                         result = runFullPrePushCheck(project, changeSet, indicator);
                         errorService.recordPrePushResult(key, result);
@@ -749,7 +949,8 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
                 @Override
                 public void onSuccess() {
-                    handleBackgroundCompletion(project, result, pushDetails);
+                    handleBackgroundCompletion(project, result, pushDetails,
+                        preCompileSnapshots, scopeKind);
                 }
 
                 @Override

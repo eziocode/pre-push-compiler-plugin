@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -46,6 +47,21 @@ public final class CompilationErrorService {
     private String lastPrePushKey = "";
     private List<String> lastPrePushErrors = Collections.emptyList();
     private final Set<String> runningPrePushKeys = ConcurrentHashMap.newKeySet();
+
+    // Clean-commit ledger: (repoRoot, headSha) -> scope under which that snapshot was
+    // verified clean. Bounded LRU. We only ever store *clean* results — a missing entry
+    // means "unknown, must recompile". This is the foundation for skipping post-rebase
+    // recompiles when the resulting commit was already verified by an earlier check.
+    static final int CLEAN_LEDGER_MAX_ENTRIES = 256;
+    /** Scope tag recorded alongside a clean ledger entry. */
+    enum CompileScopeKind { FILE_SCOPE, PROJECT }
+    private final LinkedHashMap<String, CompileScopeKind> cleanLedger =
+        new LinkedHashMap<>(32, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, CompileScopeKind> eldest) {
+                return size() > CLEAN_LEDGER_MAX_ENTRIES;
+            }
+        };
 
     public static CompilationErrorService getInstance(@NotNull Project project) {
         return project.getService(CompilationErrorService.class);
@@ -120,6 +136,7 @@ public final class CompilationErrorService {
         this.lastPrePushKey = "";
         this.lastPrePushErrors = Collections.emptyList();
         this.runningPrePushKeys.clear();
+        this.cleanLedger.clear();
     }
 
     /**
@@ -175,6 +192,50 @@ public final class CompilationErrorService {
 
     public void finishPrePushCheck(@NotNull String key) {
         runningPrePushKeys.remove(key);
+    }
+
+    /**
+     * Record that {@code repoRoot} at {@code headSha} compiled cleanly under
+     * {@code scope}. Callers must only invoke this after verifying:
+     * <ul>
+     *   <li>all open documents were saved before compile started;</li>
+     *   <li>the working tree was clean both immediately before and immediately
+     *       after compile, and the HEAD SHA did not change during compile;</li>
+     *   <li>compile produced zero errors.</li>
+     * </ul>
+     * No-ops on blank inputs.
+     */
+    public synchronized void recordCleanCommit(
+        @NotNull String repoRoot,
+        @NotNull String headSha,
+        @NotNull CompileScopeKind scope
+    ) {
+        if (repoRoot.isBlank() || headSha.isBlank()) return;
+        cleanLedger.put(ledgerKey(repoRoot, headSha), scope);
+    }
+
+    /**
+     * Returns the scope under which {@code (repoRoot, headSha)} was last
+     * recorded clean, or {@code null} if no entry exists. The caller is
+     * responsible for deciding whether the recorded scope is sufficient for
+     * the current check (e.g. a FILE_SCOPE hit does not satisfy a check that
+     * requires PROJECT-level confidence).
+     */
+    public synchronized @Nullable CompileScopeKind tryReuseCleanCommit(
+        @NotNull String repoRoot,
+        @NotNull String headSha
+    ) {
+        if (repoRoot.isBlank() || headSha.isBlank()) return null;
+        return cleanLedger.get(ledgerKey(repoRoot, headSha));
+    }
+
+    /** Visible for tests / diagnostics. */
+    synchronized int cleanLedgerSize() {
+        return cleanLedger.size();
+    }
+
+    private static String ledgerKey(String repoRoot, String headSha) {
+        return repoRoot + '\u0000' + headSha;
     }
 
     /** Capture timestamps for a collection of files. */
