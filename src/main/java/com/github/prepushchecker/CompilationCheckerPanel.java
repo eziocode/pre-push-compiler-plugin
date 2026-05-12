@@ -142,6 +142,13 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             "(e.g. Lombok @Builder/@Getter/@Setter) that Maven cannot resolve without " +
             "IntelliJ's incremental annotation-processing setup.");
 
+        JBCheckBox rebasePrecheck = new JBCheckBox("Pre-compile rebase check (fetch and prompt if remote is ahead)");
+        rebasePrecheck.setSelected(PrePushCheckerSettings.isRebasePrecheckEnabled(project));
+        rebasePrecheck.setToolTipText(
+            "Before compiling, run git fetch and check if any push root has incoming commits. " +
+            "If so, prompt to rebase first so compilation runs against the integrated tree. " +
+            "Off by default because every push performs a network fetch.");
+
         strictGuard.addActionListener(event -> {
             boolean selected = strictGuard.isSelected();
             PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, selected);
@@ -153,6 +160,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             PrePushCheckerSettings.setBuildToolFallbackDisabled(project, disableFallback.isSelected());
             PrePushCheckerSettings.syncSettingsFile(project);
         });
+        rebasePrecheck.addActionListener(event ->
+            PrePushCheckerSettings.setRebasePrecheckEnabled(project, rebasePrecheck.isSelected()));
 
         JPanel options = new JPanel();
         options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
@@ -161,6 +170,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         options.add(stashFallback);
         options.add(Box.createVerticalStrut(2));
         options.add(disableFallback);
+        options.add(Box.createVerticalStrut(2));
+        options.add(rebasePrecheck);
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createCompoundBorder(

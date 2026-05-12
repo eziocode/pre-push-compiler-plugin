@@ -18,6 +18,8 @@ final class PrePushCheckerSettings {
         "prepushchecker.strictSnapshotGuard.stashFallback.enabled";
     private static final String DISABLE_BUILD_TOOL_FALLBACK_KEY =
         "prepushchecker.buildToolFallback.disabled";
+    private static final String REBASE_PRECHECK_KEY =
+        "prepushchecker.rebasePrecheck.enabled";
 
     private static final String BYPASS_TOKEN_NAME = "bypass-token";
     private static final long BYPASS_TOKEN_MAX_AGE_MS = 60 * 60 * 1000L; // 1 hour
@@ -53,6 +55,23 @@ final class PrePushCheckerSettings {
     static void setBuildToolFallbackDisabled(@NotNull Project project, boolean disabled) {
         PropertiesComponent.getInstance(project)
             .setValue(DISABLE_BUILD_TOOL_FALLBACK_KEY, disabled, false);
+    }
+
+    /**
+     * When enabled, {@code PrePushCompilationHandler.handle} fetches each push
+     * root before scheduling the compile and offers the user a chance to
+     * rebase first if the remote is ahead. Default {@code false} — fetch on
+     * every push is a network round-trip and a setting change to a ref the
+     * user might not want.
+     */
+    static boolean isRebasePrecheckEnabled(@NotNull Project project) {
+        return PropertiesComponent.getInstance(project)
+            .getBoolean(REBASE_PRECHECK_KEY, false);
+    }
+
+    static void setRebasePrecheckEnabled(@NotNull Project project, boolean enabled) {
+        PropertiesComponent.getInstance(project)
+            .setValue(REBASE_PRECHECK_KEY, enabled, false);
     }
 
     /**

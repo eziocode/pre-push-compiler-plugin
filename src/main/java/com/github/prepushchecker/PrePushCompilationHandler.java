@@ -57,6 +57,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
     enum DialogOutcome { RESOLVED, ABORT, PUSH_ANYWAY }
 
+    /** Outcome of the optional pre-compile rebase advisory in {@link #handle}. */
+    private enum RebasePrecheckOutcome { PROCEED, REBASED, CANCEL }
+
     @Override
     public @NotNull Result handle(
         @NotNull Project project,
@@ -72,6 +75,20 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             if (!changeSet.hasRelevantChanges()) {
                 LOG.info("Skipping pre-push compilation check because no source/build files are affected.");
                 return Result.OK;
+            }
+
+            // Optional: fetch each root and prompt to rebase if the remote is ahead,
+            // so compilation runs against the tree that will actually be pushed
+            // rather than wasting cycles on a stale local snapshot. Off by default.
+            RebasePrecheckOutcome precheck = runRebasePrecheckIfEnabled(project, pushDetails, indicator);
+            if (precheck == RebasePrecheckOutcome.CANCEL) {
+                return Result.ABORT;
+            }
+            if (precheck == RebasePrecheckOutcome.REBASED) {
+                // The user chose to rebase; we launched it as a background task that
+                // will recompile and push the integrated tree itself. Abort this
+                // push attempt cleanly.
+                return Result.ABORT;
             }
 
             CompilationErrorService errorService = CompilationErrorService.getInstance(project);
@@ -541,6 +558,90 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 });
             }
         });
+    }
+
+    /**
+     * Detects whether any push root has incoming remote commits and, if so,
+     * offers the user the choice to rebase (and recompile) before this push
+     * proceeds. Cheap when no roots are behind (one fetch + one rev-list per
+     * root), but a network round-trip on every push — hence opt-in via
+     * {@link PrePushCheckerSettings#isRebasePrecheckEnabled}.
+     *
+     * <p>Returns {@link RebasePrecheckOutcome#PROCEED} when the setting is
+     * disabled, every root is up-to-date, or the user chose to compile
+     * against the local tree anyway. Returns {@link RebasePrecheckOutcome#REBASED}
+     * after launching the existing rebase-and-push flow for each behind root.
+     * Returns {@link RebasePrecheckOutcome#CANCEL} when the user cancelled.
+     */
+    private static RebasePrecheckOutcome runRebasePrecheckIfEnabled(
+        Project project,
+        List<PushInfo> pushDetails,
+        ProgressIndicator indicator
+    ) {
+        if (!PrePushCheckerSettings.isRebasePrecheckEnabled(project)) {
+            return RebasePrecheckOutcome.PROCEED;
+        }
+
+        java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
+        for (PushInfo info : pushDetails) {
+            for (VcsFullCommitDetails commit : info.getCommits()) {
+                VirtualFile r = commit.getRoot();
+                if (r != null) roots.add(r.getPath());
+            }
+        }
+        if (roots.isEmpty()) return RebasePrecheckOutcome.PROCEED;
+
+        // (root -> remote-ahead count). Roots that fail to fetch or have no upstream
+        // contribute 0, which keeps this purely advisory.
+        Map<String, Integer> behind = new LinkedHashMap<>();
+        for (String root : roots) {
+            indicator.checkCanceled();
+            indicator.setText("Pre-push: fetching " + root);
+            GitOperations.fetchQuiet(root);
+            int ahead = GitOperations.remoteAheadCount(root);
+            if (ahead > 0) behind.put(root, ahead);
+        }
+        if (behind.isEmpty()) return RebasePrecheckOutcome.PROCEED;
+
+        StringBuilder msg = new StringBuilder();
+        msg.append("The remote has new commit(s) on the following root(s):\n\n");
+        behind.forEach((root, count) ->
+            msg.append("  • ").append(count).append(" commit(s) in ").append(root).append('\n'));
+        msg.append("\nCompiling against the current tree may miss bugs caused by the remote\n");
+        msg.append("commits (semantic merge conflicts). Rebase now?\n\n");
+        msg.append("• Rebase & Push — pull --rebase per root, then compile the integrated\n");
+        msg.append("    tree, then push. Recommended.\n");
+        msg.append("• Compile As-Is — skip the rebase and compile the current local tree.\n");
+        msg.append("• Cancel — abort this push.");
+
+        int[] choiceHolder = {-1};
+        ModalityState modality = indicator.getModalityState();
+        if (modality == null) modality = ModalityState.defaultModalityState();
+        ApplicationManager.getApplication().invokeAndWait(() -> {
+            choiceHolder[0] = com.intellij.openapi.ui.Messages.showDialog(
+                project,
+                msg.toString(),
+                "Remote Has New Commits",
+                new String[]{"Rebase & Push", "Compile As-Is", "Cancel"},
+                0,
+                com.intellij.openapi.ui.Messages.getWarningIcon()
+            );
+        }, modality);
+
+        int choice = choiceHolder[0];
+        if (choice == 0) {
+            // Launch rebase-and-push per behind root. recompileThenPush re-validates
+            // the integrated tree and pushes. The current PrePushHandler invocation
+            // aborts so the IDE-driven push does not race with the rebase flow.
+            for (String root : behind.keySet()) {
+                executeRebaseAndPush(project, root);
+            }
+            return RebasePrecheckOutcome.REBASED;
+        }
+        if (choice == 1) {
+            return RebasePrecheckOutcome.PROCEED;
+        }
+        return RebasePrecheckOutcome.CANCEL;
     }
 
     private static boolean isRebaseRequired(String gitOutput) {

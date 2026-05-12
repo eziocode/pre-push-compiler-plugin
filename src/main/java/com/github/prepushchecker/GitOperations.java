@@ -47,6 +47,34 @@ final class GitOperations {
     }
 
     /**
+     * Runs {@code git fetch --quiet} for {@code repoRoot}. Returns {@code true}
+     * on success. We do not differentiate fetch failure modes here — any
+     * failure (network, auth, no remote, shallow clone) causes the caller to
+     * silently fall back to "treat as not-ahead" so the advisory never blocks
+     * a push.
+     */
+    static boolean fetchQuiet(@NotNull String repoRoot) {
+        return runGit(repoRoot, "git", "fetch", "--quiet").isSuccess();
+    }
+
+    /**
+     * Returns how many commits the configured upstream is ahead of HEAD in
+     * {@code repoRoot}. Returns 0 when up-to-date, the local branch is
+     * strictly ahead, the branch has no upstream configured, HEAD is
+     * detached, or git fails. The caller treats 0 as "no advisory needed",
+     * so failure modes correctly degrade to silence.
+     */
+    static int remoteAheadCount(@NotNull String repoRoot) {
+        GitResult r = runGit(repoRoot, "git", "rev-list", "--count", "HEAD..@{u}");
+        if (!r.isSuccess()) return 0;
+        try {
+            return Integer.parseInt(r.stdoutTrimmed.trim());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
      * Returns {@code true} when the working tree at {@code repoRoot} has no
      * tracked modifications, no staged changes, no untracked files, and no
      * in-progress operation (rebase/merge/cherry-pick).
