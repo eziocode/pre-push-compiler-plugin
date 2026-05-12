@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.6.0]
+
+### Added
+- **Clean-commit ledger.** `CompilationErrorService` now tracks HEAD SHAs that have been verified clean by a successful compile. After a rebase, merge, or pull that fast-forwards onto an already-verified upstream commit, the pre-push handler reuses the cached clean verdict instead of recompiling. Backed by the new `GitOperations` utility, which inspects local git state (HEAD SHA, merge/rebase-in-progress, upstream tracking) without shelling out for every check.
+- **Optional pre-compile rebase advisory (`prepushchecker.rebasePrecheck.enabled`, off by default).** When enabled, `PrePushCompilationHandler` fetches each push root before scheduling the compile and prompts the user to rebase first if the remote is ahead. Ensures the build runs against the integrated tree so locally-clean-but-remotely-stale pushes do not surprise the CI. Off by default because every push would otherwise pay a network round-trip.
+- **Repo-change-driven warmup compile.** `CompilationWarmupService` now subscribes to `GIT_REPO_CHANGE`, so branch switches, fetches, pulls, and rebases trigger a debounced background project compile (30s cooldown to absorb bursts of state-change events from a single git operation). The compiler cache is hot for the integrated tree by the time the user pushes, turning most post-VCS-operation pushes into no-ops.
+
+---
+
 ## [1.5.3]
 
 ### Fixed

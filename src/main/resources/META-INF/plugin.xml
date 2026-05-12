@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.5.3</version>
+    <version>1.6.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,27 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.6.0</h3>
+        <ul>
+            <li><b>Clean-commit ledger:</b> a successful compile now records the verified HEAD SHA.
+                After a rebase, merge, or pull that fast-forwards onto an already-verified upstream
+                commit, the pre-push handler reuses the cached clean verdict instead of recompiling.
+                Backed by a new <code>GitOperations</code> utility that inspects local git state
+                (HEAD SHA, merge/rebase-in-progress, upstream tracking) without invoking external
+                git for every check.</li>
+            <li><b>Optional pre-compile rebase advisory:</b> when enabled
+                (<code>prepushchecker.rebasePrecheck.enabled</code>, off by default), the plugin
+                fetches each push root before scheduling the compile and prompts the user to
+                rebase first if the remote is ahead. Ensures the build runs against the integrated
+                tree so locally-clean-but-remotely-stale pushes do not surprise CI. Off by default
+                because every push would otherwise pay a network round-trip.</li>
+            <li><b>Repo-change-driven warmup compile:</b> branch switches, fetches, pulls, and
+                rebases now trigger a debounced background project compile (30s cooldown absorbs
+                bursts of state-change events from a single git operation). The compiler cache is
+                hot for the integrated tree by the time the user pushes, turning most
+                post-VCS-operation pushes into no-ops.</li>
+        </ul>
+
         <h3>1.5.3</h3>
         <ul>
             <li><b>Generated getter/setter/builder false positives fixed:</b> when terminal,
