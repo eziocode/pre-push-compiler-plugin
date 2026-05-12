@@ -49,11 +49,15 @@ public final class CompilationWarmupService implements Disposable {
     private static final String REGISTRY_KEY = "prepushchecker.warmup.enabled";
     private static final String INITIALIZED_KEY = "prepushchecker.initialized";
     private static final long DEBOUNCE_MS = 4_000L;
+    /** Minimum gap between two repo-change-driven warmups, to absorb bursts. */
+    private static final long REPO_CHANGE_COOLDOWN_MS = 30_000L;
 
     private final Project project;
     private final Set<VirtualFile> dirty = Collections.synchronizedSet(new LinkedHashSet<>());
     private final AtomicBoolean inFlight = new AtomicBoolean(false);
     private final AtomicBoolean rerun = new AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicLong lastRepoChangeTriggerNanos =
+        new java.util.concurrent.atomic.AtomicLong(0L);
     private final ScheduledExecutorService scheduler =
         Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "PrePushChecker-Warmup");
@@ -195,11 +199,83 @@ public final class CompilationWarmupService implements Disposable {
         CompilationWarmupService svc = getInstance(project);
         Disposer.register(project, svc);
 
+        // Subscribe to git repository state changes so branch switches, fetches,
+        // pulls, and rebases trigger a debounced warmup. By the time the user
+        // initiates their next push, the incremental compiler will usually be
+        // hot for the integrated tree, turning the pre-push check into a no-op.
+        try {
+            project.getMessageBus().connect(svc).subscribe(
+                git4idea.repo.GitRepository.GIT_REPO_CHANGE,
+                (git4idea.repo.GitRepositoryChangeListener) repo -> svc.onRepoChange()
+            );
+        } catch (Throwable t) {
+            // Git4Idea is a hard plugin dependency, but if a future IDE moves or
+            // renames the listener interface we don't want startup to fail.
+            LOG.debug("Could not subscribe to GIT_REPO_CHANGE", t);
+        }
+
         PropertiesComponent props = PropertiesComponent.getInstance(project);
         if (!props.getBoolean(INITIALIZED_KEY, false)) {
             props.setValue(INITIALIZED_KEY, true);
             svc.triggerInitialWarmup();
         }
+    }
+
+    /**
+     * Repo-change hook: a single git operation often fires several state-change
+     * events (e.g. {@code git pull --rebase} updates HEAD, then the index, then
+     * the reflog). Absorb the burst with a coarse cooldown and reuse the
+     * existing project warmup machinery for the actual compile.
+     */
+    private void onRepoChange() {
+        if (project.isDisposed() || !isEnabled()) return;
+        long now = System.nanoTime();
+        long last = lastRepoChangeTriggerNanos.get();
+        long cooldownNanos = TimeUnit.MILLISECONDS.toNanos(REPO_CHANGE_COOLDOWN_MS);
+        if (last != 0L && (now - last) < cooldownNanos) return;
+        if (!lastRepoChangeTriggerNanos.compareAndSet(last, now)) return;
+        LOG.info("Pre-Push Checker: warming compile after git repo change for '"
+            + project.getName() + "'");
+        triggerProjectWarmup();
+    }
+
+    /**
+     * Run a project-scope warmup compile in the background. Safe to call from
+     * any thread; single-flight (overlapping calls coalesce); skipped in
+     * power-save and dumb mode just like the on-save path.
+     */
+    public void triggerProjectWarmup() {
+        if (project.isDisposed() || !isEnabled()) return;
+        if (com.intellij.ide.PowerSaveMode.isEnabled()) return;
+        if (DumbService.getInstance(project).isDumb()) {
+            DumbService.getInstance(project).runWhenSmart(this::triggerProjectWarmup);
+            return;
+        }
+        if (!inFlight.compareAndSet(false, true)) {
+            rerun.set(true);
+            return;
+        }
+        ApplicationManager.getApplication().invokeLater(() -> {
+            try {
+                if (project.isDisposed()) { finish(); return; }
+                CompilerManager.getInstance(project).make((aborted, errorCount, warnings, ctx) -> {
+                    try {
+                        if (aborted) return;
+                        List<String> result = errorCount > 0
+                            ? PrePushCompilationHandler.formatCompilerMessages(
+                                project, ctx.getMessages(CompilerMessageCategory.ERROR))
+                            : Collections.emptyList();
+                        CompilationErrorService.getInstance(project).recordCompletion(
+                            true, Collections.emptyMap(), result);
+                    } finally {
+                        finish();
+                    }
+                });
+            } catch (Throwable t) {
+                LOG.debug("Project warmup compile failed", t);
+                finish();
+            }
+        }, ModalityState.defaultModalityState());
     }
 
     /**
