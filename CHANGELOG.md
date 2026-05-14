@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.7.0]
+
+### Added
+- **Hook repair action.** The Compilation Checker tool window can now repair and normalize managed Git hooks from the IDE, restoring missing or stale hook wiring without a manual reinstall.
+
+### Changed
+- **Improved `core.hooksPath` handling.** Hook installation, repair, exclude cleanup, and current-state inspection now resolve custom hook directories and shared git directories more reliably, including canonical path comparisons for symlinked hook locations.
+
+---
+
 ## [1.6.0]
 
 ### Added

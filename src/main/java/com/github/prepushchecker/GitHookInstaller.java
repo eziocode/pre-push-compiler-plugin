@@ -292,23 +292,16 @@ public final class GitHookInstaller {
             return new HookRepairResult(false, before, before, before.statusText());
         }
 
-        HookPaths paths = resolveHookPaths(basePath);
-        if (paths.hooksDirectory == null) {
-            return new HookRepairResult(false, before, before, before.statusText());
-        }
+        Path hooksDirectory = before.hooksDirectory();
 
         try {
-            Files.createDirectories(paths.hooksDirectory);
+            Files.createDirectories(hooksDirectory);
 
-            Path managedHook = paths.hooksDirectory.resolve(MANAGED_HOOK_NAME);
-            String managedContent = buildManagedHookScript();
-            if (!Files.exists(managedHook)
-                || !Files.readString(managedHook, StandardCharsets.UTF_8).equals(managedContent)) {
-                Files.writeString(managedHook, managedContent, StandardCharsets.UTF_8);
-            }
+            Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
+            Files.writeString(managedHook, buildManagedHookScript(), StandardCharsets.UTF_8);
             makeExecutable(managedHook.toFile());
 
-            Path mainHook = paths.hooksDirectory.resolve("pre-push");
+            Path mainHook = hooksDirectory.resolve("pre-push");
             if (Files.exists(mainHook)) {
                 String content = Files.readString(mainHook, StandardCharsets.UTF_8);
                 String repaired = buildRepairedMainHookContent(content);
@@ -320,8 +313,8 @@ public final class GitHookInstaller {
             }
             makeExecutable(mainHook.toFile());
 
-            addToRepoLocalExclude(basePath, paths.hooksDirectory);
-            cleanupLegacyManagedHooks(paths);
+            addToRepoLocalExclude(basePath, hooksDirectory);
+            cleanupLegacyManagedHooks(before);
             trackRepo(basePath);
 
             HookInspectionResult after = inspect(basePath);
@@ -340,11 +333,7 @@ public final class GitHookInstaller {
      * <p>Managed as a delimited block so we can upgrade the patterns on future plugin versions.
      */
     static void addToRepoLocalExclude(String basePath, @Nullable Path hooksDirectory) {
-        Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
-        if (gitDir == null) {
-            Path fallback = Path.of(basePath, ".git");
-            if (Files.isDirectory(fallback)) gitDir = fallback;
-        }
+        Path gitDir = resolveGitCommonDir(basePath);
         if (gitDir == null) return;
 
         Path excludeFile = gitDir.resolve("info").resolve("exclude");
@@ -396,11 +385,7 @@ public final class GitHookInstaller {
         deleteRecursively(cacheDir);
 
         // Strip the .git/info/exclude block.
-        Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
-        if (gitDir == null) {
-            Path fallback = Path.of(basePath, ".git");
-            if (Files.isDirectory(fallback)) gitDir = fallback;
-        }
+        Path gitDir = resolveGitCommonDir(basePath);
         if (gitDir != null) {
             Path excludeFile = gitDir.resolve("info").resolve("exclude");
             if (Files.exists(excludeFile)) {
@@ -464,14 +449,14 @@ public final class GitHookInstaller {
         return stripTrailingLineBreaks(cleaned) + buildDelegatingSnippet();
     }
 
-    private static void cleanupLegacyManagedHooks(HookPaths paths) {
-        if (!paths.usesCoreHooksPath()
-            || paths.hooksDirectory == null
-            || paths.legacyHooksDirectory == null
-            || samePath(paths.hooksDirectory, paths.legacyHooksDirectory)) {
+    private static void cleanupLegacyManagedHooks(HookInspectionResult before) {
+        if (!before.usesCoreHooksPath()
+            || before.hooksDirectory() == null
+            || before.legacyHooksDirectory() == null
+            || samePath(before.hooksDirectory(), before.legacyHooksDirectory())) {
             return;
         }
-        removeManagedHookArtifacts(paths.legacyHooksDirectory);
+        removeManagedHookArtifacts(before.legacyHooksDirectory());
     }
 
     private static void removeManagedHookArtifacts(Path hooksDirectory) {
@@ -517,7 +502,7 @@ public final class GitHookInstaller {
         }
     }
 
-    private static int countMarkerOccurrences(String content) {
+    static int countMarkerOccurrences(String content) {
         String marker = "# " + HOOK_MARKER;
         int count = 0;
         int index = 0;
@@ -610,11 +595,7 @@ public final class GitHookInstaller {
     }
 
     private static boolean isExcludeBlockCurrent(String basePath, @Nullable Path hooksDirectory) {
-        Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
-        if (gitDir == null) {
-            Path fallback = Path.of(basePath, ".git");
-            if (Files.isDirectory(fallback)) gitDir = fallback;
-        }
+        Path gitDir = resolveGitCommonDir(basePath);
         if (gitDir == null) return true;
         Path excludeFile = gitDir.resolve("info").resolve("exclude");
         if (!Files.exists(excludeFile)) return false;
@@ -736,6 +717,14 @@ public final class GitHookInstaller {
     }
 
     @Nullable
+    private static Path resolveGitCommonDir(String basePath) {
+        Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
+        if (gitDir != null) return gitDir;
+        Path fallback = Path.of(basePath, ".git");
+        return Files.isDirectory(fallback) ? fallback : null;
+    }
+
+    @Nullable
     private static Path queryGit(String basePath, String... args) {
         String output = queryGitOutput(basePath, args);
         if (output == null) return null;
@@ -782,7 +771,11 @@ public final class GitHookInstaller {
     }
 
     private static boolean samePath(Path first, Path second) {
-        return first.toAbsolutePath().normalize().equals(second.toAbsolutePath().normalize());
+        try {
+            return Files.isSameFile(first, second);
+        } catch (IOException e) {
+            return first.toAbsolutePath().normalize().equals(second.toAbsolutePath().normalize());
+        }
     }
 
     private static String humanize(HookIssue issue) {

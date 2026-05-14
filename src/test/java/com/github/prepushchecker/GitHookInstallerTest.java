@@ -91,7 +91,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             String repaired = Files.readString(mainHook, StandardCharsets.UTF_8);
             assertTrue(repaired.contains("echo \"user-hook\""));
             assertTrue(repaired.contains(GitHookInstaller.MANAGED_HOOK_NAME));
-            assertEquals(1, countOccurrences(repaired, "# " + GitHookInstaller.HOOK_MARKER));
+            assertEquals(1, GitHookInstaller.countMarkerOccurrences(repaired));
         } finally {
             GitHookInstaller.uninstall(repo.getAbsolutePath());
         }
@@ -118,7 +118,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             String repaired = Files.readString(mainHook, StandardCharsets.UTF_8);
             assertTrue(repaired.contains("echo \"user-hook\""));
             assertTrue(repaired.contains("echo \"tail\""));
-            assertEquals(1, countOccurrences(repaired, "# " + GitHookInstaller.HOOK_MARKER));
+            assertEquals(1, GitHookInstaller.countMarkerOccurrences(repaired));
             assertEquals(GitHookInstaller.buildManagedHookScript(),
                 Files.readString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), StandardCharsets.UTF_8));
         } finally {
@@ -222,16 +222,6 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         }
         tempDir.deleteOnExit();
         return tempDir;
-    }
-
-    private static int countOccurrences(String content, String needle) {
-        int count = 0;
-        int index = 0;
-        while ((index = content.indexOf(needle, index)) >= 0) {
-            count++;
-            index += needle.length();
-        }
-        return count;
     }
 
     private static void runGit(File repo, String... args) throws Exception {
