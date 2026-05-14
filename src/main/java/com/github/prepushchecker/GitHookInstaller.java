@@ -3,6 +3,7 @@ package com.github.prepushchecker;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -39,6 +40,149 @@ public final class GitHookInstaller {
         PosixFilePermission.OTHERS_EXECUTE
     );
 
+    enum HookIssue {
+        HOOKS_DIRECTORY_UNRESOLVED,
+        MANAGED_HOOK_MISSING,
+        MANAGED_HOOK_STALE,
+        MANAGED_HOOK_NOT_EXECUTABLE,
+        MAIN_HOOK_MISSING,
+        MAIN_HOOK_SNIPPET_MISSING,
+        MAIN_HOOK_SNIPPET_DUPLICATED,
+        MAIN_HOOK_SNIPPET_STALE,
+        EXCLUDE_BLOCK_MISSING,
+        STALE_LEGACY_HOOK_PRESENT
+    }
+
+    static final class HookInspectionResult {
+        private final String basePath;
+        private final Path hooksDirectory;
+        private final Path legacyHooksDirectory;
+        private final String coreHooksPath;
+        private final List<HookIssue> issues;
+
+        private HookInspectionResult(
+            String basePath,
+            @Nullable Path hooksDirectory,
+            @Nullable Path legacyHooksDirectory,
+            @Nullable String coreHooksPath,
+            List<HookIssue> issues
+        ) {
+            this.basePath = basePath;
+            this.hooksDirectory = hooksDirectory;
+            this.legacyHooksDirectory = legacyHooksDirectory;
+            this.coreHooksPath = coreHooksPath;
+            this.issues = List.copyOf(issues);
+        }
+
+        boolean isHealthy() {
+            return issues.isEmpty();
+        }
+
+        @Nullable
+        Path hooksDirectory() {
+            return hooksDirectory;
+        }
+
+        @Nullable
+        Path legacyHooksDirectory() {
+            return legacyHooksDirectory;
+        }
+
+        boolean usesCoreHooksPath() {
+            return coreHooksPath != null && !coreHooksPath.isBlank();
+        }
+
+        List<HookIssue> issues() {
+            return issues;
+        }
+
+        String statusText() {
+            if (hooksDirectory == null) {
+                return "Git hooks could not be checked for this project.";
+            }
+            if (issues.isEmpty()) {
+                String scope = usesCoreHooksPath()
+                    ? " via core.hooksPath (" + coreHooksPath + ")"
+                    : "";
+                return "Git hooks are healthy" + scope + ".";
+            }
+            return "Git hooks need repair: " + issueSummary() + ".";
+        }
+
+        String issueSummary() {
+            if (issues.isEmpty()) return "no issues";
+            List<String> labels = new ArrayList<>(issues.size());
+            for (HookIssue issue : issues) {
+                labels.add(humanize(issue));
+            }
+            return String.join(", ", labels);
+        }
+    }
+
+    static final class HookRepairResult {
+        private final boolean success;
+        private final HookInspectionResult before;
+        private final HookInspectionResult after;
+        private final String errorMessage;
+
+        private HookRepairResult(
+            boolean success,
+            HookInspectionResult before,
+            HookInspectionResult after,
+            @Nullable String errorMessage
+        ) {
+            this.success = success;
+            this.before = before;
+            this.after = after;
+            this.errorMessage = errorMessage;
+        }
+
+        boolean isSuccess() {
+            return success;
+        }
+
+        HookInspectionResult before() {
+            return before;
+        }
+
+        HookInspectionResult after() {
+            return after;
+        }
+
+        String statusText() {
+            if (!success) {
+                return "Git hook repair failed: " + (errorMessage == null ? after.issueSummary() : errorMessage);
+            }
+            if (before.isHealthy()) {
+                return after.statusText();
+            }
+            if (after.isHealthy()) {
+                return "Git hooks repaired: " + before.issueSummary() + ".";
+            }
+            return "Git hooks still need attention: " + after.issueSummary() + ".";
+        }
+    }
+
+    private static final class HookPaths {
+        private final Path hooksDirectory;
+        private final Path legacyHooksDirectory;
+        private final String coreHooksPath;
+
+        private HookPaths(
+            @Nullable Path hooksDirectory,
+            @Nullable Path legacyHooksDirectory,
+            @Nullable String coreHooksPath
+        ) {
+            this.hooksDirectory = hooksDirectory;
+            this.legacyHooksDirectory = legacyHooksDirectory;
+            this.coreHooksPath = coreHooksPath;
+        }
+
+        boolean usesCoreHooksPath() {
+            return coreHooksPath != null && !coreHooksPath.isBlank();
+        }
+    }
+
     /**
      * Project-startup entrypoint invoked by {@link PrePushProjectActivities.GitHookInstallerActivity}.
      * Kept package-public {@code static} so the Kotlin {@code ProjectActivity} bridge
@@ -52,52 +196,141 @@ public final class GitHookInstaller {
             return;
         }
 
-        Path hooksDirectory = resolveHooksDirectory(basePath);
-        if (hooksDirectory == null) {
-            LOG.info("Could not resolve a git hooks directory under " + basePath + "; skipping hook installation.");
-            return;
+        PrePushCheckerSettings.syncSettingsFile(project);
+        HookRepairResult result = repair(basePath);
+        if (result.isSuccess()) {
+            LOG.info(result.statusText());
+        } else {
+            LOG.warn(result.statusText());
         }
-        trackRepo(basePath);
+    }
 
-        Path mainHook = hooksDirectory.resolve("pre-push");
-        Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
+    static HookInspectionResult inspect(@NotNull Project project) {
+        return inspect(project.getBasePath());
+    }
+
+    static HookInspectionResult inspect(@Nullable String basePath) {
+        if (basePath == null || basePath.isBlank()) {
+            return new HookInspectionResult(basePath, null, null, null,
+                List.of(HookIssue.HOOKS_DIRECTORY_UNRESOLVED));
+        }
+
+        HookPaths paths = resolveHookPaths(basePath);
+        List<HookIssue> issues = new ArrayList<>();
+        if (paths.hooksDirectory == null) {
+            issues.add(HookIssue.HOOKS_DIRECTORY_UNRESOLVED);
+            return new HookInspectionResult(basePath, null, paths.legacyHooksDirectory,
+                paths.coreHooksPath, issues);
+        }
+
+        Path mainHook = paths.hooksDirectory.resolve("pre-push");
+        Path managedHook = paths.hooksDirectory.resolve(MANAGED_HOOK_NAME);
+        String managedContent = buildManagedHookScript();
+
+        if (!Files.exists(managedHook)) {
+            issues.add(HookIssue.MANAGED_HOOK_MISSING);
+        } else {
+            try {
+                if (!Files.readString(managedHook, StandardCharsets.UTF_8).equals(managedContent)) {
+                    issues.add(HookIssue.MANAGED_HOOK_STALE);
+                }
+                if (!Files.isExecutable(managedHook)) {
+                    issues.add(HookIssue.MANAGED_HOOK_NOT_EXECUTABLE);
+                }
+            } catch (IOException e) {
+                issues.add(HookIssue.MANAGED_HOOK_STALE);
+            }
+        }
+
+        if (!Files.exists(mainHook)) {
+            issues.add(HookIssue.MAIN_HOOK_MISSING);
+        } else {
+            try {
+                String content = Files.readString(mainHook, StandardCharsets.UTF_8);
+                int markerCount = countMarkerOccurrences(content);
+                if (markerCount == 0) {
+                    issues.add(HookIssue.MAIN_HOOK_SNIPPET_MISSING);
+                } else if (isWrapperHookContent(content)) {
+                    // A wrapper with CRLF line endings or harmless trailing whitespace is still valid.
+                } else {
+                    if (markerCount > 1) {
+                        issues.add(HookIssue.MAIN_HOOK_SNIPPET_DUPLICATED);
+                    }
+                    if (!containsCanonicalDelegatingSnippet(content)) {
+                        issues.add(HookIssue.MAIN_HOOK_SNIPPET_STALE);
+                    }
+                }
+            } catch (IOException e) {
+                issues.add(HookIssue.MAIN_HOOK_SNIPPET_STALE);
+            }
+        }
+
+        if (!isExcludeBlockCurrent(basePath, paths.hooksDirectory)) {
+            issues.add(HookIssue.EXCLUDE_BLOCK_MISSING);
+        }
+
+        if (paths.usesCoreHooksPath()
+            && paths.legacyHooksDirectory != null
+            && !samePath(paths.hooksDirectory, paths.legacyHooksDirectory)
+            && containsManagedArtifacts(paths.legacyHooksDirectory)) {
+            issues.add(HookIssue.STALE_LEGACY_HOOK_PRESENT);
+        }
+
+        return new HookInspectionResult(basePath, paths.hooksDirectory, paths.legacyHooksDirectory,
+            paths.coreHooksPath, issues);
+    }
+
+    static HookRepairResult repair(@NotNull Project project) {
+        touchGlobalMarker();
+        PrePushCheckerSettings.syncSettingsFile(project);
+        return repair(project.getBasePath());
+    }
+
+    static HookRepairResult repair(@Nullable String basePath) {
+        HookInspectionResult before = inspect(basePath);
+        if (basePath == null || basePath.isBlank() || before.hooksDirectory() == null) {
+            return new HookRepairResult(false, before, before, before.statusText());
+        }
+
+        HookPaths paths = resolveHookPaths(basePath);
+        if (paths.hooksDirectory == null) {
+            return new HookRepairResult(false, before, before, before.statusText());
+        }
 
         try {
-            Files.createDirectories(hooksDirectory);
+            Files.createDirectories(paths.hooksDirectory);
+
+            Path managedHook = paths.hooksDirectory.resolve(MANAGED_HOOK_NAME);
             String managedContent = buildManagedHookScript();
-            if (!Files.exists(managedHook) || !Files.readString(managedHook, StandardCharsets.UTF_8).equals(managedContent)) {
+            if (!Files.exists(managedHook)
+                || !Files.readString(managedHook, StandardCharsets.UTF_8).equals(managedContent)) {
                 Files.writeString(managedHook, managedContent, StandardCharsets.UTF_8);
             }
             makeExecutable(managedHook.toFile());
 
+            Path mainHook = paths.hooksDirectory.resolve("pre-push");
             if (Files.exists(mainHook)) {
-                String existingContent = Files.readString(mainHook, StandardCharsets.UTF_8);
-                if (existingContent.contains(HOOK_MARKER)) {
-                    // Always refresh our own wrapper so upgrades ship cleanly.
-                    Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
-                    makeExecutable(mainHook.toFile());
-                    LOG.info("Refreshed managed pre-push hook at " + mainHook);
-                    addToRepoLocalExclude(basePath, hooksDirectory);
-                    return;
+                String content = Files.readString(mainHook, StandardCharsets.UTF_8);
+                String repaired = buildRepairedMainHookContent(content);
+                if (!content.equals(repaired)) {
+                    Files.writeString(mainHook, repaired, StandardCharsets.UTF_8);
                 }
-
-                Files.writeString(mainHook, existingContent + buildDelegatingSnippet(), StandardCharsets.UTF_8);
-                makeExecutable(mainHook.toFile());
-                LOG.info("Chained the managed pre-push checker into an existing hook at " + mainHook);
-                addToRepoLocalExclude(basePath, hooksDirectory);
-                return;
+            } else {
+                Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
             }
-
-            Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
             makeExecutable(mainHook.toFile());
-            LOG.info("Installed pre-push hook wrapper at " + mainHook
-                + " (detected build tool: " + detectBuildTool(basePath) + ").");
-        } catch (IOException ioException) {
-            LOG.error("Failed to install the pre-push hook.", ioException);
-        }
 
-        // Keep plugin-owned files out of `git status` / Sublime Merge untracked lists.
-        addToRepoLocalExclude(basePath, hooksDirectory);
+            addToRepoLocalExclude(basePath, paths.hooksDirectory);
+            cleanupLegacyManagedHooks(paths);
+            trackRepo(basePath);
+
+            HookInspectionResult after = inspect(basePath);
+            return new HookRepairResult(after.isHealthy(), before, after, null);
+        } catch (IOException ioException) {
+            LOG.error("Failed to repair the pre-push hook.", ioException);
+            HookInspectionResult after = inspect(basePath);
+            return new HookRepairResult(false, before, after, ioException.getMessage());
+        }
     }
 
     /**
@@ -106,7 +339,7 @@ public final class GitHookInstaller {
      *
      * <p>Managed as a delimited block so we can upgrade the patterns on future plugin versions.
      */
-    static void addToRepoLocalExclude(String basePath, @org.jetbrains.annotations.Nullable Path hooksDirectory) {
+    static void addToRepoLocalExclude(String basePath, @Nullable Path hooksDirectory) {
         Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
         if (gitDir == null) {
             Path fallback = Path.of(basePath, ".git");
@@ -115,20 +348,7 @@ public final class GitHookInstaller {
         if (gitDir == null) return;
 
         Path excludeFile = gitDir.resolve("info").resolve("exclude");
-
-        StringBuilder block = new StringBuilder();
-        block.append("# BEGIN ").append(HOOK_MARKER).append('\n');
-        block.append("/.idea/pre-push-checker/\n");
-
-        // If the resolved hooks dir is inside the working tree (e.g. core.hooksPath=.githooks),
-        // also exclude the hook files themselves so they don't appear as unversioned.
-        String hooksRel = relativeToWorkTree(basePath, hooksDirectory);
-        if (hooksRel != null && !hooksRel.isEmpty()) {
-            block.append('/').append(hooksRel).append("/pre-push\n");
-            block.append('/').append(hooksRel).append('/').append(MANAGED_HOOK_NAME).append('\n');
-        }
-        block.append("# END ").append(HOOK_MARKER).append('\n');
-        String desiredBlock = block.toString();
+        String desiredBlock = buildExcludeBlock(basePath, hooksDirectory);
 
         try {
             Files.createDirectories(excludeFile.getParent());
@@ -162,31 +382,13 @@ public final class GitHookInstaller {
     static void uninstall(String basePath) {
         if (basePath == null || basePath.isBlank()) return;
 
-        Path hooksDirectory = resolveHooksDirectory(basePath);
-        if (hooksDirectory != null) {
-            Path mainHook = hooksDirectory.resolve("pre-push");
-            Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
-            try { Files.deleteIfExists(managedHook); } catch (IOException ignored) {}
-
-            if (Files.exists(mainHook)) {
-                try {
-                    String content = Files.readString(mainHook, StandardCharsets.UTF_8);
-                    if (content.equals(buildWrapperHookScript())) {
-                        Files.deleteIfExists(mainHook);
-                    } else if (content.contains(HOOK_MARKER)) {
-                        String snippet = buildDelegatingSnippet();
-                        String cleaned = content.contains(snippet)
-                            ? content.replace(snippet, "")
-                            : stripDelegatingLines(content);
-                        cleaned = cleaned.replaceAll("\\n{3,}", "\n\n");
-                        if (cleaned.isBlank()) {
-                            Files.deleteIfExists(mainHook);
-                        } else {
-                            Files.writeString(mainHook, cleaned, StandardCharsets.UTF_8);
-                        }
-                    }
-                } catch (IOException ignored) {}
-            }
+        HookPaths paths = resolveHookPaths(basePath);
+        if (paths.hooksDirectory != null) {
+            removeManagedHookArtifacts(paths.hooksDirectory);
+        }
+        if (paths.legacyHooksDirectory != null
+            && (paths.hooksDirectory == null || !samePath(paths.hooksDirectory, paths.legacyHooksDirectory))) {
+            removeManagedHookArtifacts(paths.legacyHooksDirectory);
         }
 
         // Remove plugin cache + log dir.
@@ -232,7 +434,7 @@ public final class GitHookInstaller {
 
     private static String stripDelegatingLines(String content) {
         StringBuilder out = new StringBuilder(content.length());
-        String[] lines = content.split("\n", -1);
+        String[] lines = normalizeLineEndings(content).split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
             if (line.trim().equals("# " + HOOK_MARKER)) {
@@ -247,6 +449,109 @@ public final class GitHookInstaller {
             if (i < lines.length - 1) out.append('\n');
         }
         return out.toString();
+    }
+
+    private static String buildRepairedMainHookContent(String existingContent) {
+        if (isWrapperHookContent(existingContent)) {
+            return buildWrapperHookScript();
+        }
+
+        String cleaned = stripDelegatingLines(existingContent)
+            .replaceAll("\\n{3,}", "\n\n");
+        if (cleaned.isBlank()) {
+            return buildWrapperHookScript();
+        }
+        return stripTrailingLineBreaks(cleaned) + buildDelegatingSnippet();
+    }
+
+    private static void cleanupLegacyManagedHooks(HookPaths paths) {
+        if (!paths.usesCoreHooksPath()
+            || paths.hooksDirectory == null
+            || paths.legacyHooksDirectory == null
+            || samePath(paths.hooksDirectory, paths.legacyHooksDirectory)) {
+            return;
+        }
+        removeManagedHookArtifacts(paths.legacyHooksDirectory);
+    }
+
+    private static void removeManagedHookArtifacts(Path hooksDirectory) {
+        Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
+        try {
+            Files.deleteIfExists(managedHook);
+        } catch (IOException e) {
+            LOG.warn("Could not delete managed hook " + managedHook + ": " + e.getMessage());
+        }
+
+        Path mainHook = hooksDirectory.resolve("pre-push");
+        if (!Files.exists(mainHook)) return;
+        try {
+            String content = Files.readString(mainHook, StandardCharsets.UTF_8);
+            if (isWrapperHookContent(content)) {
+                Files.deleteIfExists(mainHook);
+                return;
+            }
+            if (!content.contains(HOOK_MARKER)) return;
+
+            String cleaned = stripDelegatingLines(content)
+                .replaceAll("\\n{3,}", "\n\n");
+            if (cleaned.isBlank()) {
+                Files.deleteIfExists(mainHook);
+            } else {
+                Files.writeString(mainHook, stripTrailingLineBreaks(cleaned) + '\n', StandardCharsets.UTF_8);
+            }
+        } catch (IOException e) {
+            LOG.warn("Could not clean managed hook content from " + mainHook + ": " + e.getMessage());
+        }
+    }
+
+    private static boolean containsManagedArtifacts(Path hooksDirectory) {
+        Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
+        if (Files.exists(managedHook)) return true;
+
+        Path mainHook = hooksDirectory.resolve("pre-push");
+        if (!Files.exists(mainHook)) return false;
+        try {
+            return Files.readString(mainHook, StandardCharsets.UTF_8).contains(HOOK_MARKER);
+        } catch (IOException e) {
+            return true;
+        }
+    }
+
+    private static int countMarkerOccurrences(String content) {
+        String marker = "# " + HOOK_MARKER;
+        int count = 0;
+        int index = 0;
+        while ((index = content.indexOf(marker, index)) >= 0) {
+            count++;
+            index += marker.length();
+        }
+        return count;
+    }
+
+    private static boolean containsCanonicalDelegatingSnippet(String content) {
+        return normalizeLineEndings(content).contains(normalizeLineEndings(buildDelegatingSnippet()));
+    }
+
+    private static boolean isWrapperHookContent(String content) {
+        return normalizeHookContent(content).equals(normalizeHookContent(buildWrapperHookScript()));
+    }
+
+    private static String normalizeHookContent(String content) {
+        return normalizeLineEndings(content).stripTrailing();
+    }
+
+    private static String normalizeLineEndings(String content) {
+        return content.replace("\r\n", "\n").replace('\r', '\n');
+    }
+
+    private static String stripTrailingLineBreaks(String content) {
+        int end = content.length();
+        while (end > 0) {
+            char c = content.charAt(end - 1);
+            if (c != '\n' && c != '\r') break;
+            end--;
+        }
+        return content.substring(0, end);
     }
 
     private static void deleteRecursively(Path path) {
@@ -288,11 +593,44 @@ public final class GitHookInstaller {
         return content.substring(0, b) + content.substring(stop);
     }
 
-    @org.jetbrains.annotations.Nullable
-    private static String relativeToWorkTree(String basePath, @org.jetbrains.annotations.Nullable Path hooksDirectory) {
+    private static String buildExcludeBlock(String basePath, @Nullable Path hooksDirectory) {
+        StringBuilder block = new StringBuilder();
+        block.append("# BEGIN ").append(HOOK_MARKER).append('\n');
+        block.append("/.idea/pre-push-checker/\n");
+
+        // If the resolved hooks dir is inside the working tree (e.g. core.hooksPath=.githooks),
+        // also exclude the hook files themselves so they don't appear as unversioned.
+        String hooksRel = relativeToWorkTree(basePath, hooksDirectory);
+        if (hooksRel != null && !hooksRel.isEmpty()) {
+            block.append('/').append(hooksRel).append("/pre-push\n");
+            block.append('/').append(hooksRel).append('/').append(MANAGED_HOOK_NAME).append('\n');
+        }
+        block.append("# END ").append(HOOK_MARKER).append('\n');
+        return block.toString();
+    }
+
+    private static boolean isExcludeBlockCurrent(String basePath, @Nullable Path hooksDirectory) {
+        Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
+        if (gitDir == null) {
+            Path fallback = Path.of(basePath, ".git");
+            if (Files.isDirectory(fallback)) gitDir = fallback;
+        }
+        if (gitDir == null) return true;
+        Path excludeFile = gitDir.resolve("info").resolve("exclude");
+        if (!Files.exists(excludeFile)) return false;
+        try {
+            return Files.readString(excludeFile, StandardCharsets.UTF_8)
+                .contains(buildExcludeBlock(basePath, hooksDirectory));
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    @Nullable
+    private static String relativeToWorkTree(String basePath, @Nullable Path hooksDirectory) {
         if (hooksDirectory == null) return null;
         try {
-            Path base = Path.of(basePath).toAbsolutePath().normalize();
+            Path base = resolveWorkTreeRoot(basePath);
             Path hooks = hooksDirectory.toAbsolutePath().normalize();
             if (!hooks.startsWith(base)) return null;
             // Never exclude the default /.git/hooks/ — it isn't tracked anyway.
@@ -315,9 +653,32 @@ public final class GitHookInstaller {
      * Falls back to {@code <basePath>/.git/hooks} only when git is unavailable.
      */
     static Path resolveHooksDirectory(String basePath) {
-        Path viaGit = queryGit(basePath, "rev-parse", "--git-path", "hooks");
-        if (viaGit != null) {
-            return viaGit;
+        return resolveHookPaths(basePath).hooksDirectory;
+    }
+
+    private static HookPaths resolveHookPaths(String basePath) {
+        String coreHooksPath = queryGitOutput(basePath, "config", "--path", "--get", "core.hooksPath");
+        if (coreHooksPath != null && coreHooksPath.isBlank()) {
+            coreHooksPath = null;
+        }
+
+        Path legacyHooksDirectory = resolveDefaultHooksDirectory(basePath);
+        Path hooksDirectory = null;
+        if (coreHooksPath != null) {
+            hooksDirectory = resolveConfiguredHooksPath(basePath, coreHooksPath);
+        }
+        if (hooksDirectory == null) {
+            Path viaGit = queryGit(basePath, "rev-parse", "--git-path", "hooks");
+            hooksDirectory = viaGit != null ? viaGit : legacyHooksDirectory;
+        }
+        return new HookPaths(hooksDirectory, legacyHooksDirectory, coreHooksPath);
+    }
+
+    @Nullable
+    private static Path resolveDefaultHooksDirectory(String basePath) {
+        Path gitCommonDir = queryGit(basePath, "rev-parse", "--git-common-dir");
+        if (gitCommonDir != null) {
+            return gitCommonDir.resolve("hooks").normalize();
         }
 
         Path dotGit = Path.of(basePath, ".git");
@@ -346,7 +707,47 @@ public final class GitHookInstaller {
         return null;
     }
 
+    @Nullable
+    private static Path resolveConfiguredHooksPath(String basePath, String configuredHooksPath) {
+        String value = configuredHooksPath.trim();
+        if (value.isEmpty()) return null;
+        Path configured = expandUserHome(value);
+        if (!configured.isAbsolute()) {
+            configured = resolveWorkTreeRoot(basePath).resolve(configured);
+        }
+        return configured.toAbsolutePath().normalize();
+    }
+
+    private static Path expandUserHome(String path) {
+        if (path.equals("~")) {
+            return Path.of(System.getProperty("user.home"));
+        }
+        if (path.startsWith("~/") || path.startsWith("~" + File.separator)) {
+            return Path.of(System.getProperty("user.home")).resolve(path.substring(2));
+        }
+        return Path.of(path);
+    }
+
+    private static Path resolveWorkTreeRoot(String basePath) {
+        Path workTreeRoot = queryGit(basePath, "rev-parse", "--show-toplevel");
+        return workTreeRoot != null
+            ? workTreeRoot.toAbsolutePath().normalize()
+            : Path.of(basePath).toAbsolutePath().normalize();
+    }
+
+    @Nullable
     private static Path queryGit(String basePath, String... args) {
+        String output = queryGitOutput(basePath, args);
+        if (output == null) return null;
+        Path candidate = Path.of(output);
+        if (!candidate.isAbsolute()) {
+            candidate = Path.of(basePath).resolve(output).normalize();
+        }
+        return candidate;
+    }
+
+    @Nullable
+    private static String queryGitOutput(String basePath, String... args) {
         String[] cmd = new String[args.length + 1];
         cmd[0] = "git";
         System.arraycopy(args, 0, cmd, 1, args.length);
@@ -373,17 +774,30 @@ public final class GitHookInstaller {
             if (process.exitValue() != 0 || output.isEmpty()) {
                 return null;
             }
-            Path candidate = Path.of(output);
-            if (!candidate.isAbsolute()) {
-                candidate = Path.of(basePath).resolve(output).normalize();
-            }
-            return candidate;
-        } catch (IOException | InterruptedException ex) {
-            if (ex instanceof InterruptedException) {
-                Thread.currentThread().interrupt();
-            }
+            return output;
+        } catch (IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
             return null;
         }
+    }
+
+    private static boolean samePath(Path first, Path second) {
+        return first.toAbsolutePath().normalize().equals(second.toAbsolutePath().normalize());
+    }
+
+    private static String humanize(HookIssue issue) {
+        return switch (issue) {
+            case HOOKS_DIRECTORY_UNRESOLVED -> "hooks directory unresolved";
+            case MANAGED_HOOK_MISSING -> "managed hook missing";
+            case MANAGED_HOOK_STALE -> "managed hook outdated or edited";
+            case MANAGED_HOOK_NOT_EXECUTABLE -> "managed hook not executable";
+            case MAIN_HOOK_MISSING -> "pre-push hook missing";
+            case MAIN_HOOK_SNIPPET_MISSING -> "pre-push hook does not call the checker";
+            case MAIN_HOOK_SNIPPET_DUPLICATED -> "duplicate checker hook snippets";
+            case MAIN_HOOK_SNIPPET_STALE -> "checker hook snippet needs refresh";
+            case EXCLUDE_BLOCK_MISSING -> "repo-local exclude block missing";
+            case STALE_LEGACY_HOOK_PRESENT -> "stale managed hook in legacy .git/hooks";
+        };
     }
 
     static BuildTool detectBuildTool(String basePath) {

@@ -24,8 +24,9 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Auto-retry on success** — when the background pre-push check passes, the plugin runs `git push` automatically per repository root with non-interactive credential settings and a 120s timeout
 - **Failure-choice dialog** — when errors are found, presents Reset Commit / Push Anyway / Leave Commit / Cancel options so you can recover without leaving the IDE
 - **HEAD-snapshot stash in the external hook** — when the IDE socket is unreachable, the hook stashes the working tree before invoking Gradle/Maven so the build sees only HEAD content and A/B mismatches still surface; an `EXIT INT TERM HUP` trap guarantees stash pop on any interrupt
-- **Terminal push guard** — installs a managed `pre-push` Git hook that reuses the running IDE compiler when available, then falls back to Gradle or Maven against a clean HEAD snapshot
+- **Terminal push guard** — installs a managed `pre-push` Git hook, honors `core.hooksPath`, reuses the running IDE compiler when available, then falls back to Gradle or Maven against a clean HEAD snapshot
 - **Compilation Checker tool window** — right-side panel that shows errors from the last check, with file-type icons and editor navigation
+- **Git hook repair action** — rechecks and repairs the terminal hook from the tool window if another tool overwrites or edits it
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
 - **Refresh action** — re-run the compilation check from within the push-block dialog without cancelling the push flow
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
@@ -72,7 +73,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 
 ### Terminal / External Git Push (Sublime Merge, SourceTree, GitHub Desktop, …)
 
-On project open the plugin installs a managed `pre-push` hook in your repo's hooks directory. The hooks directory is resolved the same way git itself does (via `git rev-parse --git-path hooks`), so worktrees, submodules, and repos that set `core.hooksPath` are handled correctly.
+On project open the plugin installs a managed `pre-push` hook in your repo's effective hooks directory. Repositories that set `core.hooksPath` are handled explicitly, so the hook is installed where terminal and external Git clients will actually execute it.
 
 When you push from a terminal or an external git client:
 
@@ -84,7 +85,20 @@ When you push from a terminal or an external git client:
    - It **parses the log**, extracts the error locations, and shows them in the **Compilation Checker** tool window so you can double-click to jump to the offending line.
    - It raises a **balloon notification** with an *Open Compilation Checker* action so the errors are front-and-centre even if you were working in a different tool window.
 
-> The hook is written idempotently — it only overwrites hooks it previously installed, and chains non-destructively when a custom `pre-push` hook already exists.
+If another plugin or a manual edit overwrites the hook, the plugin rechecks it on startup and the tool window can repair it on demand. Repair recreates the managed hook, restores one canonical plugin snippet, removes duplicate or partial plugin snippets, and preserves unrelated custom hook logic.
+
+> The hook is written idempotently — it only overwrites plugin-managed content, chains non-destructively when a custom `pre-push` hook already exists, and cleans stale plugin-managed hooks from legacy `.git/hooks` when `core.hooksPath` is active.
+
+### Disable / Uninstall Cleanup
+
+When the plugin is disabled or uninstalled, it removes plugin-owned leftovers from tracked repositories:
+
+- The managed `pre-push-prepushchecker` hook and plugin-managed wrapper/snippet
+- `.idea/pre-push-checker/` cache and hook settings files
+- The plugin's delimited block in `.git/info/exclude`
+- Stale plugin-managed hooks in legacy `.git/hooks` when the repo uses `core.hooksPath`
+
+User-authored hook logic and the repository's `core.hooksPath` setting are preserved.
 
 ---
 
@@ -96,6 +110,7 @@ Open **View → Tool Windows → Compilation Checker** (or click the side panel 
 - Toggle **Enable strict A/B dependency guard** for the project. It is off by default; when enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
 - See file-type icons for quick visual identification
 - **Run Check** button (hammer icon) — triggers a full project compile on demand
+- **Recheck / Repair Git Hooks** button (refresh icon) — verifies the terminal hook path and repairs missing, edited, or duplicated plugin-managed hook content
 - **Report Issue** button (warning icon) — opens the plugin's GitHub Issues page with a pre-populated title so you can file a bug in two clicks
 - Double-click or press **Enter** on any entry — jumps to the file and line in the editor
 

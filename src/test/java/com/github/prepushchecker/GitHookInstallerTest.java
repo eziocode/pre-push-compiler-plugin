@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 
 public class GitHookInstallerTest extends BasePlatformTestCase {
     public void testDetectBuildToolPrefersGradleWrapper() throws IOException {
@@ -69,6 +70,89 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
 
         assertTrue(snippet.contains(GitHookInstaller.MANAGED_HOOK_NAME));
         assertTrue(snippet.contains(GitHookInstaller.HOOK_MARKER));
+    }
+
+    public void testRepairRestoresOverwrittenHookWhileKeepingUserLogic() throws Exception {
+        File repo = createTempDir("prepushchecker-repair-overwritten");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        String userHook = "#!/usr/bin/env sh\n" +
+            "echo \"user-hook\"\n";
+        Files.writeString(mainHook, userHook, StandardCharsets.UTF_8);
+
+        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(repo.getAbsolutePath());
+        try {
+            assertTrue(result.statusText(), result.isSuccess());
+
+            assertTrue(Files.exists(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+            String repaired = Files.readString(mainHook, StandardCharsets.UTF_8);
+            assertTrue(repaired.contains("echo \"user-hook\""));
+            assertTrue(repaired.contains(GitHookInstaller.MANAGED_HOOK_NAME));
+            assertEquals(1, countOccurrences(repaired, "# " + GitHookInstaller.HOOK_MARKER));
+        } finally {
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
+    }
+
+    public void testRepairNormalizesDuplicateSnippetsAndPreservesUserHook() throws Exception {
+        File repo = createTempDir("prepushchecker-repair-duplicates");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        String originalUserLogic = "#!/usr/bin/env sh\necho \"user-hook\"\n";
+        String duplicated = originalUserLogic + GitHookInstaller.buildDelegatingSnippet()
+            + GitHookInstaller.buildDelegatingSnippet() + "echo \"tail\"\n";
+        Files.writeString(mainHook, duplicated, StandardCharsets.UTF_8);
+        Files.writeString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), "edited\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(repo.getAbsolutePath());
+        try {
+            assertTrue(result.statusText(), result.isSuccess());
+
+            String repaired = Files.readString(mainHook, StandardCharsets.UTF_8);
+            assertTrue(repaired.contains("echo \"user-hook\""));
+            assertTrue(repaired.contains("echo \"tail\""));
+            assertEquals(1, countOccurrences(repaired, "# " + GitHookInstaller.HOOK_MARKER));
+            assertEquals(GitHookInstaller.buildManagedHookScript(),
+                Files.readString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), StandardCharsets.UTF_8));
+        } finally {
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
+    }
+
+    public void testRepairHonorsCoreHooksPathAndRemovesLegacyManagedHooks() throws Exception {
+        File repo = createTempDir("prepushchecker-core-hooks-path");
+        runGit(repo, "init");
+        runGit(repo, "config", "core.hooksPath", ".githooks");
+
+        Path repoPath = repo.toPath();
+        Path configuredHooksDir = repoPath.resolve(".githooks");
+        Path legacyHooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(configuredHooksDir);
+        Files.createDirectories(legacyHooksDir);
+        Files.writeString(legacyHooksDir.resolve("pre-push"), GitHookInstaller.buildWrapperHookScript(),
+            StandardCharsets.UTF_8);
+        Files.writeString(legacyHooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), "old\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(repo.getAbsolutePath());
+        try {
+            assertTrue(result.statusText(), result.isSuccess());
+            assertEquals(configuredHooksDir.toRealPath(),
+                GitHookInstaller.resolveHooksDirectory(repo.getAbsolutePath()).toRealPath());
+            assertTrue(Files.exists(configuredHooksDir.resolve("pre-push")));
+            assertTrue(Files.exists(configuredHooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+            assertFalse(Files.exists(legacyHooksDir.resolve("pre-push")));
+            assertFalse(Files.exists(legacyHooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+        } finally {
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
     }
 
     public void testUninstallRemovesWrapperHookCacheAndExcludeBlock() throws Exception {
@@ -138,5 +222,33 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         }
         tempDir.deleteOnExit();
         return tempDir;
+    }
+
+    private static int countOccurrences(String content, String needle) {
+        int count = 0;
+        int index = 0;
+        while ((index = content.indexOf(needle, index)) >= 0) {
+            count++;
+            index += needle.length();
+        }
+        return count;
+    }
+
+    private static void runGit(File repo, String... args) throws Exception {
+        String[] command = new String[args.length + 1];
+        command[0] = "git";
+        System.arraycopy(args, 0, command, 1, args.length);
+        Process process = new ProcessBuilder(command)
+            .directory(repo)
+            .redirectErrorStream(true)
+            .start();
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            fail("Timed out running git " + String.join(" ", args));
+        }
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (process.exitValue() != 0) {
+            fail("git " + String.join(" ", args) + " failed: " + output);
+        }
     }
 }

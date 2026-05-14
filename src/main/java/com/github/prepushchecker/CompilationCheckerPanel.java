@@ -1,5 +1,7 @@
 package com.github.prepushchecker;
 
+import com.intellij.notification.NotificationGroupManager;
+import com.intellij.notification.NotificationType;
 import com.intellij.icons.AllIcons;
 import com.intellij.ide.BrowserUtil;
 import com.intellij.openapi.Disposable;
@@ -45,6 +47,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final DefaultListModel<String> listModel = new DefaultListModel<>();
     private final JBLabel statusLabel = new JBLabel(" ");
     private final Runnable serviceListener = this::onServiceUpdate;
+    private String hookStatusText = " ";
 
     CompilationCheckerPanel(@NotNull Project project) {
         super(new BorderLayout());
@@ -57,6 +60,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         group.add(new RunCheckAction());
         group.addSeparator();
         group.add(new RebuildCachesAction());
+        group.addSeparator();
+        group.add(new RepairHooksAction());
         group.addSeparator();
         group.add(new ForceNextPushAction());
         group.addSeparator();
@@ -116,7 +121,12 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         List<String> errors = CompilationErrorService.getInstance(project).getErrors();
         listModel.clear();
         errors.forEach(listModel::addElement);
-        statusLabel.setText(errors.isEmpty() ? " " : errors.size() + " error(s) from last check");
+        if (errors.isEmpty()) {
+            statusLabel.setText(hookStatusText);
+        } else {
+            String hookSuffix = hookStatusText.isBlank() ? "" : " - " + hookStatusText;
+            statusLabel.setText(errors.size() + " error(s) from last check" + hookSuffix);
+        }
     }
 
     private JComponent createSettingsPanel() {
@@ -325,6 +335,43 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             } else {
                 PrePushCheckerSettings.setForcePushBypass(project);
             }
+        }
+    }
+
+    private final class RepairHooksAction extends AnAction {
+
+        RepairHooksAction() {
+            super("Recheck / Repair Git Hooks",
+                "Verify and repair the terminal pre-push hook used by this plugin",
+                AllIcons.Actions.ForceRefresh);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            ProgressManager.getInstance().run(
+                new Task.Backgroundable(project, "Rechecking Git Hooks", true) {
+                    @Override
+                    public void run(@NotNull ProgressIndicator indicator) {
+                        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(project);
+                        String message = result.statusText();
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            if (project.isDisposed()) return;
+                            hookStatusText = message;
+                            onServiceUpdate();
+                            if (!result.isSuccess()) {
+                                NotificationGroupManager.getInstance()
+                                    .getNotificationGroup("Pre-Push Compilation Checker")
+                                    .createNotification("Git hook repair failed", message, NotificationType.WARNING)
+                                    .notify(project);
+                            }
+                        }, ModalityState.defaultModalityState());
+                    }
+                });
         }
     }
 
