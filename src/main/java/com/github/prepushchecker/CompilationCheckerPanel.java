@@ -20,6 +20,7 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.IconLoader;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
@@ -42,6 +43,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 final class CompilationCheckerPanel extends JPanel implements Disposable {
+
+    private static final Icon REPAIR_HOOKS_ICON =
+        IconLoader.getIcon("/icons/repairHooks.svg", CompilationCheckerPanel.class);
 
     private final Project project;
     private final DefaultListModel<String> listModel = new DefaultListModel<>();
@@ -343,7 +347,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         RepairHooksAction() {
             super("Recheck / Repair Git Hooks",
                 "Verify and repair the terminal pre-push hook used by this plugin",
-                AllIcons.Actions.ForceRefresh);
+                REPAIR_HOOKS_ICON);
         }
 
         @Override

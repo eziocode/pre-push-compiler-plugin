@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.7.1]
+
+### Changed
+- **Dedicated repair-hook icon.** The Compilation Checker tool window now uses a plugin-specific repair icon for the Recheck / Repair Git Hooks action instead of the generic refresh icon.
+
+### Fixed
+- **Stale build-output fallback false positives.** When the external Maven/Gradle fallback reports `bad class file` errors caused by missing class files under `target/classes`, `target/test-classes`, or `build/classes`, the hook now refreshes generated class output and retries once before blocking. The hook log now reflects the refreshed compile result instead of stale cache output.
+
+---
+
 ## [1.7.0]
 
 ### Added

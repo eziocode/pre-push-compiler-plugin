@@ -31,18 +31,30 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("try_ide_compile_with_retry"));
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
         assertTrue(script.contains("IntelliJ incremental compile unavailable"));
-        assertTrue(script.contains("Fallback reported generated-symbol errors; retrying IntelliJ incremental compile once before aborting"));
+        assertTrue(script.contains("Fallback reported likely cache/generated-symbol false positives; retrying IntelliJ incremental compile once before aborting"));
         assertTrue(script.contains("LAST_FALLBACK_OK_HEAD_FILE"));
         assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
-        assertTrue(script.contains("compile_failure_touches_pushed_files"));
+        assertTrue(script.contains("extract_error_records"));
+        assertTrue(script.contains("suppression_hard_gate_allows"));
+        assertTrue(script.contains("all_error_records_safe_generated_symbols"));
+        assertTrue(script.contains("error_records_touch_pushed_files"));
+        assertTrue(script.contains("error_records_include_build_files"));
         assertTrue(script.contains("looks_like_generated_symbol_false_positive"));
-        assertTrue(script.contains("only_generated_symbol_errors"));
+        assertTrue(script.contains("looks_like_stale_build_output"));
+        assertTrue(script.contains("bad class file:"));
+        assertTrue(script.contains("NoSuchFileException:"));
+        assertTrue(script.contains("preview[[:space:]]+feature"));
+        assertTrue(script.contains("package[[:space:]]+[^[:space:]]+[[:space:]]+does not exist"));
+        assertTrue(script.contains("cannot access[[:space:]]+"));
+        assertTrue(script.contains("/target/(test-)?classes/|/build/classes/"));
+        assertTrue(script.contains("clear_stale_build_output"));
+        assertTrue(script.contains("Build output cache looks stale; refreshing class output before retrying fallback compile."));
+        assertTrue(script.contains("mvnd -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false"));
         assertTrue(script.contains("retrying full compile scope once"));
         assertTrue(script.contains("run_build_tool_command \"classes testClasses\" \"test-compile\" \"$TMP_OUT\""));
-        assertTrue(script.contains("if [ $rc -ne 0 ] && only_generated_symbol_errors \"$TMP_OUT\"; then"));
-        assertFalse(script.contains("project_uses_lombok && only_generated_symbol_errors"));
-        assertTrue(script.contains("Build-tool fallback reported only generated setter/getter/builder symbol errors"));
-        assertTrue(script.contains("Build-tool fallback reported generated-symbol errors outside pushed files"));
+        assertTrue(script.contains("if [ $rc -ne 0 ] && suppression_hard_gate_allows \"$TMP_OUT\" \"$TMP_REC\"; then"));
+        assertFalse(script.contains("project_uses_lombok && all_error_records_safe_generated_symbols"));
+        assertTrue(script.contains("Build-tool fallback reported only safe generated-symbol records outside pushed files"));
     }
 
     public void testManagedHookContainsSelfCleanup() {
@@ -215,6 +227,63 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertFalse(updated.contains(GitHookInstaller.MANAGED_HOOK_NAME));
     }
 
+    public void testManagedHookBlocksMixedGeneratedAndRealErrors() throws Exception {
+        File repo = createTempDir("prepushchecker-mixed-errors");
+        runGit(repo, "init");
+        runGit(repo, "config", "user.email", "test@example.com");
+        runGit(repo, "config", "user.name", "Test User");
+
+        Path repoPath = repo.toPath();
+        Path readme = repoPath.resolve("README.md");
+        Files.writeString(readme, "seed\n", StandardCharsets.UTF_8);
+        runGit(repo, "add", "README.md");
+        runGit(repo, "commit", "-m", "seed");
+
+        Path source = repoPath.resolve("src").resolve("main").resolve("java").resolve("Touched.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class Touched {}\n", StandardCharsets.UTF_8);
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "init");
+        String headSha = runGitOutput(repo, "rev-parse", "HEAD").trim();
+
+        Path hook = repoPath.resolve(".git").resolve("hooks").resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Files.writeString(hook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+        assertTrue(hook.toFile().setExecutable(true, false));
+
+        Path fakeBuild = Files.createTempFile("prepushchecker-fake-build-", ".sh");
+        fakeBuild.toFile().deleteOnExit();
+        Files.writeString(fakeBuild,
+            "#!/usr/bin/env sh\n"
+                + "echo \"[ERROR] " + repoPath + "/src/main/java/Unrelated.java:[10,2] cannot find symbol\"\n"
+                + "echo \"[ERROR]   symbol:   class ApprovalProcessRuleBuilder\"\n"
+                + "echo \"[ERROR] " + repoPath + "/src/main/java/Unrelated.java:[12,2] package com.example.missing does not exist\"\n"
+                + "exit 1\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeBuild.toFile().setExecutable(true, false));
+
+        ProcessBuilder pb = new ProcessBuilder(hook.toString())
+            .directory(repo)
+            .redirectErrorStream(true);
+        Path fakeHome = repoPath.resolve("fake-home");
+        Files.createDirectories(fakeHome.resolve(".prepush-checker"));
+        Files.writeString(fakeHome.resolve(".prepush-checker").resolve("installed"),
+            "1\n", StandardCharsets.UTF_8);
+        pb.environment().put("HOME", fakeHome.toString());
+        pb.environment().put("PRE_PUSH_CHECKER_COMMAND", fakeBuild.toAbsolutePath().toString());
+        Process run = pb.start();
+        String stdin = "refs/heads/main " + headSha + " refs/heads/main "
+            + "0000000000000000000000000000000000000000\n";
+        run.getOutputStream().write(stdin.getBytes(StandardCharsets.UTF_8));
+        run.getOutputStream().close();
+        assertTrue(run.waitFor(20, TimeUnit.SECONDS));
+
+        String output = new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertTrue("Hook should block mixed generated + real error logs. Exit=" + run.exitValue()
+                + "\nOutput:\n" + output,
+            run.exitValue() != 0);
+        assertTrue(output.contains("Compilation failed"));
+    }
+
     private static File createTempDir(String prefix) {
         File tempDir = new File(System.getProperty("java.io.tmpdir"), prefix + "-" + System.nanoTime());
         if (!tempDir.mkdirs()) {
@@ -240,5 +309,24 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         if (process.exitValue() != 0) {
             fail("git " + String.join(" ", args) + " failed: " + output);
         }
+    }
+
+    private static String runGitOutput(File repo, String... args) throws Exception {
+        String[] command = new String[args.length + 1];
+        command[0] = "git";
+        System.arraycopy(args, 0, command, 1, args.length);
+        Process process = new ProcessBuilder(command)
+            .directory(repo)
+            .redirectErrorStream(true)
+            .start();
+        if (!process.waitFor(10, TimeUnit.SECONDS)) {
+            process.destroyForcibly();
+            fail("Timed out running git " + String.join(" ", args));
+        }
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        if (process.exitValue() != 0) {
+            fail("git " + String.join(" ", args) + " failed: " + output);
+        }
+        return output;
     }
 }

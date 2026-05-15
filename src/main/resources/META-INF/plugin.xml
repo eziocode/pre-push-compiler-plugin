@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.6.0</version>
+    <version>1.7.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,29 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.7.1</h3>
+        <ul>
+            <li><b>Dedicated repair-hook icon:</b> the Compilation Checker tool window now uses a
+                plugin-specific repair icon for the Recheck / Repair Git Hooks action instead of
+                the generic refresh icon.</li>
+            <li><b>Stale build-output retry:</b> if external Maven/Gradle fallback reports
+                <code>bad class file</code> / <code>NoSuchFileException</code> errors from
+                <code>target/classes</code>, <code>target/test-classes</code>, or
+                <code>build/classes</code>, the hook refreshes generated class output and retries
+                once before blocking so the cached log reflects the updated compile result.</li>
+        </ul>
+
+        <h3>1.7.0</h3>
+        <ul>
+            <li><b>Hook repair action:</b> the Compilation Checker tool window can repair and
+                normalize managed Git hooks from the IDE, restoring missing or stale hook wiring
+                without a manual reinstall.</li>
+            <li><b>Improved <code>core.hooksPath</code> handling:</b> hook installation, repair,
+                exclude cleanup, and current-state inspection now resolve custom hook directories
+                and shared git directories more reliably, including canonical path comparisons for
+                symlinked hook locations.</li>
+        </ul>
+
         <h3>1.6.0</h3>
         <ul>
             <li><b>Clean-commit ledger:</b> a successful compile now records the verified HEAD SHA.
