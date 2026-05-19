@@ -4,10 +4,12 @@ import com.intellij.notification.Notification;
 import com.intellij.notification.NotificationAction;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.vfs.AsyncFileListener;
 import com.intellij.openapi.vfs.VirtualFileManager;
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent;
@@ -77,6 +79,15 @@ public final class ExternalPushErrorLoader {
         // Listen for future hook runs while the IDE is open.
         VirtualFileManager.getInstance().addAsyncFileListener(
             new HookLogListener(project, logFile), project);
+
+        // Drop the static fingerprint entry when the project closes so repeated
+        // open/close cycles do not leak unbounded entries into LAST_PARSED.
+        String key = parseKey(project, logFile);
+        Disposer.register(project, (Disposable) () -> LAST_PARSED.remove(key));
+    }
+
+    private static String parseKey(@NotNull Project project, @NotNull Path logFile) {
+        return project.getLocationHash() + "::" + logFile.toAbsolutePath();
     }
 
     static void loadFromLogIfFailed(@NotNull Project project, @NotNull Path logFile) {
@@ -86,7 +97,7 @@ public final class ExternalPushErrorLoader {
         try {
             long size = Files.size(logFile);
             long mtime = Files.getLastModifiedTime(logFile).toMillis();
-            String key = project.getLocationHash() + "::" + logFile.toAbsolutePath();
+            String key = parseKey(project, logFile);
             long[] prev = LAST_PARSED.get(key);
             if (prev != null && prev[0] == size && prev[1] == mtime) {
                 return; // identical snapshot -> nothing to do

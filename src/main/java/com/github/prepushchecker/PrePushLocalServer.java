@@ -24,8 +24,10 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -84,17 +86,38 @@ public final class PrePushLocalServer implements Disposable {
             new ThreadPoolExecutor.AbortPolicy());
     }
 
+    /**
+     * Writes the listening port to {@code portFile} via a temp-file + atomic move so
+     * a concurrently-reading hook never observes a zero-byte or partial file.
+     * Falls back to a regular replace move when the filesystem does not support
+     * atomic moves (e.g. some network mounts).
+     */
+    private static void writePortFileAtomically(Path portFile, int port) throws IOException {
+        Path tmp = portFile.resolveSibling(portFile.getFileName().toString() + ".tmp");
+        Files.writeString(tmp, port + "\n", StandardCharsets.UTF_8);
+        try {
+            Files.move(tmp, portFile,
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ex) {
+            Files.move(tmp, portFile, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException ex) {
+            try { Files.deleteIfExists(tmp); } catch (IOException ignored) {}
+            throw ex;
+        }
+    }
+
     void start() {
-        if (project.isDisposed() || !started.compareAndSet(false, true)) return;
+        if (project.isDisposed()) return;
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) return;
+        if (!started.compareAndSet(false, true)) return;
 
         try {
             ServerSocket s = new ServerSocket(0, BACKLOG, InetAddress.getLoopbackAddress());
             server = s;
             portFile = Path.of(basePath, PORT_FILE_RELATIVE);
             Files.createDirectories(portFile.getParent());
-            Files.writeString(portFile, s.getLocalPort() + "\n", StandardCharsets.UTF_8);
+            writePortFileAtomically(portFile, s.getLocalPort());
 
             Thread t = new Thread(this::acceptLoop, "PrePushChecker-Server-" + project.getName());
             t.setDaemon(true);
@@ -104,6 +127,15 @@ public final class PrePushLocalServer implements Disposable {
             LOG.info("PrePushLocalServer listening on 127.0.0.1:" + s.getLocalPort()
                 + " for project '" + project.getName() + "'");
         } catch (IOException ex) {
+            ServerSocket s = server;
+            server = null;
+            if (s != null) {
+                try {
+                    s.close();
+                } catch (IOException closeEx) {
+                    ex.addSuppressed(closeEx);
+                }
+            }
             LOG.warn("Could not start local pre-push server; external hook will fall back to build tool.", ex);
             started.set(false);
         }
@@ -157,7 +189,8 @@ public final class PrePushLocalServer implements Disposable {
              BufferedWriter out = new BufferedWriter(new OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8))) {
 
             String line = in.readLine();
-            if (line == null || !line.startsWith("CHECK")) {
+            String command = line == null ? "" : line.trim();
+            if (!command.equals("CHECK")) {
                 out.write("ERR unknown-request\n");
                 out.flush();
                 return;
@@ -381,11 +414,14 @@ public final class PrePushLocalServer implements Disposable {
         }
     }
 
-    /** Starts the per-project server on project open. Invoked by the Kotlin {@code ProjectActivity} bridge. */
+    /** Starts the per-project server on project open. Multiple startup entrypoints can safely call this. */
     public static void runStartup(@NotNull Project project) {
         PrePushCheckerSettings.syncSettingsFile(project);
-        PrePushLocalServer srv = new PrePushLocalServer(project);
+        PrePushLocalServer srv = project.getService(PrePushLocalServer.class);
+        if (srv == null) {
+            LOG.warn("PrePushLocalServer project service is unavailable; external hook will fall back to build tool.");
+            return;
+        }
         srv.start();
-        com.intellij.openapi.util.Disposer.register(project, srv);
     }
 }

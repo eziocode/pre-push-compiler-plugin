@@ -4,7 +4,7 @@ import java.util.Locale;
 import java.util.Set;
 
 final class PushValidationPaths {
-    private static final String[] SOURCE_EXTENSIONS = {".java", ".kt", ".groovy", ".scala"};
+    private static final String[] SOURCE_EXTENSIONS = {".java", ".kt", ".kts", ".groovy", ".scala"};
     private static final Set<String> BUILD_FILE_NAMES = Set.of(
         "pom.xml",
         "build.gradle",

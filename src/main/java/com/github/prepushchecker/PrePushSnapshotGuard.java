@@ -637,23 +637,32 @@ final class PrePushSnapshotGuard {
             .start();
 
         long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMillis);
-        while (true) {
-            indicatorCheckCanceled(indicator);
-            long remainingNanos = deadlineNanos - System.nanoTime();
-            if (remainingNanos <= 0) {
+        try {
+            while (true) {
+                indicatorCheckCanceled(indicator);
+                long remainingNanos = deadlineNanos - System.nanoTime();
+                if (remainingNanos <= 0) {
+                    process.destroyForcibly();
+                    return new CommandResult(false, -1, true, false, readOutputLines(outputFile));
+                }
+                long waitMillis = Math.min(WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+                if (process.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
+                    return new CommandResult(
+                        process.exitValue() == 0,
+                        process.exitValue(),
+                        false,
+                        false,
+                        readOutputLines(outputFile)
+                    );
+                }
+            }
+        } catch (Throwable t) {
+            // Includes ProcessCanceledException from the indicator and any other failure
+            // while waiting for the subprocess. Make sure we do not leak the process.
+            if (process.isAlive()) {
                 process.destroyForcibly();
-                return new CommandResult(false, -1, true, false, readOutputLines(outputFile));
             }
-            long waitMillis = Math.min(WAIT_SLICE_MILLIS, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
-            if (process.waitFor(waitMillis, TimeUnit.MILLISECONDS)) {
-                return new CommandResult(
-                    process.exitValue() == 0,
-                    process.exitValue(),
-                    false,
-                    false,
-                    readOutputLines(outputFile)
-                );
-            }
+            throw t;
         }
     }
 

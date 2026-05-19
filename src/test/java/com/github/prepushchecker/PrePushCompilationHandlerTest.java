@@ -33,4 +33,11 @@ public class PrePushCompilationHandlerTest extends BasePlatformTestCase {
         assertFalse(PrePushLocalServer.shouldRetryProjectScopeAfterScopedFailure(false, true, 1));
         assertFalse(PrePushLocalServer.shouldRetryProjectScopeAfterScopedFailure(false, false, 0));
     }
+
+    public void testExternalServerIsProjectServiceForStartupDeduplication() {
+        assertNotNull(getProject().getService(PrePushLocalServer.class));
+        assertSame(
+            getProject().getService(PrePushLocalServer.class),
+            getProject().getService(PrePushLocalServer.class));
+    }
 }

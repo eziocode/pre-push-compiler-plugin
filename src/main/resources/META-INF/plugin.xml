@@ -342,8 +342,10 @@
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$ExternalPushErrorLoaderActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$PrePushLocalServerActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$CompilationWarmupServiceActivity"/>
+        <postStartupActivity implementation="com.github.prepushchecker.PrePushLocalServerStartupActivity"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationWarmupService"/>
+        <projectService serviceImplementation="com.github.prepushchecker.PrePushLocalServer"/>
         <registryKey key="prepushchecker.warmup.enabled"
                      defaultValue="true"
                      description="Run a debounced background compile of recently saved files so pre-push checks hit the cache and finish instantly."/>
