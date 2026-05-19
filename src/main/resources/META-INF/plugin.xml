@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.7.1</version>
+    <version>1.7.2</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,33 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.7.2</h3>
+        <ul>
+            <li><b>Consistent <code>.kts</code> handling:</b> Kotlin script files are now
+                recognized as compilable sources across both the in-IDE push handler and the
+                external loopback server, matching the existing behaviour of the loopback
+                server's file resolver. Build scripts such as <code>build.gradle.kts</code> and
+                <code>settings.gradle.kts</code> remain classified as build files and continue
+                to escalate to a project compile.</li>
+            <li><b>Stricter loopback protocol:</b> the per-project pre-push server now requires
+                an exact <code>CHECK</code> request instead of any line starting with
+                <code>CHECK</code>, rejecting malformed or unexpected client traffic with a
+                clear <code>ERR unknown-request</code> reply.</li>
+            <li><b>No more leaked snapshot subprocesses on cancel:</b> when the user cancels a
+                strict A/B snapshot validation mid-build (or any unexpected error occurs while
+                waiting for git / Gradle / Maven), the spawned process is force-destroyed
+                before the exception propagates, preventing background Gradle/Maven processes
+                from outliving the cancelled check.</li>
+            <li><b>Atomic port-file writes:</b> the loopback server's <code>server.port</code>
+                file is now written via a temp file and atomic rename, so concurrent hook
+                reads can never observe a zero-byte or partially-written port and silently
+                fall back to the build-tool path.</li>
+            <li><b>External hook log fingerprint cache no longer leaks across project
+                open/close cycles:</b> the static dedup map (used to avoid re-parsing the same
+                hook log on repeated VFS events) now drops its entry when the project is
+                disposed.</li>
+        </ul>
+
         <h3>1.7.1</h3>
         <ul>
             <li><b>Dedicated repair-hook icon:</b> the Compilation Checker tool window now uses a

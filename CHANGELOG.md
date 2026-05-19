@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.7.2]
+
+### Fixed
+- **Consistent `.kts` classification.** Kotlin script files are now recognized as compilable sources by both the in-IDE push handler and the external loopback server, eliminating an inconsistency where a pushed `.kts` source file was visible to the loopback path but invisible to the in-IDE path. Build scripts such as `build.gradle.kts` / `settings.gradle.kts` remain classified as build files.
+- **Stricter loopback `CHECK` protocol.** The per-project pre-push server now requires an exact `CHECK` request line instead of any line starting with `CHECK`, rejecting malformed clients with `ERR unknown-request`.
+- **Leaked subprocess on snapshot-build cancellation.** When a strict A/B snapshot validation is cancelled (or fails with any unexpected throwable while waiting on git / Gradle / Maven), the spawned process is now force-destroyed before the exception propagates, so a cancelled check no longer leaves a multi-minute Gradle/Maven build running in the background.
+- **Race in port-file publication.** The loopback server's `.idea/pre-push-checker/server.port` is now written via a temp file and atomic rename, so concurrent hook reads cannot observe a zero-byte / partial file and silently fall back to the build-tool path.
+- **`ExternalPushErrorLoader.LAST_PARSED` no longer leaks across project open/close cycles.** The static dedup fingerprint map now drops its entry when the project is disposed, so repeated open/close cycles cannot accumulate unbounded entries.
+
+---
+
 ## [1.7.1]
 
 ### Changed
