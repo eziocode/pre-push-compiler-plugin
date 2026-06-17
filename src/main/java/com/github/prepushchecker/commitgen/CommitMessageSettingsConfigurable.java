@@ -210,50 +210,74 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildCodexCliCard() {
-        codexCliPathField   = new JBTextField(30);
-        codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
-        codexKeyField       = new JPasswordField(30); // optional fallback
         codexEnvStatusLabel = new JBLabel();
+        codexKeyField       = new JPasswordField(30); // optional API-key fallback
+        codexCliPathField   = new JBTextField(1);     // kept for settings state, hidden
 
-        JButton detectBtn = new JButton("Auto-detect codex");
-        detectBtn.addActionListener(ev -> {
-            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("codex");
-            if (found != null) {
-                codexCliPathField.setText(found);
-                codexEnvStatusLabel.setText("✓ Found: " + found);
-                codexEnvStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
-            } else {
-                codexCliPathField.setText("");
-                codexEnvStatusLabel.setText("✗ codex not found — install with: npm install -g @openai/codex");
-                codexEnvStatusLabel.setForeground(UIManager.getColor("Component.errorFocusColor") != null
-                    ? UIManager.getColor("Component.errorFocusColor") : java.awt.Color.RED.darker());
+        // Check auth status on card creation
+        refreshCodexAuthStatus();
+
+        JButton checkBtn = new JButton("Check Auth Status");
+        checkBtn.addActionListener(ev -> refreshCodexAuthStatus());
+
+        JButton openAppBtn = new JButton("Open Codex App");
+        openAppBtn.addActionListener(ev -> {
+            try {
+                Runtime.getRuntime().exec(new String[]{"open", "-a", "Codex"});
+            } catch (Exception ex) {
+                Messages.showInfoMessage(
+                    "Could not open Codex app automatically.\n"
+                        + "Open it manually and sign in with your ChatGPT account.",
+                    "Open Codex App");
             }
         });
 
         JPanel card = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(3, 0, 3, 6);
+        gbc.insets = new Insets(4, 0, 4, 6);
         gbc.anchor = GridBagConstraints.WEST;
 
         gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 3;
+        JBLabel title = new JBLabel("<html><b>ChatGPT Account (via Codex App)</b></html>");
+        card.add(title, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3;
         card.add(codexEnvStatusLabel, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(new JBLabel("CLI path:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(codexCliPathField, gbc);
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        card.add(detectBtn, gbc);
+        JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        btnRow.add(checkBtn);
+        btnRow.add(openAppBtn);
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
+        card.add(btnRow, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 1; gbc.weightx = 0;
+        card.add(new JBLabel("API key (fallback):"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(codexKeyField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "<b>Uses a Python PTY to fake a terminal</b> — no API key needed, no TTY errors.<br>"
-            + "Auth: run <code>codex auth</code> in a terminal once (ChatGPT OAuth).<br>"
-            + "Requires <code>python3</code> (pre-installed on macOS) and <code>codex</code> on PATH."
+            + "<b>No API key needed</b> — reads your ChatGPT OAuth session from<br>"
+            + "<code>~/.codex/auth.json</code> (written by the Codex desktop app).<br>"
+            + "Sign in once with the Codex app → plugin uses that session forever."
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
         return card;
+    }
+
+    private void refreshCodexAuthStatus() {
+        if (codexEnvStatusLabel == null) return;
+        boolean auth = com.github.prepushchecker.commitgen.providers.CodexCliProvider.isAuthenticated();
+        String accountId = com.github.prepushchecker.commitgen.providers.CodexCliProvider.getAccountId();
+        if (auth) {
+            String label = "✓ Signed in with ChatGPT account"
+                + (accountId != null && !accountId.isBlank() ? " (" + accountId + ")" : "");
+            codexEnvStatusLabel.setText("<html><b style='color:green'>" + label + "</b></html>");
+        } else {
+            codexEnvStatusLabel.setText(
+                "<html><b style='color:red'>✗ Not signed in — open Codex app and sign in with ChatGPT</b></html>");
+        }
     }
 
     private @NotNull JPanel buildGhCopilotCard() {

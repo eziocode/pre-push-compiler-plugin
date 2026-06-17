@@ -15,7 +15,7 @@ public interface CommitMessageProvider {
         ANTHROPIC("Anthropic (Claude)"),
         GEMINI("Google Gemini"),
         OLLAMA("Ollama (Local)"),
-        CODEX_CLI("OpenAI Codex CLI (ChatGPT account)"),
+        CODEX_CLI("Codex (ChatGPT Account — ~/.codex/auth.json)"),
         GH_COPILOT("GitHub Copilot (gh auth)"),
         LLM_CLI("llm CLI (multi-provider)"),
         CLAUDE_CLI("Anthropic Claude CLI");
