@@ -52,16 +52,10 @@ public final class CodexCliProvider implements CommitMessageProvider {
 
         String result = callApi(token, systemPrompt, userPrompt);
         if (result == null) {
-            // Token may have expired — try to refresh once
-            String newToken = ChatGPTOAuthFlow.refreshAccessToken();
-            if (newToken != null) {
-                result = callApi(newToken, systemPrompt, userPrompt);
-            }
-            if (result == null) {
-                throw new RuntimeException(
-                    "ChatGPT token expired and could not be refreshed.\n"
-                        + "Please sign in again from the Settings page.");
-            }
+            throw new RuntimeException(
+                "ChatGPT token expired or invalid.\n"
+                    + "Go to Settings → Pre-Push Checker — AI Commit Message Generator\n"
+                    + "and click 'Sign in with ChatGPT' to refresh your session.");
         }
         return result;
     }

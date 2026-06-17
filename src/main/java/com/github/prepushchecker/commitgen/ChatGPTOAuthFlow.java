@@ -2,10 +2,8 @@ package com.github.prepushchecker.commitgen;
 
 import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.Credentials;
-import com.intellij.ide.BrowserUtil;
 import com.intellij.ide.passwordSafe.PasswordSafe;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBLabel;
 import org.jetbrains.annotations.NotNull;
@@ -14,98 +12,160 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.net.URI;
-import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
- * Implements the <b>OAuth 2.0 Device Authorization Grant</b> (RFC 8628)
- * for ChatGPT accounts, using the credentials extracted from the Codex CLI.
+ * Manages ChatGPT authentication for the Codex provider.
  *
- * <h3>Flow</h3>
+ * <h3>Login strategy</h3>
  * <ol>
- *   <li>POST {@code /deviceauth/usercode} → get {@code device_code} + {@code user_code}.</li>
- *   <li>Show a dialog with the one-time code and an "Open Browser" button.</li>
- *   <li>Poll {@code /deviceauth/token} every 5 s until the user approves or it expires.</li>
- *   <li>Store {@code access_token} and {@code refresh_token} in PasswordSafe.</li>
+ *   <li><b>Codex CLI ({@code codex login})</b> — opens the browser-based
+ *       ChatGPT OAuth flow via the native CLI. The CLI handles Cloudflare
+ *       protection and stores the token in {@code ~/.codex/auth.json}.</li>
+ *   <li><b>Manual API key</b> — fallback if the Codex CLI is not installed.</li>
+ * </ol>
+ *
+ * <h3>Token resolution order</h3>
+ * <ol>
+ *   <li>PasswordSafe (manual API key entered in Settings).</li>
+ *   <li>{@code ~/.codex/auth.json} access_token (written by the Codex CLI).</li>
  * </ol>
  */
 public final class ChatGPTOAuthFlow {
 
-    // Codex CLI OAuth constants extracted from the native binary
-    private static final String CLIENT_ID        = "app_EMoamEEZ73f0CkXaXp7hrann";
-    private static final String AUTH_BASE        = "https://auth.openai.com";
-    private static final String DEVICE_CODE_URL  = AUTH_BASE + "/deviceauth/usercode";
-    private static final String DEVICE_TOKEN_URL = AUTH_BASE + "/deviceauth/token";
-    private static final String DEVICE_GRANT     = "urn:ietf:params:oauth:grant-type:device_code";
-    private static final String REFRESH_GRANT    = "refresh_token";
-    private static final String WHOAMI_URL       = AUTH_BASE + "/api/accounts/v1/user-auth-credential/whoami";
-
-    private static final String CRED_SERVICE = "PrePushChecker.ChatGPTOAuth";
-    private static final String KEY_ACCESS   = "access_token";
-    private static final String KEY_REFRESH  = "refresh_token";
+    private static final String CRED_SERVICE = "PrePushChecker.ChatGPTManualKey";
+    private static final String CRED_KEY     = "manual_api_key";
 
     private ChatGPTOAuthFlow() {}
 
     // ── Public API ────────────────────────────────────────────────────────────
 
     /**
-     * Starts the Device Code flow on a background thread. Shows a non-blocking
-     * dialog with the one-time code, polls for approval, then stores the tokens.
-     *
-     * @param onDone called on the EDT when sign-in completes (success or failure)
+     * Returns the active access token, or {@code null} when not signed in.
+     * Resolution order: manual PasswordSafe key → ~/.codex/auth.json.
      */
-    public static void startSignIn(@NotNull Runnable onDone) {
-        new Thread(() -> {
-            try {
-                DeviceCodeResponse dcr = requestDeviceCode();
-                // Show dialog on EDT while background thread polls
-                ApplicationManager.getApplication().invokeLater(
-                    () -> showCodeDialog(dcr, onDone));
-            } catch (Exception e) {
-                ApplicationManager.getApplication().invokeLater(() -> {
-                    Messages.showErrorDialog(
-                        "Failed to start ChatGPT sign-in:\n" + e.getMessage(),
-                        "ChatGPT Login Error");
-                    onDone.run();
-                });
-            }
-        }, "ChatGPT-OAuth-DeviceCode").start();
-    }
-
-    /** Returns the stored access token, or {@code null}. */
     @Nullable
     public static String getAccessToken() {
-        // 1. PasswordSafe (from browser Device Code login)
-        String saved = loadFromSafe(KEY_ACCESS);
-        if (saved != null && !saved.isBlank()) return saved;
-        // 2. ~/.codex/auth.json (from Codex desktop app — no circular call)
+        String manual = loadManualKey();
+        if (manual != null && !manual.isBlank()) return manual;
         return readCodexAuthJson();
     }
 
-    /** Returns {@code true} when a token is available. */
+    /** Returns {@code true} when any credential is available. */
     public static boolean isAuthenticated() {
         return getAccessToken() != null;
     }
 
-    /** Clears stored tokens from PasswordSafe. */
-    public static void signOut() {
-        saveToSafe(KEY_ACCESS,  null);
-        saveToSafe(KEY_REFRESH, null);
+    /**
+     * Returns a one-line human-readable status string (runs on background
+     * thread — do NOT call from EDT).
+     */
+    @NotNull
+    public static String getStatusText() {
+        // 1. Try codex login status (fast, no blocking)
+        String codexPath = CliPathResolver.resolve(null, "codex");
+        if (codexPath != null) {
+            try {
+                ProcessBuilder pb = new ProcessBuilder(codexPath, "login", "status");
+                pb.redirectErrorStream(true);
+                CliPathResolver.injectAugmentedPath(pb);
+                Process proc = pb.start();
+                String out;
+                try (BufferedReader r = new BufferedReader(
+                        new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                    out = r.lines().collect(Collectors.joining(" ")).trim();
+                }
+                boolean done = proc.waitFor(8, TimeUnit.SECONDS);
+                if (!done) proc.destroyForcibly();
+                if (!out.isBlank()) return out; // e.g. "Logged in using ChatGPT"
+            } catch (Exception ignored) {}
+        }
+
+        // 2. Check ~/.codex/auth.json
+        if (readCodexAuthJson() != null) return "Signed in (token found in ~/.codex/auth.json)";
+
+        // 3. Manual API key
+        if (loadManualKey() != null) return "Manual API key configured";
+
+        return null; // not signed in
     }
 
-    /** Reads the access token from {@code ~/.codex/auth.json} without circular dependency. */
+    /**
+     * Opens the ChatGPT login flow via {@code codex login} in an OS terminal.
+     * Calls {@code onDone} on the EDT when the terminal is launched (user still
+     * needs to complete sign-in in the terminal window).
+     */
+    public static void startSignIn(@NotNull Runnable onDone) {
+        new Thread(() -> {
+            String codexPath = CliPathResolver.resolve(null, "codex");
+
+            if (codexPath == null || !Files.isExecutable(Path.of(codexPath))) {
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    showNoCodexDialog();
+                    onDone.run();
+                });
+                return;
+            }
+
+            // Launch `codex login` in a new terminal window
+            boolean launched = launchInTerminal(codexPath + " login");
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (launched) {
+                    Messages.showInfoMessage(
+                        "A terminal window has opened running 'codex login'.\n\n"
+                            + "• Complete the sign-in in your browser\n"
+                            + "• Return here and click 'Refresh Status'",
+                        "ChatGPT Sign-In");
+                } else {
+                    // Terminal launch failed — show manual instructions
+                    showManualLoginDialog(codexPath);
+                }
+                onDone.run();
+            });
+        }, "ChatGPT-Login-Launch").start();
+    }
+
+    /** Clears the manually stored API key from PasswordSafe. */
+    public static void signOut() {
+        PasswordSafe.getInstance().set(
+            new CredentialAttributes(CRED_SERVICE, CRED_KEY), null);
+
+        // Also attempt `codex logout` non-interactively
+        new Thread(() -> {
+            String codexPath = CliPathResolver.resolve(null, "codex");
+            if (codexPath == null) return;
+            try {
+                ProcessBuilder pb = new ProcessBuilder(codexPath, "logout");
+                pb.redirectErrorStream(true);
+                CliPathResolver.injectAugmentedPath(pb);
+                Process proc = pb.start();
+                proc.waitFor(10, TimeUnit.SECONDS);
+            } catch (Exception ignored) {}
+        }, "ChatGPT-Logout").start();
+    }
+
+    /** Stores a manual API key in PasswordSafe. */
+    public static void saveManualKey(@NotNull String key) {
+        PasswordSafe.getInstance().set(
+            new CredentialAttributes(CRED_SERVICE, CRED_KEY),
+            key.isBlank() ? null : new Credentials(CRED_KEY, key));
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────────
+
     @Nullable
-    private static String readCodexAuthJson() {
+    static String readCodexAuthJson() {
         try {
-            java.nio.file.Path authFile = java.nio.file.Path.of(
-                System.getProperty("user.home"), ".codex", "auth.json");
-            if (!java.nio.file.Files.isRegularFile(authFile)) return null;
-            String json = java.nio.file.Files.readString(authFile, StandardCharsets.UTF_8);
+            Path authFile = Path.of(System.getProperty("user.home"), ".codex", "auth.json");
+            if (!Files.isRegularFile(authFile)) return null;
+            String json = Files.readString(authFile, StandardCharsets.UTF_8);
             String token = JsonUtil.extractString(json, "access_token");
             if (token != null && !token.isBlank()) return token;
             return JsonUtil.extractString(json, "OPENAI_API_KEY");
@@ -114,299 +174,81 @@ public final class ChatGPTOAuthFlow {
         }
     }
 
-    /**
-     * Tries to refresh the access token using the stored refresh token.
-     * Returns the new access token, or {@code null} on failure.
-     */
     @Nullable
-    public static String refreshAccessToken() {
-        String refreshToken = loadFromSafe(KEY_REFRESH);
-        if (refreshToken == null || refreshToken.isBlank()) return null;
-        try {
-            String body = "grant_type=" + urlEnc(REFRESH_GRANT)
-                + "&client_id=" + urlEnc(CLIENT_ID)
-                + "&refresh_token=" + urlEnc(refreshToken);
-            HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(15)).build();
-            HttpRequest req = HttpRequest.newBuilder()
-                .uri(URI.create(AUTH_BASE + "/oauth/token"))
-                .header("Content-Type", "application/x-www-form-urlencoded")
-                .timeout(Duration.ofSeconds(30))
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                .build();
-            HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) {
-                String newAccess  = JsonUtil.extractString(resp.body(), "access_token");
-                String newRefresh = JsonUtil.extractString(resp.body(), "refresh_token");
-                if (newAccess != null) {
-                    saveToSafe(KEY_ACCESS, newAccess);
-                    if (newRefresh != null) saveToSafe(KEY_REFRESH, newRefresh);
-                    return newAccess;
-                }
-            }
-        } catch (Exception ignored) {}
-        return null;
-    }
-
-    // ── Device code flow ──────────────────────────────────────────────────────
-
-    private record DeviceCodeResponse(
-            @NotNull String deviceCode,
-            @NotNull String userCode,
-            @NotNull String verificationUri,
-            int expiresIn,
-            int interval) {}
-
-    private static @NotNull DeviceCodeResponse requestDeviceCode() throws Exception {
-        String body = "client_id=" + urlEnc(CLIENT_ID);
-        HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(15)).build();
-        HttpRequest req = HttpRequest.newBuilder()
-            .uri(URI.create(DEVICE_CODE_URL))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .timeout(Duration.ofSeconds(30))
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build();
-        HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-        if (resp.statusCode() != 200) {
-            throw new RuntimeException("Device auth failed (" + resp.statusCode() + "): " + resp.body());
-        }
-        String deviceCode      = JsonUtil.extractString(resp.body(), "device_code");
-        String userCode        = JsonUtil.extractString(resp.body(), "user_code");
-        String verificationUri = JsonUtil.extractString(resp.body(), "verification_uri");
-        String expiresInStr    = JsonUtil.extractString(resp.body(), "expires_in");
-        String intervalStr     = JsonUtil.extractString(resp.body(), "interval");
-
-        if (deviceCode == null || userCode == null) {
-            throw new RuntimeException("Unexpected device auth response: " + resp.body());
-        }
-        int expiresIn = expiresInStr != null ? parseIntSafe(expiresInStr, 900) : 900;
-        int interval  = intervalStr  != null ? parseIntSafe(intervalStr, 5)    : 5;
-        if (verificationUri == null) verificationUri = "https://chatgpt.com/apps/";
-        return new DeviceCodeResponse(deviceCode, userCode, verificationUri, expiresIn, interval);
-    }
-
-    private static void showCodeDialog(@NotNull DeviceCodeResponse dcr, @NotNull Runnable onDone) {
-        DeviceCodeDialog dialog = new DeviceCodeDialog(dcr);
-        // Start polling thread before showing dialog
-        String deviceCode = dcr.deviceCode();
-        int intervalMs    = Math.max(dcr.interval(), 5) * 1000;
-        int expiresInMs   = dcr.expiresIn() * 1000;
-
-        Thread poller = new Thread(() -> {
-            long deadline = System.currentTimeMillis() + expiresInMs;
-            while (System.currentTimeMillis() < deadline && dialog.isShowing()) {
-                try { Thread.sleep(intervalMs); } catch (InterruptedException e) { break; }
-                if (!dialog.isShowing()) break;
-                try {
-                    String result = pollForToken(deviceCode, dcr.deviceCode());
-                    if (result != null) {
-                        dialog.setApproved();
-                        ApplicationManager.getApplication().invokeLater(() -> {
-                            dialog.close(DialogWrapper.OK_EXIT_CODE);
-                            Messages.showInfoMessage(
-                                "Signed in to ChatGPT successfully!\n"
-                                    + "You can now use the Codex (ChatGPT Account) provider.",
-                                "ChatGPT Sign-In Complete");
-                            onDone.run();
-                        });
-                        return;
-                    }
-                } catch (PendingException ignored) {
-                    // still waiting
-                } catch (Exception e) {
-                    ApplicationManager.getApplication().invokeLater(() -> {
-                        dialog.close(DialogWrapper.CANCEL_EXIT_CODE);
-                        Messages.showErrorDialog("Sign-in failed: " + e.getMessage(), "ChatGPT Login Error");
-                        onDone.run();
-                    });
-                    return;
-                }
-            }
-            // Timeout or dialog closed
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (dialog.isShowing()) dialog.close(DialogWrapper.CANCEL_EXIT_CODE);
-                onDone.run();
-            });
-        }, "ChatGPT-OAuth-Poller");
-        poller.setDaemon(true);
-        poller.start();
-
-        dialog.show();
-        // Ensure onDone is called if dialog dismissed without completion
-        if (!dialog.isApproved()) {
-            onDone.run();
-        }
-    }
-
-    /** Returns the access token if approved, throws {@link PendingException} if still pending. */
-    @Nullable
-    private static String pollForToken(@NotNull String deviceCode, @NotNull String unused)
-            throws Exception {
-        String body = "grant_type=" + urlEnc(DEVICE_GRANT)
-            + "&device_code=" + urlEnc(deviceCode)
-            + "&client_id=" + urlEnc(CLIENT_ID);
-        HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10)).build();
-        HttpRequest req = HttpRequest.newBuilder()
-            .uri(URI.create(DEVICE_TOKEN_URL))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .timeout(Duration.ofSeconds(15))
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build();
-        HttpResponse<String> resp = client.send(req, HttpResponse.BodyHandlers.ofString());
-        String error = JsonUtil.extractString(resp.body(), "error");
-        if ("authorization_pending".equals(error) || "slow_down".equals(error)) {
-            throw new PendingException();
-        }
-        if (error != null) {
-            String desc = JsonUtil.extractString(resp.body(), "error_description");
-            throw new RuntimeException(desc != null ? desc : error);
-        }
-        String accessToken  = JsonUtil.extractString(resp.body(), "access_token");
-        String refreshToken = JsonUtil.extractString(resp.body(), "refresh_token");
-        if (accessToken != null) {
-            saveToSafe(KEY_ACCESS, accessToken);
-            if (refreshToken != null) saveToSafe(KEY_REFRESH, refreshToken);
-            return accessToken;
-        }
-        throw new PendingException();
-    }
-
-    private static final class PendingException extends Exception {
-        PendingException() { super(null, null, true, false); }
-    }
-
-    // ── PasswordSafe helpers ──────────────────────────────────────────────────
-
-    private static CredentialAttributes credAttrs(@NotNull String key) {
-        return new CredentialAttributes(CRED_SERVICE, key);
-    }
-
-    private static void saveToSafe(@NotNull String key, @Nullable String value) {
-        PasswordSafe.getInstance().set(
-            credAttrs(key),
-            value == null || value.isBlank() ? null : new Credentials(key, value));
-    }
-
-    @Nullable
-    private static String loadFromSafe(@NotNull String key) {
-        Credentials c = PasswordSafe.getInstance().get(credAttrs(key));
+    private static String loadManualKey() {
+        Credentials c = PasswordSafe.getInstance().get(
+            new CredentialAttributes(CRED_SERVICE, CRED_KEY));
         return c == null ? null : c.getPasswordAsString();
     }
 
-    // ── Dialog ────────────────────────────────────────────────────────────────
-
-    private static final class DeviceCodeDialog extends DialogWrapper {
-        private final DeviceCodeResponse dcr;
-        private volatile boolean approved = false;
-        private JBLabel statusLabel;
-
-        DeviceCodeDialog(@NotNull DeviceCodeResponse dcr) {
-            super(true);
-            this.dcr = dcr;
-            setTitle("Sign in to ChatGPT");
-            setModal(false);
-            init();
-        }
-
-        @Override
-        protected @Nullable JComponent createCenterPanel() {
-            JPanel panel = new JPanel(new GridBagLayout());
-            panel.setPreferredSize(new Dimension(420, 220));
-            GridBagConstraints g = new GridBagConstraints();
-            g.insets = new Insets(6, 6, 6, 6);
-            g.anchor = GridBagConstraints.WEST;
-            g.fill = GridBagConstraints.HORIZONTAL;
-            g.weightx = 1;
-            g.gridwidth = 2;
-
-            g.gridy = 0;
-            panel.add(new JBLabel(
-                "<html><b>Sign in with your ChatGPT account</b><br>"
-                    + "Open the link below and enter the one-time code:</html>"), g);
-
-            // User code — big, easy to read
-            g.gridy = 1;
-            JBLabel codeLabel = new JBLabel(
-                "<html><span style='font-size:18pt;font-weight:bold;letter-spacing:4px'>"
-                    + dcr.userCode() + "</span></html>");
-            panel.add(codeLabel, g);
-
-            // Buttons row
-            JButton openBrowserBtn = new JButton("Open Browser");
-            openBrowserBtn.addActionListener(ev -> openBrowserSafely(dcr.verificationUri()));
-            JButton copyBtn = new JButton("Copy Code");
-            copyBtn.addActionListener(ev -> {
-                Toolkit.getDefaultToolkit().getSystemClipboard()
-                    .setContents(new StringSelection(dcr.userCode()), null);
-                copyBtn.setText("Copied!");
-            });
-
-            g.gridy = 2; g.gridwidth = 1; g.weightx = 0;
-            panel.add(openBrowserBtn, g);
-            g.gridx = 1; g.weightx = 0;
-            panel.add(copyBtn, g);
-            g.gridx = 0; g.gridwidth = 2; g.weightx = 1;
-
-            g.gridy = 3;
-            JBLabel urlLabel = new JBLabel(
-                "<html><i>Verification URL: <a href='" + dcr.verificationUri() + "'>"
-                    + dcr.verificationUri() + "</a></i></html>");
-            panel.add(urlLabel, g);
-
-            // Status
-            statusLabel = new JBLabel(
-                "<html><i>⏳ Waiting for you to approve in the browser…</i></html>");
-            g.gridy = 4;
-            panel.add(statusLabel, g);
-
-            // Auto-open browser once dialog is shown (delay so window is visible first)
-            SwingUtilities.invokeLater(() ->
-                new Thread(() -> {
-                    try { Thread.sleep(300); } catch (InterruptedException ignored) {}
-                    openBrowserSafely(dcr.verificationUri());
-                }, "ChatGPT-OpenBrowser").start());
-
-            return panel;
-        }
-
-        @Override
-        protected Action @NotNull [] createActions() {
-            return new Action[]{getCancelAction()};
-        }
-
-        void setApproved() {
-            approved = true;
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (statusLabel != null)
-                    statusLabel.setText("<html><b style='color:green'>✓ Signed in successfully!</b></html>");
-            });
-        }
-
-        boolean isApproved() { return approved; }
-    }
-
-    // ── Utilities ─────────────────────────────────────────────────────────────
-
-    private static @NotNull String urlEnc(@NotNull String s) {
-        return URLEncoder.encode(s, StandardCharsets.UTF_8);
-    }
-
-    private static int parseIntSafe(@NotNull String s, int fallback) {
-        try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return fallback; }
-    }
-
     /**
-     * Opens a URL in the system browser using three fallback strategies:
-     * <ol>
-     *   <li>{@link Desktop#browse(java.net.URI)} — standard Java cross-platform API.</li>
-     *   <li>{@code open <url>} via Runtime — macOS-specific, works even without DISPLAY.</li>
-     *   <li>{@link BrowserUtil#browse(String)} — IntelliJ built-in (last resort).</li>
-     * </ol>
+     * Launches {@code command} in a new OS terminal window.
+     * Returns {@code true} if the terminal was opened successfully.
      */
+    private static boolean launchInTerminal(@NotNull String command) {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        try {
+            if (os.contains("mac")) {
+                // macOS: open a new Terminal.app tab
+                String[] script = {
+                    "osascript", "-e",
+                    "tell application \"Terminal\" to do script \"" + command + "\""
+                };
+                Runtime.getRuntime().exec(script);
+                return true;
+            } else if (os.contains("linux")) {
+                // Try common Linux terminal emulators
+                for (String term : new String[]{"gnome-terminal", "xterm", "konsole", "xfce4-terminal"}) {
+                    try {
+                        Runtime.getRuntime().exec(new String[]{term, "--", "sh", "-c", command});
+                        return true;
+                    } catch (Exception ignored) {}
+                }
+            } else if (os.contains("win")) {
+                Runtime.getRuntime().exec(new String[]{"cmd", "/c", "start", "cmd", "/k", command});
+                return true;
+            }
+        } catch (Exception ignored) {}
+        return false;
+    }
+
+    private static void showNoCodexDialog() {
+        int choice = Messages.showYesNoCancelDialog(
+            "The Codex CLI is not installed.\n\n"
+                + "To sign in with your ChatGPT account:\n"
+                + "  npm install -g @openai/codex\n"
+                + "  codex login\n\n"
+                + "Alternatively, get an OpenAI API key from platform.openai.com\n"
+                + "and enter it in the 'API key (fallback)' field.\n\n"
+                + "Open API keys page in browser?",
+            "Codex CLI Not Found",
+            "Open API Keys Page", "Cancel", "Copy Install Command",
+            Messages.getWarningIcon());
+        if (choice == Messages.YES) {
+            openBrowserSafely("https://platform.openai.com/api-keys");
+        } else if (choice == Messages.CANCEL) {
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection("npm install -g @openai/codex && codex login"), null);
+        }
+    }
+
+    private static void showManualLoginDialog(@NotNull String codexPath) {
+        String msg = "Could not open a terminal automatically.\n\n"
+            + "Please run this command in a terminal:\n\n"
+            + "    " + codexPath + " login\n\n"
+            + "Then return here and click 'Refresh Status'.";
+        String[] options = {"Copy Command", "OK"};
+        int choice = Messages.showDialog(msg, "ChatGPT Sign-In",
+            options, 1, Messages.getInformationIcon());
+        if (choice == 0) {
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(codexPath + " login"), null);
+        }
+    }
+
+    // ── Browser utility ───────────────────────────────────────────────────────
+
     static void openBrowserSafely(@NotNull String url) {
-        // 1. java.awt.Desktop (most reliable on macOS/Windows/Linux with a display)
         try {
             if (Desktop.isDesktopSupported()) {
                 Desktop desktop = Desktop.getDesktop();
@@ -416,25 +258,11 @@ public final class ChatGPTOAuthFlow {
                 }
             }
         } catch (Exception ignored) {}
-
-        // 2. macOS `open` command (works from GUI apps where DISPLAY/AT-SPI may be absent)
         String os = System.getProperty("os.name", "").toLowerCase();
         try {
-            if (os.contains("mac")) {
-                Runtime.getRuntime().exec(new String[]{"open", url});
-                return;
-            } else if (os.contains("linux")) {
-                Runtime.getRuntime().exec(new String[]{"xdg-open", url});
-                return;
-            } else if (os.contains("win")) {
-                Runtime.getRuntime().exec(new String[]{"cmd", "/c", "start", url});
-                return;
-            }
-        } catch (Exception ignored) {}
-
-        // 3. IntelliJ BrowserUtil fallback
-        try {
-            BrowserUtil.browse(url);
+            if (os.contains("mac"))   { Runtime.getRuntime().exec(new String[]{"open", url}); return; }
+            if (os.contains("linux")) { Runtime.getRuntime().exec(new String[]{"xdg-open", url}); return; }
+            if (os.contains("win"))   { Runtime.getRuntime().exec(new String[]{"cmd", "/c", "start", url}); }
         } catch (Exception ignored) {}
     }
 }

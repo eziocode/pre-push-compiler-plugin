@@ -275,15 +275,13 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (codexEnvStatusLabel == null) return;
         codexEnvStatusLabel.setText("<html><i>Checking…</i></html>");
         new Thread(() -> {
-            // I/O happens here, off EDT
-            boolean auth     = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.isAuthenticated();
-            String accountId = com.github.prepushchecker.commitgen.providers.CodexCliProvider.getAccountId();
+            // getStatusText() may run `codex login status` subprocess — must be off EDT
+            String status = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.getStatusText();
             SwingUtilities.invokeLater(() -> {
                 if (codexEnvStatusLabel == null) return;
-                if (auth) {
-                    String label = "✓ Signed in with ChatGPT account"
-                        + (accountId != null && !accountId.isBlank() ? " (" + accountId + ")" : "");
-                    codexEnvStatusLabel.setText("<html><b style='color:green'>" + label + "</b></html>");
+                if (status != null) {
+                    codexEnvStatusLabel.setText(
+                        "<html><b style='color:green'>✓ " + status + "</b></html>");
                 } else {
                     codexEnvStatusLabel.setText(
                         "<html><b style='color:#cc4444'>✗ Not signed in — click \"Sign in with ChatGPT\"</b></html>");
@@ -292,7 +290,6 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         }, "CommitGen-CodexAuthCheck").start();
     }
 
-    /** @deprecated Use {@link #scheduleCodexAuthRefresh()} instead. */
     private void refreshCodexAuthStatus() {
         scheduleCodexAuthRefresh();
     }
@@ -702,6 +699,10 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.ANTHROPIC, anthropicKeyField);
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.GEMINI, geminiKeyField);
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.CODEX_CLI, codexKeyField);
+        // Also store in ChatGPTOAuthFlow's dedicated PasswordSafe slot
+        String codexManual = new String(codexKeyField.getPassword());
+        if (!codexManual.isBlank())
+            com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.saveManualKey(codexManual);
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.CLAUDE_CLI, claudeKeyField);
     }
 
