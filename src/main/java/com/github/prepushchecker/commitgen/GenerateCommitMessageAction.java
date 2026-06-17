@@ -13,6 +13,7 @@ import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.openapi.vcs.ui.CommitMessage;
 import com.intellij.openapi.vcs.VcsDataKeys;
 import org.jetbrains.annotations.NotNull;
@@ -40,7 +41,17 @@ public final class GenerateCommitMessageAction extends AnAction {
     @Override
     public void update(@NotNull AnActionEvent e) {
         Project project = e.getProject();
-        e.getPresentation().setEnabled(project != null && !project.isDisposed());
+        if (project == null || project.isDisposed()) {
+            e.getPresentation().setEnabled(false);
+            return;
+        }
+        // Disable (grey out) when there are no staged or local changes — same
+        // visual behaviour as the Copilot commit-message button.
+        boolean hasChanges = !ChangeListManager.getInstance(project).getAllChanges().isEmpty();
+        e.getPresentation().setEnabled(hasChanges);
+        e.getPresentation().setDescription(hasChanges
+            ? "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider"
+            : "Pre-Push Checker: No changes detected — make or stage some changes first");
     }
 
     @Override

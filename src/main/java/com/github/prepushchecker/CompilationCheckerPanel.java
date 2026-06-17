@@ -5,6 +5,7 @@ import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
 import com.intellij.icons.AllIcons;
 import com.intellij.ide.BrowserUtil;
+import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionManager;
 import com.intellij.openapi.actionSystem.ActionUpdateThread;
@@ -420,6 +421,15 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         @Override
         public @NotNull ActionUpdateThread getActionUpdateThread() {
             return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            boolean hasChanges = !ChangeListManager.getInstance(project).getAllChanges().isEmpty();
+            e.getPresentation().setEnabled(hasChanges);
+            e.getPresentation().setDescription(hasChanges
+                ? "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider"
+                : "Pre-Push Checker: No changes detected — make or stage some changes first");
         }
 
         @Override
