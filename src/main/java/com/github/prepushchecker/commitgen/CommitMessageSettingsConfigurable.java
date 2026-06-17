@@ -6,6 +6,7 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.ui.TextBrowseFolderListener;
 import com.intellij.openapi.ui.TextFieldWithBrowseButton;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
@@ -522,7 +523,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
                     || ext.equalsIgnoreCase("markdown")
                     || ext.equalsIgnoreCase("txt"));
             });
-        customRulesFileField.addBrowseFolderListener(getFirstOpenProject(), fileDesc);
+        customRulesFileField.addBrowseFolderListener(new TextBrowseFolderListener(fileDesc, getFirstOpenProject()));
 
         // After a selection, convert absolute path → project-relative when possible
         customRulesFileField.getTextField().getDocument().addDocumentListener(
