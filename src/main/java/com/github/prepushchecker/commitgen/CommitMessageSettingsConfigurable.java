@@ -45,6 +45,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField     ollamaUrlField;
     private JBTextField     ollamaModelField;
     private JBTextField     codexCliPathField;
+    private JBTextField     codexExtraArgsField;
     private JBTextField     ghCliPathField;
     private JBLabel         ghStatusLabel;
     private JBTextField     llmCliPathField;
@@ -192,6 +193,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private @NotNull JPanel buildCodexCliCard() {
         codexCliPathField = new JBTextField(30);
         codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+        codexExtraArgsField = new JBTextField(30);
+        codexExtraArgsField.getEmptyText().setText(
+            "blank = --approval-policy full-auto  (default for Rust CLI 2025+)");
 
         JButton detectBtn = new JButton("Auto-detect");
         detectBtn.addActionListener(ev -> {
@@ -219,10 +223,18 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         card.add(detectBtn, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        card.add(new JBLabel("Extra args:"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(codexExtraArgsField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
+        gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "Install: <code>npm install -g @openai/codex</code> &nbsp;|&nbsp; "
-            + "Auth: <code>codex auth</code> (sign in with ChatGPT account) or set <code>OPENAI_API_KEY</code>"
+            + "Rust CLI (2025+): leave blank → uses <code>--approval-policy full-auto</code><br>"
+            + "Node CLI (older): try <code>--full-auto</code> or leave blank<br>"
+            + "Auth: <code>codex auth</code> (ChatGPT) or set <code>OPENAI_API_KEY</code>"
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
@@ -513,6 +525,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (!ollamaUrlField.getText().equals(s.ollamaBaseUrl)) return true;
         if (!ollamaModelField.getText().equals(s.ollamaModel)) return true;
         if (!codexCliPathField.getText().equals(s.codexCliPath)) return true;
+        if (!codexExtraArgsField.getText().equals(s.codexExtraArgs)) return true;
         if (!ghCliPathField.getText().equals(s.ghCliPath)) return true;
         if (!llmCliPathField.getText().equals(s.llmCliPath)) return true;
         if (!llmModelField.getText().equals(s.llmModel)) return true;
@@ -540,6 +553,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
         s.ollamaModel    = ollamaModelField.getText().trim();
         s.codexCliPath   = codexCliPathField.getText().trim();
+        s.codexExtraArgs    = codexExtraArgsField.getText().trim();
         s.ghCliPath      = ghCliPathField.getText().trim();
         s.llmCliPath     = llmCliPathField.getText().trim();
         s.llmModel       = llmModelField.getText().trim();
@@ -584,6 +598,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         ollamaUrlField.setText(s.ollamaBaseUrl);
         ollamaModelField.setText(s.ollamaModel);
         codexCliPathField.setText(s.codexCliPath);
+        codexExtraArgsField.setText(s.codexExtraArgs);
         ghCliPathField.setText(s.ghCliPath);
         llmCliPathField.setText(s.llmCliPath);
         llmModelField.setText(s.llmModel);

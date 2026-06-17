@@ -44,7 +44,17 @@ public final class CodexCliProvider implements CommitMessageProvider {
 
         List<String> cmd = new ArrayList<>();
         cmd.add(resolvedPath);
-        cmd.add("-q");
+
+        // Add user-configured extra args (e.g. "--approval-policy full-auto") split on whitespace.
+        // Default: "--approval-policy full-auto" which works with the Rust-based Codex CLI (2025+).
+        // Older Node.js-based builds may need different flags — configure in Settings.
+        String extraArgs = s.codexExtraArgs.isBlank()
+            ? "--approval-policy full-auto"
+            : s.codexExtraArgs.trim();
+        for (String arg : extraArgs.split("\\s+")) {
+            if (!arg.isBlank()) cmd.add(arg);
+        }
+
         cmd.add(fullPrompt);
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
