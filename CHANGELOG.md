@@ -9,19 +9,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ## [1.8.0]
 
 ### Added
-- **AI Commit Message Generator.** Generates a ready-to-use git commit message from staged (or HEAD) diffs using any of six configurable AI providers:
-  - **JetBrains AI** — delegates to the AI Assistant plugin when installed.
-  - **OpenAI** — calls `gpt-4o` (or any configured model) via the Chat Completions API.
-  - **Anthropic** — calls Claude 3.5 Sonnet via the Messages API.
-  - **Google Gemini** — calls Gemini 1.5 Flash via the generateContent API.
-  - **Ollama** — calls a locally running Ollama server (default `localhost:11434`), no key needed.
-  - **Codex CLI** — shells out to the `codex` CLI tool; authenticate once with `codex auth` (ChatGPT account) or set `OPENAI_API_KEY`.
-- **Commit message rules.** All providers honour: Conventional Commits enforcement, max subject length, prefix/ticket template, language/tone, auto-detect scope from file paths, and a free-form extra-instructions field.
-- **PasswordSafe API key storage.** API keys are stored in IntelliJ's PasswordSafe and never serialised to the XML state file.
-- **Settings page.** Settings → Tools → *AI Commit Message Generator* with per-provider auth, model override, "Test Connection" button, and all rule options.
-- **Tool window button.** ⚡ *Generate Commit Message with AI* toolbar button added to the Compilation Checker panel.
-- **Commit dialog action.** *Generate Commit Message with AI* action in `Vcs.MessageActionGroup`, injecting the result directly into the commit message text area.
-- **Optional JetBrains AI soft dependency.** The plugin continues to work without the AI Assistant plugin; the `com.intellij.ml.llm` dependency is optional.
+
+#### AI Commit Message Generator
+A full AI-powered commit message generator, accessible from two places:
+- ⚡ **Compilation Checker tool window** toolbar button
+- ⚡ **Git Commit dialog** action (`Vcs.MessageActionGroup` — same row as the Copilot button)
+
+The button is **disabled/greyed out** when there are no staged or local changes (matches Copilot's visual behaviour).
+
+#### Nine AI providers
+
+| Provider | Auth | Notes |
+|----------|------|-------|
+| **JetBrains AI** | IDE sign-in | Requires AI Assistant plugin (`com.intellij.ml.llm`), optional soft dep |
+| **OpenAI** | API key → PasswordSafe | Calls `gpt-4o` or any configured model |
+| **Anthropic** | API key → PasswordSafe | Calls Claude 3.5 Sonnet |
+| **Google Gemini** | API key → PasswordSafe | Calls Gemini 1.5 Flash |
+| **Ollama** | None | Local server, configurable base URL (default `localhost:11434`) |
+| **Codex (ChatGPT Account)** | ChatGPT OAuth via Codex app | Reads `~/.codex/auth.json` written by the Codex desktop app — **no API key needed** |
+| **GitHub Copilot** | `gh auth login` | Calls Copilot Chat API via `gh auth token` |
+| **Claude CLI** | `ANTHROPIC_API_KEY` / PasswordSafe | Reads env var or stored key, calls Anthropic API |
+| **llm CLI** | Per-provider key (`llm keys set`) | Simon Willison's tool — 60+ model providers via plugins |
+
+#### Custom commit message rules
+- **Conventional Commits** format enforcement (`feat:`, `fix:`, `chore:`, …)
+- **Max subject line length** (default 72 characters)
+- **Prefix / ticket template** (e.g. `[JIRA-{branch}]`)
+- **Language / tone** (e.g. "English, concise")
+- **Auto-detect scope** from changed file paths
+- **Extra free-form instructions** appended to every prompt
+
+#### Project-level rules file (team sharing)
+Place `.github/commit-instructions.md` (or `COMMIT_RULES.md`) in the project root and commit it. The plugin appends it verbatim to the AI system prompt — every developer picks up the same rules with no IDE settings change. A starter template is included at `.github/commit-instructions.md`.
+
+- **Browse button** in Settings — IntelliJ file chooser rooted at the open project, filtered to `.md` / `.txt`
+- Selected paths are **auto-converted to project-relative** so the setting is portable across machines
+- **Live status label** shows whether the file was found (`✓`) or is missing (`⚠`)
+
+#### Settings page
+**Settings → Tools → Pre-Push Checker — AI Commit Message Generator**
+- Per-provider auth configuration with per-provider hints
+- **Auto-detect buttons** for CLI providers (probes shell PATH, Homebrew, npm-global, asdf, pip, Cargo)
+- Codex card shows live ChatGPT sign-in status and **"Open Codex App"** button
+- GH Copilot card shows live `gh auth` status
+- **Test Connection** button for all providers
+- Model override per provider
+- All commit message rule options
+
+### Security
+- **Shell injection guard reinstated** in `CliPathResolver.whichViaShell()` — only bare executable names matching `[A-Za-z0-9._+-]+` are passed into `sh -c` scripts, blocking injection via user-controlled Settings values (e.g. a compromised `commitMessageGenerator.xml`). Guard applied at both the method entry (chokepoint) and the call-site.
+
+### Fixed
+- **CLI auto-detection** — all CLI providers now resolve their executable by sourcing the user's rc files (`.zshenv`, `.zshrc`, `.bashrc`, etc.) and probing common install locations. Fixes "tool not found" errors when IntelliJ is launched as a GUI app with a stripped PATH.
+- **`node: No such file or directory` (exit 127)** — resolved by injecting the shell-augmented PATH into every `ProcessBuilder` subprocess environment.
+- **Codex CLI `stdin is not a terminal`** — the Codex CLI is a TUI agent that requires a real TTY. Fixed by switching to direct HTTP API calls using the ChatGPT OAuth token from `~/.codex/auth.json`, eliminating the subprocess entirely.
+- **Codex CLI `unexpected argument` errors** — various `codex` CLI versions reject positional arguments and flags differently. The HTTP approach removes all CLI argument parsing issues.
+- **Infinite "Contacting AI provider…"** — the Python PTY subprocess never exited. Fixed by removing the subprocess and using the direct HTTP approach.
 
 ---
 

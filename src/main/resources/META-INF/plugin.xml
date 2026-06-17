@@ -45,6 +45,21 @@
             <li>Respects <code>PRE_PUSH_CHECKER_COMMAND</code> env variable for custom check commands</li>
         </ul>
 
+        <h3>AI Commit Message Generator <em>(new in 1.8.0)</em></h3>
+        <p>Generate a commit message from your staged diff with one click — from the Git Commit dialog
+        toolbar or the Compilation Checker tool window. The button greys out automatically when there
+        are no changes.</p>
+        <ul>
+            <li><b>9 providers:</b> JetBrains AI, OpenAI, Anthropic, Gemini, Ollama, Codex (ChatGPT account),
+                GitHub Copilot, Claude CLI, llm CLI</li>
+            <li><b>Codex (ChatGPT Account):</b> reads <code>~/.codex/auth.json</code> — sign in once
+                with the Codex desktop app, no API key needed</li>
+            <li><b>Custom rules:</b> Conventional Commits, max length, ticket prefix, language, scope, extra instructions</li>
+            <li><b>Team rules file:</b> commit <code>.github/commit-instructions.md</code> to share
+                prompt rules with your whole team</li>
+            <li><b>API keys in PasswordSafe</b> — never written to plain XML state</li>
+        </ul>
+
         <h3>Requirements</h3>
         <ul>
             <li>IntelliJ IDEA 2023.3 or later</li>
@@ -54,45 +69,64 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <h3>1.8.0</h3>
+        <h3>1.8.0 — AI Commit Message Generator</h3>
+
+        <h4>New feature: AI Commit Message Generator</h4>
+        <p>Generates a ready-to-use git commit message from staged (or HEAD) diffs with one click.
+        Accessible from the ⚡ button in the Compilation Checker tool window and from the Git Commit
+        dialog toolbar (<em>same row as the Copilot button</em>). The button is greyed out
+        automatically when there are no staged or local changes.</p>
+
+        <h4>Nine AI providers</h4>
         <ul>
-            <li><b>AI Commit Message Generator:</b> generates ready-to-use git commit messages
-                from staged (or HEAD) diffs using your choice of AI provider. Accessible from
-                a new toolbar button in the Compilation Checker tool window and from the
-                <em>Vcs.MessageActionGroup</em> menu in the Git Commit dialog.</li>
-            <li><b>Eight AI providers:</b>
-                <ul>
-                    <li><b>JetBrains AI</b> — uses the AI Assistant plugin when installed.</li>
-                    <li><b>OpenAI</b> — direct HTTPS call to <code>gpt-4o</code> (or any configured model).</li>
-                    <li><b>Anthropic</b> — Claude via the Anthropic Messages API.</li>
-                    <li><b>Google Gemini</b> — Gemini 1.5 Flash via the generateContent API.</li>
-                    <li><b>Ollama</b> — local model served at a configurable base URL (default <code>localhost:11434</code>).</li>
-                    <li><b>OpenAI Codex CLI</b> — shells out to the <code>codex</code> CLI tool,
-                        which authenticates via ChatGPT OAuth (<code>codex auth</code>) or
-                        <code>OPENAI_API_KEY</code>.</li>
-                    <li><b>GitHub Copilot</b> — uses <code>gh auth token</code> and calls the
-                        Copilot Chat completions API. Requires GitHub CLI and an active Copilot subscription.</li>
-                    <li><b>llm CLI</b> — wraps Simon Willison's <code>llm</code> tool (60+ model
-                        providers via plugins). Install with <code>pip install llm</code>.</li>
-                </ul>
-            </li>
-            <li><b>CLI auto-detection:</b> all CLI providers resolve their executable through a
-                shell sub-process that sources the user's rc files and probes Homebrew, npm-global,
-                asdf shims, pip <code>~/.local/bin</code>, and Cargo. IntelliJ GUI-app PATH
-                stripping no longer prevents tools from being found.</li>
-            <li><b>Auto-detect buttons:</b> each CLI card in Settings has an auto-detect button
-                that resolves the path on demand and shows install hints when not found.</li>
-            <li><b>Custom commit message rules:</b> Conventional Commits enforcement, max subject
-                length, prefix/ticket template, language/tone, auto-detect scope from file paths,
-                and a free-form extra-instructions field.</li>
-            <li><b>Project rules file:</b> place <code>.github/commit-instructions.md</code>
-                (or <code>COMMIT_RULES.md</code>) in the project root; its content is appended
-                to the AI system prompt automatically — commit it to share rules with your team.</li>
-            <li><b>Secure key storage:</b> API keys are stored in IntelliJ's PasswordSafe and
-                never written to the plain-text XML settings file.</li>
-            <li><b>Settings page:</b> Settings → Tools → <em>AI Commit Message Generator</em>
-                with per-provider auth configuration, model override, a "Test Connection" button,
-                and all rule options.</li>
+            <li><b>JetBrains AI</b> — uses the AI Assistant plugin when installed (optional soft dependency).</li>
+            <li><b>OpenAI</b> — calls <code>gpt-4o</code> (or any configured model) via API key.</li>
+            <li><b>Anthropic</b> — calls Claude 3.5 Sonnet via API key.</li>
+            <li><b>Google Gemini</b> — calls Gemini 1.5 Flash via API key.</li>
+            <li><b>Ollama</b> — local model at <code>localhost:11434</code>, no key needed.</li>
+            <li><b>Codex (ChatGPT Account)</b> — reads <code>~/.codex/auth.json</code> written by
+                the Codex desktop app. No API key required; sign in once with your ChatGPT account
+                in the Codex app and the plugin uses that session automatically.</li>
+            <li><b>GitHub Copilot</b> — calls the Copilot Chat API using <code>gh auth token</code>.
+                Requires GitHub CLI and an active Copilot subscription.</li>
+            <li><b>Claude CLI</b> — reads <code>ANTHROPIC_API_KEY</code> from your shell environment
+                or PasswordSafe and calls the Anthropic API directly.</li>
+            <li><b>llm CLI</b> — wraps Simon Willison's <code>llm</code> tool (60+ model providers
+                via plugins). Install with <code>pip install llm</code>.</li>
+        </ul>
+
+        <h4>Custom commit message rules</h4>
+        <ul>
+            <li>Conventional Commits format (<code>feat:</code>, <code>fix:</code>, …)</li>
+            <li>Max subject line length, prefix/ticket template, language/tone</li>
+            <li>Auto-detect scope from changed file paths</li>
+            <li>Free-form extra instructions appended to every prompt</li>
+        </ul>
+
+        <h4>Project-level rules file</h4>
+        <p>Place <code>.github/commit-instructions.md</code> (or <code>COMMIT_RULES.md</code>) in
+        the project root and commit it — the plugin appends it to the AI prompt automatically so
+        the whole team shares the same conventions. The Settings page has a file browser with
+        project-relative path storage and a live exists/missing status label.</p>
+
+        <h4>Settings page</h4>
+        <p>Settings → Tools → <em>Pre-Push Checker — AI Commit Message Generator</em>:
+        per-provider auth, auto-detect buttons, Codex live sign-in status, Test Connection,
+        model overrides, and all rule options. API keys stored in PasswordSafe.</p>
+
+        <h4>Security fix</h4>
+        <p>Shell injection guard reinstated in <code>CliPathResolver</code>: only bare executable
+        names matching <code>[A-Za-z0-9._+-]+</code> are passed into <code>sh -c</code> scripts,
+        blocking injection via user-controlled Settings values.</p>
+
+        <h4>Bug fixes</h4>
+        <ul>
+            <li><b>CLI auto-detection:</b> sources shell rc files and probes Homebrew, npm-global,
+                asdf, pip, Cargo — fixes "tool not found" when IntelliJ has a stripped GUI PATH.</li>
+            <li><b>Codex infinite hang:</b> dropped the PTY subprocess approach; now calls OpenAI
+                API directly using the ChatGPT OAuth token from <code>~/.codex/auth.json</code>.</li>
+            <li><b><code>node: No such file or directory</code>:</b> shell-augmented PATH is now
+                injected into all CLI subprocess environments.</li>
         </ul>
 
         <h3>1.7.2</h3>
