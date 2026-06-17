@@ -108,8 +108,7 @@ public final class GenerateCommitMessageAction extends AnAction {
 
     private static CommitMessage getCommitMessageControl(@NotNull AnActionEvent e) {
         try {
-            Object raw = e.getDataContext().getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL.getName());
-            if (raw instanceof CommitMessage cm) return cm;
+            return e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL);
         } catch (Exception ignored) {}
         return null;
     }

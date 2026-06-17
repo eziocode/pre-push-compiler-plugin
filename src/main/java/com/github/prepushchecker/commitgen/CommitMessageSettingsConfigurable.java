@@ -465,7 +465,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             com.intellij.ide.plugins.IdeaPluginDescriptor desc =
                 com.intellij.ide.plugins.PluginManagerCore.getPlugin(
                     com.intellij.openapi.extensions.PluginId.getId("com.intellij.ml.llm"));
-            if (desc != null && desc.isEnabled()) {
+            if (desc != null && desc.getPluginClassLoader() != null) {
                 intellijAiStatusLabel.setText(
                     "✓ JetBrains AI Assistant plugin is installed and enabled.");
             } else {
@@ -522,12 +522,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
                     || ext.equalsIgnoreCase("markdown")
                     || ext.equalsIgnoreCase("txt"));
             });
-        customRulesFileField.addBrowseFolderListener(
-            "Select Commit Rules File",
-            "Choose a Markdown (.md) file containing commit message generation rules",
-            getFirstOpenProject(),
-            fileDesc,
-            com.intellij.openapi.ui.TextComponentAccessor.TEXT_FIELD_WHOLE_TEXT);
+        customRulesFileField.addBrowseFolderListener(getFirstOpenProject(), fileDesc);
 
         // After a selection, convert absolute path → project-relative when possible
         customRulesFileField.getTextField().getDocument().addDocumentListener(

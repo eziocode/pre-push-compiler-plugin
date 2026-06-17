@@ -53,7 +53,7 @@ public final class IntelliJAiProvider implements CommitMessageProvider {
     private static void checkPluginAvailable() {
         IdeaPluginDescriptor descriptor =
             PluginManagerCore.getPlugin(PluginId.getId(AI_PLUGIN_ID));
-        if (descriptor == null || !descriptor.isEnabled()) {
+        if (descriptor == null || descriptor.getPluginClassLoader() == null) {
             throw new IllegalStateException(
                 "JetBrains AI Assistant plugin (" + AI_PLUGIN_ID + ") is not installed or not enabled.\n"
                     + "Install it from Settings → Plugins → Marketplace and sign in to your JetBrains account.");
