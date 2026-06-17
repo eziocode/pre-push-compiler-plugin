@@ -211,64 +211,67 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
     private @NotNull JPanel buildCodexCliCard() {
         codexEnvStatusLabel = new JBLabel();
-        codexKeyField       = new JPasswordField(30); // optional API-key fallback
+        codexKeyField       = new JPasswordField(30); // optional manual API-key fallback
         codexCliPathField   = new JBTextField(1);     // kept for settings state, hidden
 
-        // Check auth status on card creation
         refreshCodexAuthStatus();
 
-        JButton checkBtn = new JButton("Check Auth Status");
-        checkBtn.addActionListener(ev -> refreshCodexAuthStatus());
+        JButton signInBtn  = new JButton("Sign in with ChatGPT");
+        JButton signOutBtn = new JButton("Sign out");
+        JButton refreshBtn = new JButton("Refresh Status");
 
-        JButton openAppBtn = new JButton("Open Codex App");
-        openAppBtn.addActionListener(ev -> {
-            try {
-                Runtime.getRuntime().exec(new String[]{"open", "-a", "Codex"});
-            } catch (Exception ex) {
-                Messages.showInfoMessage(
-                    "Could not open Codex app automatically.\n"
-                        + "Open it manually and sign in with your ChatGPT account.",
-                    "Open Codex App");
-            }
+        signInBtn.addActionListener(ev -> {
+            signInBtn.setEnabled(false);
+            signInBtn.setText("Opening browser…");
+            com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.startSignIn(() -> {
+                refreshCodexAuthStatus();
+                signInBtn.setText("Sign in with ChatGPT");
+                signInBtn.setEnabled(true);
+            });
         });
+        signOutBtn.addActionListener(ev -> {
+            com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.signOut();
+            refreshCodexAuthStatus();
+        });
+        refreshBtn.addActionListener(ev -> refreshCodexAuthStatus());
 
         JPanel card = new JPanel(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(4, 0, 4, 6);
-        gbc.anchor = GridBagConstraints.WEST;
+        GridBagConstraints g = new GridBagConstraints();
+        g.insets = new Insets(5, 0, 5, 6);
+        g.anchor = GridBagConstraints.WEST;
 
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 3;
-        JBLabel title = new JBLabel("<html><b>ChatGPT Account (via Codex App)</b></html>");
-        card.add(title, gbc);
+        g.gridx = 0; g.gridy = 0; g.gridwidth = 3; g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
+        card.add(new JBLabel("<html><b>ChatGPT Account — Browser Sign-in</b></html>"), g);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3;
-        card.add(codexEnvStatusLabel, gbc);
+        g.gridy = 1;
+        card.add(codexEnvStatusLabel, g);
 
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        btnRow.add(checkBtn);
-        btnRow.add(openAppBtn);
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
-        card.add(btnRow, gbc);
+        btnRow.add(signInBtn);
+        btnRow.add(signOutBtn);
+        btnRow.add(refreshBtn);
+        g.gridy = 2; g.fill = GridBagConstraints.NONE; g.weightx = 0;
+        card.add(btnRow, g);
 
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(new JBLabel("API key (fallback):"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(codexKeyField, gbc);
+        g.gridy = 3; g.gridwidth = 1; g.weightx = 0;
+        card.add(new JBLabel("API key (fallback):"), g);
+        g.gridx = 1; g.gridwidth = 2; g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
+        card.add(codexKeyField, g);
 
-        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        g.gridx = 0; g.gridy = 4; g.gridwidth = 3; g.fill = GridBagConstraints.NONE; g.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "<b>No API key needed</b> — reads your ChatGPT OAuth session from<br>"
-            + "<code>~/.codex/auth.json</code> (written by the Codex desktop app).<br>"
-            + "Sign in once with the Codex app → plugin uses that session forever."
+            + "Uses OAuth 2.0 Device Code flow — browser opens automatically, enter the one-time code.<br>"
+            + "No API key required. Tokens stored in IntelliJ PasswordSafe.<br>"
+            + "Fallback: Codex desktop app session (<code>~/.codex/auth.json</code>)."
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
-        card.add(hint, gbc);
+        card.add(hint, g);
         return card;
     }
 
     private void refreshCodexAuthStatus() {
         if (codexEnvStatusLabel == null) return;
-        boolean auth = com.github.prepushchecker.commitgen.providers.CodexCliProvider.isAuthenticated();
+        boolean auth = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.isAuthenticated();
         String accountId = com.github.prepushchecker.commitgen.providers.CodexCliProvider.getAccountId();
         if (auth) {
             String label = "✓ Signed in with ChatGPT account"

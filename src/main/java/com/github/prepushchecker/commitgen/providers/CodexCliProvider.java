@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.ChatGPTOAuthFlow;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -17,31 +18,67 @@ import java.time.Duration;
 
 /**
  * Generates commit messages via the OpenAI Chat Completions API using the
- * <b>ChatGPT OAuth token</b> that the Codex desktop app stores in
- * {@code ~/.codex/auth.json} — no API key required, no subprocess, no TTY.
+ * <b>ChatGPT OAuth token</b> obtained by the browser Device Code login flow
+ * or the Codex desktop app's {@code ~/.codex/auth.json}.
  *
- * <h3>Authentication</h3>
- * Open the <b>Codex</b> desktop app and sign in with your ChatGPT account.
- * The app writes {@code ~/.codex/auth.json} with an OAuth access token that
- * this provider reads at generation time.
+ * <h3>Authentication priority</h3>
+ * <ol>
+ *   <li>Token from browser sign-in (PasswordSafe, via {@link ChatGPTOAuthFlow}).</li>
+ *   <li>Token from the Codex desktop app ({@code ~/.codex/auth.json}) as fallback.</li>
+ *   <li>Manual API key entered in Settings (PasswordSafe).</li>
+ * </ol>
+ * If the token is expired, one refresh attempt is made automatically.
  */
 public final class CodexCliProvider implements CommitMessageProvider {
 
     public static final String CLI_NAME = "codex";
     private static final String API_URL = "https://api.openai.com/v1/chat/completions";
-    private static final String AUTH_JSON = System.getProperty("user.home") + "/.codex/auth.json";
 
     @Override
     public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
             throws Exception {
-        String token = resolveToken();
+        String token = ChatGPTOAuthFlow.getAccessToken();
+        if (token == null || token.isBlank()) {
+            // Last resort: manual API key from Settings
+            token = CommitMessageSettings.getInstance().loadApiKey(Id.CODEX_CLI);
+        }
         if (token == null || token.isBlank()) {
             throw new IllegalStateException(
-                "No ChatGPT OAuth token found in ~/.codex/auth.json.\n\n"
-                    + "Open the Codex desktop app and sign in with your ChatGPT account.\n"
-                    + "The plugin will then use that session automatically — no API key needed.");
+                "No ChatGPT account credentials found.\n\n"
+                    + "Click \"Sign in with ChatGPT\" in:\n"
+                    + "Settings → Tools → Pre-Push Checker — AI Commit Message Generator\n\n"
+                    + "Or open the Codex desktop app and sign in with your ChatGPT account.");
         }
 
+        String result = callApi(token, systemPrompt, userPrompt);
+        if (result == null) {
+            // Token may have expired — try to refresh once
+            String newToken = ChatGPTOAuthFlow.refreshAccessToken();
+            if (newToken != null) {
+                result = callApi(newToken, systemPrompt, userPrompt);
+            }
+            if (result == null) {
+                throw new RuntimeException(
+                    "ChatGPT token expired and could not be refreshed.\n"
+                        + "Please sign in again from the Settings page.");
+            }
+        }
+        return result;
+    }
+
+    @Override
+    public @NotNull Id id() { return Id.CODEX_CLI; }
+
+    // ── API call ──────────────────────────────────────────────────────────────
+
+    /**
+     * Calls the OpenAI Chat Completions API. Returns the generated text, or
+     * {@code null} if the token is invalid/expired (HTTP 401/403).
+     */
+    @Nullable
+    private static String callApi(@NotNull String token,
+                                   @NotNull String systemPrompt,
+                                   @NotNull String userPrompt) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String model = s.openAiModel.isBlank() ? "gpt-4o" : s.openAiModel;
 
@@ -67,11 +104,8 @@ public final class CodexCliProvider implements CommitMessageProvider {
         HttpResponse<String> response =
             client.send(request, HttpResponse.BodyHandlers.ofString());
 
-        if (response.statusCode() == 401) {
-            // Token may have expired — clear hint
-            throw new RuntimeException(
-                "ChatGPT OAuth token expired.\n"
-                    + "Open the Codex app, sign out and sign back in to refresh it.");
+        if (response.statusCode() == 401 || response.statusCode() == 403) {
+            return null; // signal caller to refresh
         }
         if (response.statusCode() != 200) {
             throw new RuntimeException(
@@ -84,47 +118,27 @@ public final class CodexCliProvider implements CommitMessageProvider {
         return content.trim();
     }
 
-    @Override
-    public @NotNull Id id() { return Id.CODEX_CLI; }
+    // ── Legacy helpers (for CliPathResolver fallback display) ─────────────────
 
-    // ── Auth helpers ──────────────────────────────────────────────────────────
-
-    /**
-     * Reads the ChatGPT OAuth access token from {@code ~/.codex/auth.json}.
-     * Returns {@code null} if the file is absent or the token field is blank.
-     */
-    @Nullable
-    public static String resolveToken() {
-        try {
-            Path authFile = Path.of(AUTH_JSON);
-            if (!Files.isRegularFile(authFile)) return null;
-            String json = Files.readString(authFile, StandardCharsets.UTF_8);
-            // Try tokens.access_token first
-            String token = JsonUtil.extractString(json, "access_token");
-            if (token != null && !token.isBlank()) return token;
-            // Fall back to top-level OPENAI_API_KEY
-            return JsonUtil.extractString(json, "OPENAI_API_KEY");
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    /** Returns {@code true} when a valid auth file exists. */
+    /** Returns {@code true} when any credential is available. */
     public static boolean isAuthenticated() {
-        String t = resolveToken();
-        return t != null && !t.isBlank();
+        return ChatGPTOAuthFlow.isAuthenticated();
     }
 
-    /** Returns the account_id from auth.json for display, or {@code null}. */
+    /** Returns account_id from ~/.codex/auth.json for status display, or null. */
     @Nullable
     public static String getAccountId() {
         try {
-            Path authFile = Path.of(AUTH_JSON);
+            Path authFile = Path.of(System.getProperty("user.home"), ".codex", "auth.json");
             if (!Files.isRegularFile(authFile)) return null;
             String json = Files.readString(authFile, StandardCharsets.UTF_8);
             return JsonUtil.extractString(json, "account_id");
-        } catch (Exception e) {
-            return null;
-        }
+        } catch (Exception e) { return null; }
+    }
+
+    /** Resolves the ChatGPT OAuth token (used by Settings card status check). */
+    @Nullable
+    public static String resolveToken() {
+        return ChatGPTOAuthFlow.getAccessToken();
     }
 }
