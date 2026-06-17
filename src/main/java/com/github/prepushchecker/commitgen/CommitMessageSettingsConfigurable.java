@@ -210,11 +210,12 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildCodexCliCard() {
-        codexEnvStatusLabel = new JBLabel();
+        codexEnvStatusLabel = new JBLabel("<html><i>Checking sign-in status…</i></html>");
         codexKeyField       = new JPasswordField(30); // optional manual API-key fallback
         codexCliPathField   = new JBTextField(1);     // kept for settings state, hidden
 
-        refreshCodexAuthStatus();
+        // Defer I/O to background — do NOT call refreshCodexAuthStatus() here on EDT
+        scheduleCodexAuthRefresh();
 
         JButton signInBtn  = new JButton("Sign in with ChatGPT");
         JButton signOutBtn = new JButton("Sign out");
@@ -224,16 +225,16 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             signInBtn.setEnabled(false);
             signInBtn.setText("Opening browser…");
             com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.startSignIn(() -> {
-                refreshCodexAuthStatus();
+                scheduleCodexAuthRefresh();
                 signInBtn.setText("Sign in with ChatGPT");
                 signInBtn.setEnabled(true);
             });
         });
         signOutBtn.addActionListener(ev -> {
             com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.signOut();
-            refreshCodexAuthStatus();
+            scheduleCodexAuthRefresh();
         });
-        refreshBtn.addActionListener(ev -> refreshCodexAuthStatus());
+        refreshBtn.addActionListener(ev -> scheduleCodexAuthRefresh());
 
         JPanel card = new JPanel(new GridBagLayout());
         GridBagConstraints g = new GridBagConstraints();
@@ -269,18 +270,31 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         return card;
     }
 
-    private void refreshCodexAuthStatus() {
+    /** Runs the auth file/PasswordSafe check off the EDT, then updates the label on EDT. */
+    private void scheduleCodexAuthRefresh() {
         if (codexEnvStatusLabel == null) return;
-        boolean auth = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.isAuthenticated();
-        String accountId = com.github.prepushchecker.commitgen.providers.CodexCliProvider.getAccountId();
-        if (auth) {
-            String label = "✓ Signed in with ChatGPT account"
-                + (accountId != null && !accountId.isBlank() ? " (" + accountId + ")" : "");
-            codexEnvStatusLabel.setText("<html><b style='color:green'>" + label + "</b></html>");
-        } else {
-            codexEnvStatusLabel.setText(
-                "<html><b style='color:red'>✗ Not signed in — open Codex app and sign in with ChatGPT</b></html>");
-        }
+        codexEnvStatusLabel.setText("<html><i>Checking…</i></html>");
+        new Thread(() -> {
+            // I/O happens here, off EDT
+            boolean auth     = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.isAuthenticated();
+            String accountId = com.github.prepushchecker.commitgen.providers.CodexCliProvider.getAccountId();
+            SwingUtilities.invokeLater(() -> {
+                if (codexEnvStatusLabel == null) return;
+                if (auth) {
+                    String label = "✓ Signed in with ChatGPT account"
+                        + (accountId != null && !accountId.isBlank() ? " (" + accountId + ")" : "");
+                    codexEnvStatusLabel.setText("<html><b style='color:green'>" + label + "</b></html>");
+                } else {
+                    codexEnvStatusLabel.setText(
+                        "<html><b style='color:#cc4444'>✗ Not signed in — click \"Sign in with ChatGPT\"</b></html>");
+                }
+            });
+        }, "CommitGen-CodexAuthCheck").start();
+    }
+
+    /** @deprecated Use {@link #scheduleCodexAuthRefresh()} instead. */
+    private void refreshCodexAuthStatus() {
+        scheduleCodexAuthRefresh();
     }
 
     private @NotNull JPanel buildGhCopilotCard() {

@@ -80,14 +80,14 @@ public final class ChatGPTOAuthFlow {
     /** Returns the stored access token, or {@code null}. */
     @Nullable
     public static String getAccessToken() {
-        // 1. PasswordSafe (from browser login)
+        // 1. PasswordSafe (from browser Device Code login)
         String saved = loadFromSafe(KEY_ACCESS);
         if (saved != null && !saved.isBlank()) return saved;
-        // 2. ~/.codex/auth.json (from Codex app login — fallback)
-        return com.github.prepushchecker.commitgen.providers.CodexCliProvider.resolveToken();
+        // 2. ~/.codex/auth.json (from Codex desktop app — no circular call)
+        return readCodexAuthJson();
     }
 
-    /** Returns {@code true} when a token is available (either browser or Codex app login). */
+    /** Returns {@code true} when a token is available. */
     public static boolean isAuthenticated() {
         return getAccessToken() != null;
     }
@@ -96,6 +96,22 @@ public final class ChatGPTOAuthFlow {
     public static void signOut() {
         saveToSafe(KEY_ACCESS,  null);
         saveToSafe(KEY_REFRESH, null);
+    }
+
+    /** Reads the access token from {@code ~/.codex/auth.json} without circular dependency. */
+    @Nullable
+    private static String readCodexAuthJson() {
+        try {
+            java.nio.file.Path authFile = java.nio.file.Path.of(
+                System.getProperty("user.home"), ".codex", "auth.json");
+            if (!java.nio.file.Files.isRegularFile(authFile)) return null;
+            String json = java.nio.file.Files.readString(authFile, StandardCharsets.UTF_8);
+            String token = JsonUtil.extractString(json, "access_token");
+            if (token != null && !token.isBlank()) return token;
+            return JsonUtil.extractString(json, "OPENAI_API_KEY");
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /**
