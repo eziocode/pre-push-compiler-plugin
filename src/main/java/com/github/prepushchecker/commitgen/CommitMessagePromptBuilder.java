@@ -53,7 +53,7 @@ final class CommitMessagePromptBuilder {
     }
 
     static @NotNull Prompt buildForDiff(@NotNull Project project, @NotNull String diff) {
-        if (diff.isBlank()) throw new IllegalArgumentException("Empty diff.");
+        if (diff.isBlank()) throw new IllegalArgumentException("No diff content.");
         if (diff.length() > MAX_DIFF_CHARS) {
             diff = diff.substring(0, MAX_DIFF_CHARS) + "\n\n[diff truncated — first "
                 + MAX_DIFF_CHARS + " chars shown]";

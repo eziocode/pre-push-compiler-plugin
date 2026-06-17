@@ -15,7 +15,6 @@ import com.intellij.openapi.ui.Messages;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.vcs.commit.CommitWorkflowUi;
-import com.intellij.openapi.vcs.CommitMessageI;
 import com.intellij.openapi.vcs.VcsDataKeys;
 import org.jetbrains.annotations.NotNull;
 
@@ -76,7 +75,7 @@ public final class GenerateCommitMessageAction extends AnAction {
                         ApplicationManager.getApplication().invokeLater(() -> {
                             if (project.isDisposed()) return;
                             if (commitWorkflowUi != null) {
-                                commitWorkflowUi.commitMessageUi.setText(finalMessage);
+                                commitWorkflowUi.getCommitMessageUi().setText(finalMessage);
                             } else {
                                 // Fallback: show in a dialog the user can copy
                                 Messages.showMultilineInputDialog(
@@ -109,8 +108,8 @@ public final class GenerateCommitMessageAction extends AnAction {
 
     private static CommitWorkflowUi getCommitWorkflowUi(@NotNull AnActionEvent e) {
         try {
-            var workflowUi = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI);
-            if (workflowUi instanceof CommitWorkflowUi ui) return ui;
+            CommitWorkflowUi workflowUi = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI);
+            if (workflowUi != null) return workflowUi;
         } catch (Exception ignored) {}
         return null;
     }

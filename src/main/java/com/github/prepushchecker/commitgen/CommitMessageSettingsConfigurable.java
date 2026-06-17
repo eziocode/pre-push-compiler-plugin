@@ -464,9 +464,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (intellijAiStatusLabel == null) return;
         try {
             com.intellij.ide.plugins.IdeaPluginDescriptor desc =
-                com.intellij.ide.plugins.PluginManagerCore.getPlugin(
+                com.intellij.ide.plugins.PluginManager.getInstance().findEnabledPlugin(
                     com.intellij.openapi.extensions.PluginId.getId("com.intellij.ml.llm"));
-            if (desc != null && desc.getPluginClassLoader() != null) {
+            if (desc != null) {
                 intellijAiStatusLabel.setText(
                     "✓ JetBrains AI Assistant plugin is installed and enabled.");
             } else {
