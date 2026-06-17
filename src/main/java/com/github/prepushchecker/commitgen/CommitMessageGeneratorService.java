@@ -37,10 +37,8 @@ public final class CommitMessageGeneratorService {
 
     /** Convenience overload for testing with a custom diff string. */
     public @NotNull String generateForDiff(@NotNull String diff) throws Exception {
-        CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        String systemPrompt = CommitMessagePromptBuilder.build(project).system();
-        String userPrompt   = "Git diff:\n```\n" + diff + "\n```";
-        return resolveProvider().generate(systemPrompt, userPrompt);
+        CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(project, diff);
+        return resolveProvider().generate(prompt.system(), prompt.user());
     }
 
     private @NotNull CommitMessageProvider resolveProvider() {
@@ -60,6 +58,7 @@ public final class CommitMessageGeneratorService {
             case CODEX_CLI   -> new CodexCliProvider();
             case GH_COPILOT  -> new GhCopilotProvider();
             case LLM_CLI     -> new LlmCliProvider();
+            case CLAUDE_CLI  -> new ClaudeCliProvider();
         };
     }
 }

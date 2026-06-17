@@ -55,8 +55,8 @@ public final class OpenAiProvider implements CommitMessageProvider {
             throw new RuntimeException(
                 "OpenAI API error " + response.statusCode() + ": " + response.body());
         }
-        // Parse {"choices":[{"message":{"content":"..."}},...]}
-        String content = JsonUtil.extractString(response.body(), "content");
+        String content = JsonUtil.extractStringAtPath(
+            response.body(), "choices", 0, "message", "content");
         if (content == null) {
             throw new RuntimeException("Unexpected OpenAI response: " + response.body());
         }

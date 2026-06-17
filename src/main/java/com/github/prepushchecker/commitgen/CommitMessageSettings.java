@@ -35,6 +35,9 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
         public String ghCliPath      = "";   // blank = auto-detect (for GH_COPILOT)
         public String llmCliPath     = "";   // blank = auto-detect
         public String llmModel       = "";   // blank = llm default model
+        public String claudeCliPath  = "";   // blank = auto-detect
+        public String claudeModel    = "";   // blank = CLI default model
+        public String claudeExtraArgs = ""; // blank = --print
 
         // Commit message rules
         public boolean useConventionalCommits = true;

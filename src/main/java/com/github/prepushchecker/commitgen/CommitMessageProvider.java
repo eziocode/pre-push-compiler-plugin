@@ -17,7 +17,8 @@ public interface CommitMessageProvider {
         OLLAMA("Ollama (Local)"),
         CODEX_CLI("OpenAI Codex CLI (ChatGPT account)"),
         GH_COPILOT("GitHub Copilot (gh auth)"),
-        LLM_CLI("llm CLI (multi-provider)");
+        LLM_CLI("llm CLI (multi-provider)"),
+        CLAUDE_CLI("Anthropic Claude CLI");
 
         private final String displayName;
 

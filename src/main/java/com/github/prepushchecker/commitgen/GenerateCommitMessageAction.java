@@ -27,8 +27,8 @@ import org.jetbrains.annotations.NotNull;
 public final class GenerateCommitMessageAction extends AnAction {
 
     public GenerateCommitMessageAction() {
-        super("Generate Commit Message with AI",
-              "Generate a commit message from staged changes using the configured AI provider",
+        super("Generate Commit Message (Pre-Push Checker)",
+              "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider",
               AllIcons.Actions.Lightning);
     }
 

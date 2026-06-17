@@ -4,13 +4,10 @@ import com.intellij.openapi.diagnostic.Logger;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Small read-mostly helpers for inspecting a git repository's local state.
@@ -121,27 +118,20 @@ final class GitOperations {
         try {
             ProcessBuilder pb = new ProcessBuilder(command)
                 .directory(new File(repoRoot))
-                .redirectErrorStream(true)
-                .redirectInput(ProcessBuilder.Redirect.from(new File("/dev/null")));
+                .redirectErrorStream(true);
             pb.environment().put("GIT_TERMINAL_PROMPT", "0");
             pb.environment().put("GIT_ASKPASS", "");
             pb.environment().put("SSH_ASKPASS", "");
             pb.environment().put("GIT_MERGE_AUTOEDIT", "no");
-            Process p = pb.start();
-            StringBuilder out = new StringBuilder();
-            try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) {
-                    if (out.length() > 0) out.append('\n');
-                    out.append(line);
-                }
-            }
-            if (!p.waitFor(CMD_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                p.destroyForcibly();
-                return new GitResult(-1, out.toString().trim(), "timed out after " + CMD_TIMEOUT_SECONDS + "s");
-            }
-            return new GitResult(p.exitValue(), out.toString().trim(), null);
+            ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(CMD_TIMEOUT_SECONDS));
+            return new GitResult(
+                result.exitCode(),
+                result.combinedOutput().trim(),
+                result.timedOut() ? "timed out after " + CMD_TIMEOUT_SECONDS + "s" : null
+            );
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new GitResult(-1, "", "git invocation interrupted");
         } catch (Exception e) {
             LOG.debug("git failed at " + repoRoot + ": " + String.join(" ", command), e);
             return new GitResult(-1, "", e.getMessage() == null ? "git invocation failed" : e.getMessage());

@@ -1,16 +1,15 @@
 package com.github.prepushchecker.commitgen;
 
+import com.github.prepushchecker.ProcessExecution;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * Assembles the system prompt (rules) and user prompt (git diff) that are
@@ -57,16 +56,28 @@ final class CommitMessagePromptBuilder {
             throw new IllegalStateException(
                 "No staged or uncommitted changes found to generate a commit message from.");
         }
-        if (diff.length() > MAX_DIFF_CHARS) {
-            diff = diff.substring(0, MAX_DIFF_CHARS) + "\n\n[diff truncated — showing first "
-                + MAX_DIFF_CHARS + " characters]";
+        return buildForDiff(project, diff);
+    }
+
+    static @NotNull Prompt buildForDiff(@NotNull Project project, @NotNull String diff) {
+        if (diff.isBlank()) {
+            throw new IllegalArgumentException("No diff content supplied to generate a commit message from.");
         }
+        diff = truncateDiff(diff);
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String systemPrompt = buildSystemPrompt(project, s);
         return new Prompt(systemPrompt, "Git diff:\n```\n" + diff + "\n```");
     }
 
-    private static @NotNull String buildSystemPrompt(
+    private static @NotNull String truncateDiff(@NotNull String diff) {
+        if (diff.length() > MAX_DIFF_CHARS) {
+            return diff.substring(0, MAX_DIFF_CHARS) + "\n\n[diff truncated — showing first "
+                + MAX_DIFF_CHARS + " characters]";
+        }
+        return diff;
+    }
+
+    static @NotNull String buildSystemPrompt(
             @NotNull Project project,
             @NotNull CommitMessageSettings.State s) {
         StringBuilder sb = new StringBuilder();
@@ -159,13 +170,14 @@ final class CommitMessagePromptBuilder {
         pb.directory(Path.of(basePath).toFile());
         pb.redirectErrorStream(true);
         CliPathResolver.injectAugmentedPath(pb);
-        Process proc = pb.start();
-        String output;
-        try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-            output = reader.lines().collect(Collectors.joining("\n"));
+        ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(30));
+        if (!result.isSuccess()) {
+            String detail = result.combinedOutput();
+            if (result.timedOut()) {
+                detail = "timed out after 30s" + (detail.isBlank() ? "" : ": " + detail);
+            }
+            throw new IllegalStateException("git " + String.join(" ", args) + " failed: " + detail);
         }
-        proc.waitFor();
-        return output;
+        return result.combinedOutput();
     }
 }

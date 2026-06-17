@@ -1,17 +1,14 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import org.jetbrains.annotations.NotNull;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Delegates to Simon Willison's <b>{@code llm}</b> CLI for generation.
@@ -41,6 +38,9 @@ public final class LlmCliProvider implements CommitMessageProvider {
             throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String resolvedPath = CliPathResolver.resolve(s.llmCliPath, CLI_NAME);
+        if (resolvedPath == null) {
+            throw new RuntimeException("Configured llm CLI path is not executable: " + s.llmCliPath);
+        }
         String model        = s.llmModel.isBlank() ? null : s.llmModel.trim();
 
         // llm -s <system> [-m model] <prompt>
@@ -58,9 +58,9 @@ public final class LlmCliProvider implements CommitMessageProvider {
         pb.redirectErrorStream(false);
         CliPathResolver.injectAugmentedPath(pb);   // ensures python3 etc. are on PATH
 
-        Process proc;
+        ProcessExecution.Result processResult;
         try {
-            proc = pb.start();
+            processResult = ProcessExecution.run(pb, Duration.ofSeconds(120));
         } catch (java.io.IOException e) {
             throw new RuntimeException(
                 "Cannot start llm CLI at '" + resolvedPath + "'.\n"
@@ -68,23 +68,12 @@ public final class LlmCliProvider implements CommitMessageProvider {
                     + "Docs:    https://llm.datasette.io", e);
         }
 
-        String stdout;
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-            stdout = r.lines().collect(Collectors.joining("\n"));
-        }
-        String stderr;
-        try (BufferedReader r = new BufferedReader(
-                new InputStreamReader(proc.getErrorStream(), StandardCharsets.UTF_8))) {
-            stderr = r.lines().collect(Collectors.joining("\n"));
-        }
-
-        boolean finished = proc.waitFor(120, TimeUnit.SECONDS);
-        if (!finished) {
-            proc.destroyForcibly();
+        if (processResult.timedOut()) {
             throw new RuntimeException("llm CLI timed out after 120 seconds.");
         }
-        int exit = proc.exitValue();
+        int exit = processResult.exitCode();
+        String stdout = processResult.stdout();
+        String stderr = processResult.stderr();
         if (exit != 0) {
             String detail = stderr.isBlank() ? stdout : stderr;
             throw new RuntimeException(

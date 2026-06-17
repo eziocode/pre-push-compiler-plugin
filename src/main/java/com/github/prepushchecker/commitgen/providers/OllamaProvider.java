@@ -57,8 +57,7 @@ public final class OllamaProvider implements CommitMessageProvider {
             throw new RuntimeException(
                 "Ollama error " + response.statusCode() + ": " + response.body());
         }
-        // Parse {"message":{"role":"assistant","content":"..."}, ...}
-        String content = JsonUtil.extractString(response.body(), "content");
+        String content = JsonUtil.extractStringAtPath(response.body(), "message", "content");
         if (content == null) {
             throw new RuntimeException("Unexpected Ollama response: " + response.body());
         }

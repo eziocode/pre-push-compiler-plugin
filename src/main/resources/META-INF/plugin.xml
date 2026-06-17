@@ -427,7 +427,7 @@
             parentId="tools"
             id="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
             instance="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
-            displayName="AI Commit Message Generator"/>
+            displayName="Pre-Push Checker — AI Commit Message Generator"/>
 
         <registryKey key="prepushchecker.warmup.enabled"
                      defaultValue="true"
@@ -447,8 +447,8 @@
     <actions>
         <action id="CommitMessageGenerator.Generate"
                 class="com.github.prepushchecker.commitgen.GenerateCommitMessageAction"
-                text="Generate Commit Message with AI"
-                description="Generate a commit message from staged changes using the configured AI provider"
+                text="Generate Commit Message (Pre-Push Checker)"
+                description="Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider"
                 icon="AllIcons.Actions.Lightning">
             <!-- Appears in the Vcs.MessageActionGroup (commit message area context) -->
             <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>

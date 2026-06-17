@@ -57,8 +57,8 @@ public final class GeminiProvider implements CommitMessageProvider {
             throw new RuntimeException(
                 "Gemini API error " + response.statusCode() + ": " + response.body());
         }
-        // Parse {"candidates":[{"content":{"parts":[{"text":"..."}]}},...]}
-        String text = JsonUtil.extractString(response.body(), "text");
+        String text = JsonUtil.extractStringAtPath(
+            response.body(), "candidates", 0, "content", "parts", 0, "text");
         if (text == null) {
             throw new RuntimeException("Unexpected Gemini response: " + response.body());
         }

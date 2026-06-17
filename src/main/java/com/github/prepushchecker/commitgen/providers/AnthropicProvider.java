@@ -58,8 +58,7 @@ public final class AnthropicProvider implements CommitMessageProvider {
             throw new RuntimeException(
                 "Anthropic API error " + response.statusCode() + ": " + response.body());
         }
-        // Parse {"content":[{"type":"text","text":"..."}],...}
-        String text = JsonUtil.extractString(response.body(), "text");
+        String text = JsonUtil.extractStringAtPath(response.body(), "content", 0, "text");
         if (text == null) {
             throw new RuntimeException("Unexpected Anthropic response: " + response.body());
         }

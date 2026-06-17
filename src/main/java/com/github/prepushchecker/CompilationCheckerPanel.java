@@ -412,8 +412,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final class GenerateCommitMsgAction extends AnAction {
 
         GenerateCommitMsgAction() {
-            super("Generate Commit Message with AI",
-                "Generate a commit message from staged changes using the configured AI provider",
+            super("Generate Commit Message (Pre-Push Checker)",
+                "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider",
                 AllIcons.Actions.Lightning);
         }
 

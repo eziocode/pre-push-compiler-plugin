@@ -50,6 +50,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBLabel         ghStatusLabel;
     private JBTextField     llmCliPathField;
     private JBTextField     llmModelField;
+    private JBTextField     claudeCliPathField;
+    private JBTextField     claudeModelField;
+    private JBTextField     claudeExtraArgsField;
     private JBLabel         intellijAiStatusLabel;
 
     // Rules
@@ -64,7 +67,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
     @Override
     public @Nls(capitalization = Nls.Capitalization.Title) String getDisplayName() {
-        return "AI Commit Message Generator";
+        return "Pre-Push Checker — AI Commit Message Generator";
     }
 
     @Override
@@ -105,6 +108,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         authPanel.add(buildCodexCliCard(),   CommitMessageProvider.Id.CODEX_CLI.name());
         authPanel.add(buildGhCopilotCard(),  CommitMessageProvider.Id.GH_COPILOT.name());
         authPanel.add(buildLlmCliCard(),     CommitMessageProvider.Id.LLM_CLI.name());
+        authPanel.add(buildClaudeCliCard(),  CommitMessageProvider.Id.CLAUDE_CLI.name());
         authPanel.add(buildIntelliJAiCard(), CommitMessageProvider.Id.INTELLIJ_AI.name());
         panel.add(authPanel, BorderLayout.CENTER);
 
@@ -339,6 +343,63 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         return card;
     }
 
+    private @NotNull JPanel buildClaudeCliCard() {
+        claudeCliPathField   = new JBTextField(30);
+        claudeCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+        claudeModelField     = new JBTextField(20);
+        claudeModelField.getEmptyText().setText("e.g. claude-opus-4-5 (blank = CLI default)");
+        claudeExtraArgsField = new JBTextField(30);
+        claudeExtraArgsField.getEmptyText().setText("blank = --print  (non-interactive mode)");
+
+        JButton detectBtn = new JButton("Auto-detect");
+        detectBtn.addActionListener(ev -> {
+            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("claude");
+            if (found != null) {
+                claudeCliPathField.setText(found);
+            } else {
+                claudeCliPathField.setText("");
+                Messages.showInfoMessage(
+                    "claude not found on PATH.\n\n"
+                        + "Install: npm install -g @anthropic-ai/claude-code\n"
+                        + "Auth:    run 'claude' once in a terminal, or set ANTHROPIC_API_KEY",
+                    "Claude CLI Not Found");
+            }
+        });
+
+        JPanel card = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(3, 0, 3, 6);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(claudeCliPathField, gbc);
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        card.add(detectBtn, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        card.add(new JBLabel("Model:"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(claudeModelField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        card.add(new JBLabel("Extra args:"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(claudeExtraArgsField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
+        gbc.weightx = 0;
+        JBLabel hint = new JBLabel("<html><i>"
+            + "Install: <code>npm install -g @anthropic-ai/claude-code</code><br>"
+            + "Auth: run <code>claude</code> once in a terminal, or set <code>ANTHROPIC_API_KEY</code>"
+            + "</i></html>");
+        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
+        card.add(hint, gbc);
+        return card;
+    }
+
     private @NotNull JPanel buildIntelliJAiCard() {
         intellijAiStatusLabel = new JBLabel();
         updateIntelliJAiStatus();
@@ -529,6 +590,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (!ghCliPathField.getText().equals(s.ghCliPath)) return true;
         if (!llmCliPathField.getText().equals(s.llmCliPath)) return true;
         if (!llmModelField.getText().equals(s.llmModel)) return true;
+        if (!claudeCliPathField.getText().equals(s.claudeCliPath)) return true;
+        if (!claudeModelField.getText().equals(s.claudeModel)) return true;
+        if (!claudeExtraArgsField.getText().equals(s.claudeExtraArgs)) return true;
         if (conventionalCommitsCheck.isSelected() != s.useConventionalCommits) return true;
         if ((int) maxLengthSpinner.getValue() != s.maxSubjectLength) return true;
         if (!prefixTemplateField.getText().equals(s.prefixTemplate)) return true;
@@ -557,6 +621,12 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.ghCliPath      = ghCliPathField.getText().trim();
         s.llmCliPath     = llmCliPathField.getText().trim();
         s.llmModel       = llmModelField.getText().trim();
+        s.claudeCliPath  = claudeCliPathField.getText().trim();
+        s.claudeModel    = claudeModelField.getText().trim();
+        s.claudeExtraArgs = claudeExtraArgsField.getText().trim();
+        s.claudeCliPath  = claudeCliPathField.getText().trim();
+        s.claudeModel    = claudeModelField.getText().trim();
+        s.claudeExtraArgs = claudeExtraArgsField.getText().trim();
 
         s.useConventionalCommits = conventionalCommitsCheck.isSelected();
         s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
@@ -602,6 +672,12 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         ghCliPathField.setText(s.ghCliPath);
         llmCliPathField.setText(s.llmCliPath);
         llmModelField.setText(s.llmModel);
+        claudeCliPathField.setText(s.claudeCliPath);
+        claudeModelField.setText(s.claudeModel);
+        claudeExtraArgsField.setText(s.claudeExtraArgs);
+        claudeCliPathField.setText(s.claudeCliPath);
+        claudeModelField.setText(s.claudeModel);
+        claudeExtraArgsField.setText(s.claudeExtraArgs);
 
         // Never pre-fill key fields — show placeholder text only
         openAiKeyField.setText("");
@@ -771,6 +847,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             case CODEX_CLI   -> new com.github.prepushchecker.commitgen.providers.CodexCliProvider();
             case GH_COPILOT  -> new com.github.prepushchecker.commitgen.providers.GhCopilotProvider();
             case LLM_CLI     -> new com.github.prepushchecker.commitgen.providers.LlmCliProvider();
+            case CLAUDE_CLI  -> new com.github.prepushchecker.commitgen.providers.ClaudeCliProvider();
         };
     }
 

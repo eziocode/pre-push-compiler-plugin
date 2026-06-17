@@ -3,6 +3,11 @@ package com.github.prepushchecker.commitgen;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Minimal JSON helpers for building request bodies and extracting string values
  * from provider API responses — no third-party dependency required.
@@ -45,49 +50,198 @@ public final class JsonUtil {
      */
     @Nullable
     public static String extractString(@NotNull String json, @NotNull String key) {
-        String searchKey = "\"" + key + "\"";
-        int ki = json.indexOf(searchKey);
-        if (ki < 0) return null;
-        int ci = json.indexOf(':', ki + searchKey.length());
-        if (ci < 0) return null;
+        Object parsed = parse(json);
+        return parsed == null ? null : findFirstString(parsed, key);
+    }
 
-        int qi = ci + 1;
-        while (qi < json.length() && json.charAt(qi) != '"') qi++;
-        if (qi >= json.length()) return null;
-        qi++; // skip opening quote
-
-        StringBuilder sb = new StringBuilder();
-        while (qi < json.length()) {
-            char c = json.charAt(qi);
-            if (c == '"') break;
-            if (c == '\\' && qi + 1 < json.length()) {
-                char next = json.charAt(qi + 1);
-                switch (next) {
-                    case '"'  -> sb.append('"');
-                    case '\\' -> sb.append('\\');
-                    case 'n'  -> sb.append('\n');
-                    case 'r'  -> sb.append('\r');
-                    case 't'  -> sb.append('\t');
-                    case 'u'  -> {
-                        if (qi + 5 < json.length()) {
-                            String hex = json.substring(qi + 2, qi + 6);
-                            try {
-                                sb.append((char) Integer.parseInt(hex, 16));
-                                qi += 4;
-                            } catch (NumberFormatException e) {
-                                sb.append('\\');
-                                sb.append(next);
-                            }
-                        }
-                    }
-                    default   -> { sb.append('\\'); sb.append(next); }
-                }
-                qi += 2;
+    @Nullable
+    public static String extractStringAtPath(@NotNull String json, @NotNull Object... path) {
+        Object value = parse(json);
+        for (Object segment : path) {
+            if (value instanceof Map<?, ?> map && segment instanceof String key) {
+                value = map.get(key);
+            } else if (value instanceof List<?> list && segment instanceof Integer index) {
+                if (index < 0 || index >= list.size()) return null;
+                value = list.get(index);
             } else {
-                sb.append(c);
-                qi++;
+                return null;
             }
         }
-        return sb.toString();
+        return value instanceof String string ? string : null;
+    }
+
+    @Nullable
+    private static Object parse(@NotNull String json) {
+        try {
+            Parser parser = new Parser(json);
+            Object value = parser.parseValue();
+            parser.skipWhitespace();
+            return parser.isEnd() ? value : null;
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
+    @Nullable
+    private static String findFirstString(@NotNull Object value, @NotNull String key) {
+        if (value instanceof Map<?, ?> map) {
+            Object direct = map.get(key);
+            if (direct instanceof String string) return string;
+            for (Object child : map.values()) {
+                String found = child == null ? null : findFirstString(child, key);
+                if (found != null) return found;
+            }
+        } else if (value instanceof List<?> list) {
+            for (Object child : list) {
+                String found = child == null ? null : findFirstString(child, key);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private static final class Parser {
+        private final String json;
+        private int index;
+
+        private Parser(String json) {
+            this.json = json;
+        }
+
+        private boolean isEnd() {
+            return index >= json.length();
+        }
+
+        private void skipWhitespace() {
+            while (!isEnd() && Character.isWhitespace(json.charAt(index))) index++;
+        }
+
+        private Object parseValue() {
+            skipWhitespace();
+            if (isEnd()) throw new IllegalArgumentException("Unexpected end of JSON.");
+            char c = json.charAt(index);
+            return switch (c) {
+                case '{' -> parseObject();
+                case '[' -> parseArray();
+                case '"' -> parseString();
+                case 't' -> parseLiteral("true", Boolean.TRUE);
+                case 'f' -> parseLiteral("false", Boolean.FALSE);
+                case 'n' -> parseLiteral("null", null);
+                default -> parseNumber();
+            };
+        }
+
+        private Map<String, Object> parseObject() {
+            index++;
+            Map<String, Object> map = new LinkedHashMap<>();
+            skipWhitespace();
+            if (consume('}')) return map;
+            while (true) {
+                skipWhitespace();
+                if (isEnd() || json.charAt(index) != '"') {
+                    throw new IllegalArgumentException("Expected object key.");
+                }
+                String key = parseString();
+                skipWhitespace();
+                expect(':');
+                map.put(key, parseValue());
+                skipWhitespace();
+                if (consume('}')) return map;
+                expect(',');
+            }
+        }
+
+        private List<Object> parseArray() {
+            index++;
+            List<Object> list = new ArrayList<>();
+            skipWhitespace();
+            if (consume(']')) return list;
+            while (true) {
+                list.add(parseValue());
+                skipWhitespace();
+                if (consume(']')) return list;
+                expect(',');
+            }
+        }
+
+        private String parseString() {
+            expect('"');
+            StringBuilder sb = new StringBuilder();
+            while (!isEnd()) {
+                char c = json.charAt(index++);
+                if (c == '"') return sb.toString();
+                if (c == '\\') {
+                    if (isEnd()) throw new IllegalArgumentException("Unterminated escape.");
+                    char escaped = json.charAt(index++);
+                    switch (escaped) {
+                        case '"' -> sb.append('"');
+                        case '\\' -> sb.append('\\');
+                        case '/' -> sb.append('/');
+                        case 'b' -> sb.append('\b');
+                        case 'f' -> sb.append('\f');
+                        case 'n' -> sb.append('\n');
+                        case 'r' -> sb.append('\r');
+                        case 't' -> sb.append('\t');
+                        case 'u' -> sb.append(parseUnicodeEscape());
+                        default -> throw new IllegalArgumentException("Unsupported escape: " + escaped);
+                    }
+                } else {
+                    sb.append(c);
+                }
+            }
+            throw new IllegalArgumentException("Unterminated string.");
+        }
+
+        private char parseUnicodeEscape() {
+            if (index + 4 > json.length()) {
+                throw new IllegalArgumentException("Incomplete unicode escape.");
+            }
+            String hex = json.substring(index, index + 4);
+            index += 4;
+            try {
+                return (char) Integer.parseInt(hex, 16);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Invalid unicode escape.", e);
+            }
+        }
+
+        private Object parseLiteral(String literal, Object value) {
+            if (!json.startsWith(literal, index)) {
+                throw new IllegalArgumentException("Invalid literal.");
+            }
+            index += literal.length();
+            return value;
+        }
+
+        private String parseNumber() {
+            int start = index;
+            while (!isEnd()) {
+                char c = json.charAt(index);
+                if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') {
+                    index++;
+                } else {
+                    break;
+                }
+            }
+            if (start == index) {
+                throw new IllegalArgumentException("Expected JSON value.");
+            }
+            return json.substring(start, index);
+        }
+
+        private boolean consume(char expected) {
+            if (!isEnd() && json.charAt(index) == expected) {
+                index++;
+                return true;
+            }
+            return false;
+        }
+
+        private void expect(char expected) {
+            if (isEnd() || json.charAt(index) != expected) {
+                throw new IllegalArgumentException("Expected '" + expected + "'.");
+            }
+            index++;
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
@@ -7,16 +8,12 @@ import com.github.prepushchecker.commitgen.JsonUtil;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Generates commit messages via the <b>GitHub Copilot Chat API</b>.
@@ -92,8 +89,8 @@ public final class GhCopilotProvider implements CommitMessageProvider {
                 "GitHub Copilot API error " + response.statusCode() + ": " + response.body());
         }
 
-        // OpenAI-compatible response: {"choices":[{"message":{"content":"..."}}]}
-        String content = JsonUtil.extractString(response.body(), "content");
+        String content = JsonUtil.extractStringAtPath(
+            response.body(), "choices", 0, "message", "content");
         if (content == null) {
             throw new RuntimeException("Unexpected Copilot response: " + response.body());
         }
@@ -111,13 +108,9 @@ public final class GhCopilotProvider implements CommitMessageProvider {
             ProcessBuilder pb = new ProcessBuilder(ghPath, "auth", "token");
             pb.redirectErrorStream(true);
             CliPathResolver.injectAugmentedPath(pb);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining()).trim();
-            }
-            proc.waitFor(10, TimeUnit.SECONDS);
+            ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(10));
+            if (!result.isSuccess()) return null;
+            String out = result.combinedOutput().trim();
             return out.isBlank() ? null : out;
         } catch (Exception e) {
             return null;
