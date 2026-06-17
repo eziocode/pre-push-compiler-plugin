@@ -335,7 +335,7 @@ public final class ChatGPTOAuthFlow {
 
             // Buttons row
             JButton openBrowserBtn = new JButton("Open Browser");
-            openBrowserBtn.addActionListener(ev -> BrowserUtil.browse(dcr.verificationUri()));
+            openBrowserBtn.addActionListener(ev -> openBrowserSafely(dcr.verificationUri()));
             JButton copyBtn = new JButton("Copy Code");
             copyBtn.addActionListener(ev -> {
                 Toolkit.getDefaultToolkit().getSystemClipboard()
@@ -361,9 +361,12 @@ public final class ChatGPTOAuthFlow {
             g.gridy = 4;
             panel.add(statusLabel, g);
 
-            // Auto-open browser
-            ApplicationManager.getApplication().invokeLater(
-                () -> BrowserUtil.browse(dcr.verificationUri()));
+            // Auto-open browser once dialog is shown (delay so window is visible first)
+            SwingUtilities.invokeLater(() ->
+                new Thread(() -> {
+                    try { Thread.sleep(300); } catch (InterruptedException ignored) {}
+                    openBrowserSafely(dcr.verificationUri());
+                }, "ChatGPT-OpenBrowser").start());
 
             return panel;
         }
@@ -392,5 +395,46 @@ public final class ChatGPTOAuthFlow {
 
     private static int parseIntSafe(@NotNull String s, int fallback) {
         try { return Integer.parseInt(s.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    /**
+     * Opens a URL in the system browser using three fallback strategies:
+     * <ol>
+     *   <li>{@link Desktop#browse(java.net.URI)} — standard Java cross-platform API.</li>
+     *   <li>{@code open <url>} via Runtime — macOS-specific, works even without DISPLAY.</li>
+     *   <li>{@link BrowserUtil#browse(String)} — IntelliJ built-in (last resort).</li>
+     * </ol>
+     */
+    static void openBrowserSafely(@NotNull String url) {
+        // 1. java.awt.Desktop (most reliable on macOS/Windows/Linux with a display)
+        try {
+            if (Desktop.isDesktopSupported()) {
+                Desktop desktop = Desktop.getDesktop();
+                if (desktop.isSupported(Desktop.Action.BROWSE)) {
+                    desktop.browse(new URI(url));
+                    return;
+                }
+            }
+        } catch (Exception ignored) {}
+
+        // 2. macOS `open` command (works from GUI apps where DISPLAY/AT-SPI may be absent)
+        String os = System.getProperty("os.name", "").toLowerCase();
+        try {
+            if (os.contains("mac")) {
+                Runtime.getRuntime().exec(new String[]{"open", url});
+                return;
+            } else if (os.contains("linux")) {
+                Runtime.getRuntime().exec(new String[]{"xdg-open", url});
+                return;
+            } else if (os.contains("win")) {
+                Runtime.getRuntime().exec(new String[]{"cmd", "/c", "start", url});
+                return;
+            }
+        } catch (Exception ignored) {}
+
+        // 3. IntelliJ BrowserUtil fallback
+        try {
+            BrowserUtil.browse(url);
+        } catch (Exception ignored) {}
     }
 }
