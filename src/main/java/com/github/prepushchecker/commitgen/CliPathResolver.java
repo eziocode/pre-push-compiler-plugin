@@ -13,12 +13,22 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import java.util.regex.Pattern;
+
 /**
  * Resolves CLI tool paths and environment variables as the user's shell sees
  * them — by sourcing rc files so that Homebrew, npm-global, asdf shims, etc.
  * are found even when IntelliJ was launched as a GUI app with a stripped PATH.
  */
 public final class CliPathResolver {
+
+    /**
+     * Allowlist for bare executable names passed to {@code which} inside a
+     * {@code sh -c} script. Only alphanumerics, dots, hyphens and underscores
+     * are permitted — this prevents shell injection via user-controlled
+     * settings values (e.g. a compromised {@code commitMessageGenerator.xml}).
+     */
+    private static final Pattern SAFE_BARE_NAME = Pattern.compile("[A-Za-z0-9._+-]+");
 
     private static final List<String> RC_FILES = List.of(
         ".zshenv", ".zprofile", ".zshrc",
@@ -42,14 +52,28 @@ public final class CliPathResolver {
 
     private CliPathResolver() {}
 
+    /**
+     * Returns {@code true} when {@code name} consists only of characters that
+     * are safe to embed in a {@code sh -c} script without quoting.
+     * Rejects empty strings and anything containing shell meta-characters.
+     */
+    static boolean isSafeBareNameForShell(@NotNull String name) {
+        return !name.isBlank() && SAFE_BARE_NAME.matcher(name).matches();
+    }
+
     /** Resolves the absolute path to {@code cliName}, or returns the bare name. */
     @NotNull
     public static String resolve(@Nullable String configured, @NotNull String cliName) {
         if (configured != null && !configured.isBlank()) {
             Path p = Path.of(configured.trim());
+            // Absolute path: use as-is if executable (no shell involved)
             if (p.isAbsolute() && Files.isExecutable(p)) return p.toString();
-            String shellResult = whichViaShell(configured.trim());
-            if (shellResult != null) return shellResult;
+            // Bare name override: only pass to shell if it contains no shell-special chars
+            String trimmed = configured.trim();
+            if (isSafeBareNameForShell(trimmed)) {
+                String shellResult = whichViaShell(trimmed);
+                if (shellResult != null) return shellResult;
+            }
         }
         String shellResult = whichViaShell(cliName);
         if (shellResult != null) return shellResult;
@@ -152,6 +176,10 @@ public final class CliPathResolver {
     /** Runs {@code which <name>} in a sub-shell sourcing rc files. */
     @Nullable
     public static String whichViaShell(@NotNull String name) {
+        // SECURITY: reject anything that is not a safe bare executable name
+        // before constructing the sh -c script to prevent shell injection
+        // via user-controlled Settings values.
+        if (!isSafeBareNameForShell(name)) return null;
         String home = System.getProperty("user.home");
         StringBuilder script = new StringBuilder();
         for (String rc : RC_FILES) {

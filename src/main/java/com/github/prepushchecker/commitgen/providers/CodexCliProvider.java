@@ -3,121 +3,171 @@ package com.github.prepushchecker.commitgen.providers;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
-import com.github.prepushchecker.commitgen.JsonUtil;
 import org.jetbrains.annotations.NotNull;
-import org.jetbrains.annotations.Nullable;
 
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
- * Generates commit messages via the OpenAI Chat Completions API using
- * credentials stored by the <b>Codex CLI</b>.
+ * Generates commit messages by running the local <b>Codex CLI</b> inside a
+ * Python-allocated pseudo-terminal (PTY), which satisfies the CLI's
+ * {@code "stdin is not a terminal"} requirement without needing a real
+ * interactive session.
  *
- * <h3>How it works — same pattern as GH Copilot</h3>
+ * <h3>How it works</h3>
  * <ol>
- *   <li>Reads {@code OPENAI_API_KEY} from the user's shell environment
- *       (sources rc files so that variables set in {@code .zshrc} /
- *       {@code .bashrc} are visible even from a GUI-launched IntelliJ).</li>
- *   <li>Falls back to the PasswordSafe-stored key if the env var is absent.</li>
- *   <li>Calls {@code api.openai.com/v1/chat/completions} directly — no
- *       subprocess, no TTY requirement.</li>
+ *   <li>A small Python 3 script is executed. Python's {@code pty} module
+ *       opens a master/slave PTY pair and launches {@code codex} with the
+ *       slave as its stdin/stdout — the CLI sees a real terminal.</li>
+ *   <li>The full prompt is written to the Python script's stdin (not as a
+ *       CLI argument, so no argument-parser rejection).</li>
+ *   <li>Python feeds the prompt into the PTY master and waits for the CLI to
+ *       finish, then strips ANSI escape sequences and prints clean text.</li>
+ *   <li>The commit message is delimited with {@code <<<COMMIT_START>>>} /
+ *       {@code <<<COMMIT_END>>>} markers in the prompt, so the response is
+ *       reliably extracted from any surrounding TUI output.</li>
  * </ol>
  *
  * <h3>Authentication</h3>
- * <ul>
- *   <li>Run {@code codex auth} once in a terminal — this stores your
- *       ChatGPT / OpenAI session and sets {@code OPENAI_API_KEY} in
- *       your shell environment.</li>
- *   <li>Or add {@code export OPENAI_API_KEY=sk-...} to your
- *       {@code .zshrc} / {@code .bashrc}.</li>
- *   <li>Or enter the key directly in
- *       Settings → Tools → Pre-Push Checker — AI Commit Message Generator.</li>
- * </ul>
+ * Run {@code codex auth} once in a terminal — no API key required.
  */
 public final class CodexCliProvider implements CommitMessageProvider {
 
     public static final String CLI_NAME = "codex";
-    private static final String API_URL = "https://api.openai.com/v1/chat/completions";
+
+    /** Python 3 PTY wrapper script. Reads codex-path from argv[1], prompt from stdin. */
+    private static final String PTY_SCRIPT = String.join("\n",
+        "import sys, os, pty, subprocess, time, select, re",
+        "codex = sys.argv[1]",
+        "prompt = sys.stdin.read()",
+        "master, slave = pty.openpty()",
+        "try:",
+        "    import fcntl, termios, struct",
+        "    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 50, 220, 0, 0))",
+        "except Exception:",
+        "    pass",
+        "proc = subprocess.Popen([codex], stdin=slave, stdout=slave, stderr=slave,",
+        "                        close_fds=True, start_new_session=True)",
+        "os.close(slave)",
+        "time.sleep(1.5)",          // wait for TUI to initialise
+        "# feed prompt in small chunks to avoid EAGAIN",
+        "data = prompt.encode('utf-8')",
+        "for i in range(0, len(data), 64):",
+        "    os.write(master, data[i:i+64])",
+        "    time.sleep(0.02)",
+        "os.write(master, b'\\n')",
+        "# read until process exits (max 90 s)",
+        "out = bytearray()",
+        "deadline = time.time() + 90",
+        "last = time.time()",
+        "while time.time() < deadline:",
+        "    r = select.select([master], [], [], 0.3)[0]",
+        "    if r:",
+        "        try:",
+        "            chunk = os.read(master, 4096)",
+        "            if chunk:",
+        "                out.extend(chunk); last = time.time()",
+        "        except OSError:",
+        "            break",
+        "    elif proc.poll() is not None and time.time()-last > 1.0:",
+        "        break",
+        "try:",
+        "    proc.wait(timeout=5)",
+        "except Exception:",
+        "    proc.kill()",
+        "text = out.decode('utf-8', errors='replace')",
+        "text = re.sub(r'\\x1b\\[[0-9;?]*[A-Za-z]', '', text)",  // CSI
+        "text = re.sub(r'\\x1b[()][A-Z0-9]', '', text)",
+        "text = re.sub(r'\\x1b[=>]', '', text)",
+        "text = re.sub(r'\\r\\n|\\r', '\\n', text)",
+        "print(text)"
+    );
 
     @Override
     public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
             throws Exception {
-        String apiKey = resolveApiKey();
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new IllegalStateException(
-                "No OpenAI API key found for Codex.\n\n"
-                    + "Options:\n"
-                    + "  1. Run 'codex auth' in a terminal (ChatGPT account OAuth)\n"
-                    + "  2. Add 'export OPENAI_API_KEY=sk-...' to your .zshrc / .bashrc\n"
-                    + "  3. Enter the key in Settings → Tools → "
-                    + "Pre-Push Checker — AI Commit Message Generator");
-        }
-
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        String model = s.openAiModel.isBlank() ? "gpt-4o" : s.openAiModel;
+        String codexPath = CliPathResolver.resolve(s.codexCliPath, CLI_NAME);
 
-        String body = "{"
-            + "\"model\":" + JsonUtil.quoted(model) + ","
-            + "\"max_tokens\":300,"
-            + "\"messages\":["
-            + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
-            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
-            + "]}";
+        // Ask codex to wrap the commit message in delimiters so we can parse it
+        // out of any surrounding TUI / agent output reliably.
+        String markedPrompt = systemPrompt
+            + "\n\n" + userPrompt
+            + "\n\nIMPORTANT: wrap your final commit message exactly like this:\n"
+            + "<<<COMMIT_START>>>\n"
+            + "<the commit message here>\n"
+            + "<<<COMMIT_END>>>\n"
+            + "Output nothing outside those markers after you decide on the message.";
 
-        HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(30))
-            .build();
-        HttpRequest request = HttpRequest.newBuilder()
-            .uri(URI.create(API_URL))
-            .header("Authorization", "Bearer " + apiKey)
-            .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(60))
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build();
+        // Run Python PTY wrapper; pass codex path as arg, prompt via stdin
+        String python3 = CliPathResolver.resolve(null, "python3");
+        ProcessBuilder pb = new ProcessBuilder(python3, "-c", PTY_SCRIPT, codexPath);
+        pb.redirectErrorStream(false);
+        CliPathResolver.injectAugmentedPath(pb);
 
-        HttpResponse<String> response =
-            client.send(request, HttpResponse.BodyHandlers.ofString());
-        if (response.statusCode() == 401) {
+        Process proc;
+        try {
+            proc = pb.start();
+        } catch (java.io.IOException e) {
             throw new RuntimeException(
-                "OpenAI API key is invalid or expired.\n"
-                    + "Run 'codex auth' to refresh your credentials.");
+                "Cannot start Python 3 (required to allocate a PTY for Codex CLI).\n"
+                    + "Ensure python3 is installed and on PATH.", e);
         }
-        if (response.statusCode() != 200) {
-            throw new RuntimeException(
-                "OpenAI API error " + response.statusCode() + ": " + response.body());
+
+        // Write prompt to Python script's stdin
+        try (Writer w = new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8)) {
+            w.write(markedPrompt);
         }
-        String content = JsonUtil.extractString(response.body(), "content");
-        if (content == null) {
-            throw new RuntimeException("Unexpected OpenAI response: " + response.body());
+
+        String stdout;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+            stdout = r.lines().collect(Collectors.joining("\n"));
         }
-        return content.trim();
+        String stderr;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(proc.getErrorStream(), StandardCharsets.UTF_8))) {
+            stderr = r.lines().collect(Collectors.joining("\n"));
+        }
+
+        boolean finished = proc.waitFor(95, TimeUnit.SECONDS);
+        if (!finished) {
+            proc.destroyForcibly();
+            throw new RuntimeException("Codex CLI timed out after 90 seconds.");
+        }
+
+        return parseDelimitedMessage(stdout, stderr);
     }
 
     @Override
     public @NotNull Id id() { return Id.CODEX_CLI; }
 
-    // ── Credential resolution (GH-Copilot-style) ─────────────────────────────
-
-    /**
-     * Resolves the OpenAI API key in priority order:
-     * <ol>
-     *   <li>Shell environment ({@code OPENAI_API_KEY}) — picks up keys set
-     *       in rc files or by {@code codex auth}.</li>
-     *   <li>PasswordSafe stored key (entered manually in Settings).</li>
-     * </ol>
-     */
-    @Nullable
-    static String resolveApiKey() {
-        // 1. Shell env var (covers codex auth + manual .zshrc exports)
-        String fromEnv = CliPathResolver.resolveEnvVar("OPENAI_API_KEY");
-        if (fromEnv != null && !fromEnv.isBlank()) return fromEnv;
-
-        // 2. PasswordSafe (user entered key in Settings under CODEX_CLI provider)
-        return CommitMessageSettings.getInstance().loadApiKey(Id.CODEX_CLI);
+    private static @NotNull String parseDelimitedMessage(
+            @NotNull String stdout, @NotNull String stderr) {
+        // Prefer delimited section
+        int start = stdout.indexOf("<<<COMMIT_START>>>");
+        int end   = stdout.indexOf("<<<COMMIT_END>>>");
+        if (start >= 0 && end > start) {
+            String msg = stdout.substring(start + "<<<COMMIT_START>>>".length(), end).trim();
+            if (!msg.isBlank()) return msg;
+        }
+        // Fallback: last non-blank line that looks like a commit message
+        String[] lines = stdout.split("\n");
+        for (int i = lines.length - 1; i >= 0; i--) {
+            String line = lines[i].trim();
+            if (!line.isBlank() && line.length() < 300
+                    && !line.startsWith("<<<") && !line.startsWith("[")) {
+                return line;
+            }
+        }
+        String detail = stderr.isBlank() ? stdout.trim() : stderr.trim();
+        throw new RuntimeException(
+            "Codex CLI produced no recognisable commit message.\n"
+                + (detail.isBlank() ? "Run 'codex auth' to authenticate." : detail));
     }
 }

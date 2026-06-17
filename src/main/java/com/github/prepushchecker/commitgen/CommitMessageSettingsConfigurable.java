@@ -1,7 +1,7 @@
 package com.github.prepushchecker.commitgen;
 
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
-import com.intellij.openapi.options.Configurable;
+import com.intellij.openapi.options.BaseConfigurableWithChangeSupport;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.ui.Messages;
@@ -17,6 +17,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.nio.file.Path;
 
@@ -24,7 +27,9 @@ import java.nio.file.Path;
  * Configurable that appears under Settings → Tools → AI Commit Message Generator.
  * Handles provider selection, API key entry (via PasswordSafe), and rule options.
  */
-public final class CommitMessageSettingsConfigurable implements Configurable {
+public final class CommitMessageSettingsConfigurable extends BaseConfigurableWithChangeSupport {
+
+    private boolean suppressModifiedEvents;
 
     // ── UI fields ─────────────────────────────────────────────────────────────
 
@@ -44,7 +49,8 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField     geminiModelField;
     private JBTextField     ollamaUrlField;
     private JBTextField     ollamaModelField;
-    private JPasswordField  codexKeyField;
+    private JPasswordField  codexKeyField;   // fallback only — PTY path preferred
+    private JBTextField     codexCliPathField;
     private JBLabel         codexEnvStatusLabel;
     private JBTextField     ghCliPathField;
     private JBLabel         ghStatusLabel;
@@ -76,6 +82,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         root.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
         root.add(buildProviderPanel(), BorderLayout.NORTH);
         root.add(buildRulesPanel(), BorderLayout.CENTER);
+        installModifiedStateTracking();
         return root;
     }
 
@@ -116,10 +123,64 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             CommitMessageProvider.Id selected =
                 (CommitMessageProvider.Id) providerCombo.getSelectedItem();
             if (selected != null) {
-                authCardLayout.show(authPanel, selected.name());
+                showSelectedProviderCard(selected);
             }
         });
         return panel;
+    }
+
+    private void showSelectedProviderCard(@NotNull CommitMessageProvider.Id selected) {
+        if (selected == CommitMessageProvider.Id.INTELLIJ_AI) {
+            updateIntelliJAiStatus();
+        }
+        authCardLayout.show(authPanel, selected.name());
+        authPanel.revalidate();
+        authPanel.repaint();
+        if (root != null) {
+            root.revalidate();
+            root.repaint();
+        }
+        updateModifiedState();
+    }
+
+    private void installModifiedStateTracking() {
+        providerCombo.addActionListener(ev -> updateModifiedState());
+
+        trackTextChanges(openAiKeyField);
+        trackTextChanges(openAiModelField);
+        trackTextChanges(anthropicKeyField);
+        trackTextChanges(anthropicModelField);
+        trackTextChanges(geminiKeyField);
+        trackTextChanges(geminiModelField);
+        trackTextChanges(ollamaUrlField);
+        trackTextChanges(ollamaModelField);
+        trackTextChanges(codexKeyField);
+        trackTextChanges(ghCliPathField);
+        trackTextChanges(llmCliPathField);
+        trackTextChanges(llmModelField);
+        trackTextChanges(claudeKeyField);
+        trackTextChanges(claudeModelField);
+        trackTextChanges(prefixTemplateField);
+        trackTextChanges(languageField);
+        trackTextChanges(extraInstructionsArea);
+        trackTextChanges(customRulesFileField.getTextField());
+
+        conventionalCommitsCheck.addActionListener(ev -> updateModifiedState());
+        maxLengthSpinner.addChangeListener(ev -> updateModifiedState());
+        autoScopeCheck.addActionListener(ev -> updateModifiedState());
+    }
+
+    private void trackTextChanges(@NotNull JTextComponent component) {
+        component.getDocument().addDocumentListener(new DocumentListener() {
+            public void insertUpdate(DocumentEvent e)  { updateModifiedState(); }
+            public void removeUpdate(DocumentEvent e)  { updateModifiedState(); }
+            public void changedUpdate(DocumentEvent e) { updateModifiedState(); }
+        });
+    }
+
+    private void updateModifiedState() {
+        if (suppressModifiedEvents) return;
+        setModified(isModified());
     }
 
     private @NotNull JPanel buildOpenAiCard() {
@@ -195,17 +256,21 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildCodexCliCard() {
-        codexKeyField = new JPasswordField(30);
+        codexCliPathField   = new JBTextField(30);
+        codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+        codexKeyField       = new JPasswordField(30); // optional fallback
         codexEnvStatusLabel = new JBLabel();
 
-        JButton checkEnvBtn = new JButton("Check OPENAI_API_KEY");
-        checkEnvBtn.addActionListener(ev -> {
-            String val = com.github.prepushchecker.commitgen.CliPathResolver.resolveEnvVar("OPENAI_API_KEY");
-            if (val != null && !val.isBlank()) {
-                codexEnvStatusLabel.setText("✓ OPENAI_API_KEY found in shell environment");
+        JButton detectBtn = new JButton("Auto-detect codex");
+        detectBtn.addActionListener(ev -> {
+            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("codex");
+            if (found != null) {
+                codexCliPathField.setText(found);
+                codexEnvStatusLabel.setText("✓ Found: " + found);
                 codexEnvStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
             } else {
-                codexEnvStatusLabel.setText("✗ OPENAI_API_KEY not set — see instructions below");
+                codexCliPathField.setText("");
+                codexEnvStatusLabel.setText("✗ codex not found — install with: npm install -g @openai/codex");
                 codexEnvStatusLabel.setForeground(UIManager.getColor("Component.errorFocusColor") != null
                     ? UIManager.getColor("Component.errorFocusColor") : java.awt.Color.RED.darker());
             }
@@ -220,19 +285,17 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         card.add(codexEnvStatusLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(checkEnvBtn, gbc);
+        card.add(new JBLabel("CLI path:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(codexCliPathField, gbc);
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        card.add(detectBtn, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(new JBLabel("API key (fallback):"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(codexKeyField, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "<b>Uses OPENAI_API_KEY from your shell environment</b> — same key as codex auth.<br>"
-            + "Auth flow: run <code>codex auth</code> in a terminal (ChatGPT OAuth), or:<br>"
-            + "Add <code>export OPENAI_API_KEY=sk-...</code> to your <code>.zshrc</code> / <code>.bashrc</code><br>"
-            + "Or enter the key above (stored in PasswordSafe, used as fallback)."
+            + "<b>Uses a Python PTY to fake a terminal</b> — no API key needed, no TTY errors.<br>"
+            + "Auth: run <code>codex auth</code> in a terminal once (ChatGPT OAuth).<br>"
+            + "Requires <code>python3</code> (pre-installed on macOS) and <code>codex</code> on PATH."
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
@@ -569,126 +632,153 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (selected == null) return false;
 
         if (!selected.name().equals(s.selectedProvider)) return true;
-        if (!openAiModelField.getText().equals(s.openAiModel)) return true;
-        if (!anthropicModelField.getText().equals(s.anthropicModel)) return true;
-        if (!geminiModelField.getText().equals(s.geminiModel)) return true;
-        if (!ollamaUrlField.getText().equals(s.ollamaBaseUrl)) return true;
-        if (!ollamaModelField.getText().equals(s.ollamaModel)) return true;
-        if (!ghCliPathField.getText().equals(s.ghCliPath)) return true;
-        if (!llmCliPathField.getText().equals(s.llmCliPath)) return true;
-        if (!llmModelField.getText().equals(s.llmModel)) return true;
-        if (!claudeModelField.getText().equals(s.claudeModel)) return true;
+        if (hasPasswordInput(openAiKeyField)) return true;
+        if (hasPasswordInput(anthropicKeyField)) return true;
+        if (hasPasswordInput(geminiKeyField)) return true;
+        if (hasPasswordInput(codexKeyField)) return true;
+        if (hasPasswordInput(claudeKeyField)) return true;
+        if (!trimmedTextEquals(openAiModelField, s.openAiModel)) return true;
+        if (!trimmedTextEquals(anthropicModelField, s.anthropicModel)) return true;
+        if (!trimmedTextEquals(geminiModelField, s.geminiModel)) return true;
+        if (!trimmedTextEquals(ollamaUrlField, s.ollamaBaseUrl)) return true;
+        if (!trimmedTextEquals(ollamaModelField, s.ollamaModel)) return true;
+        if (!trimmedTextEquals(codexCliPathField, s.codexCliPath)) return true;
+        if (!trimmedTextEquals(ghCliPathField, s.ghCliPath)) return true;
+        if (!trimmedTextEquals(llmCliPathField, s.llmCliPath)) return true;
+        if (!trimmedTextEquals(llmModelField, s.llmModel)) return true;
+        if (!trimmedTextEquals(claudeModelField, s.claudeModel)) return true;
         if (conventionalCommitsCheck.isSelected() != s.useConventionalCommits) return true;
         if ((int) maxLengthSpinner.getValue() != s.maxSubjectLength) return true;
         if (!prefixTemplateField.getText().equals(s.prefixTemplate)) return true;
         if (!languageField.getText().equals(s.language)) return true;
         if (autoScopeCheck.isSelected() != s.autoDetectScope) return true;
         if (!extraInstructionsArea.getText().equals(s.extraInstructions)) return true;
-        if (!customRulesFileField.getText().equals(s.customRulesFilePath)) return true;
+        if (!trimmedTextEquals(customRulesFileField.getTextField(), s.customRulesFilePath)) return true;
         return false;
+    }
+
+    private static boolean hasPasswordInput(@NotNull JPasswordField field) {
+        return !new String(field.getPassword()).isBlank();
+    }
+
+    private static boolean trimmedTextEquals(@NotNull JTextComponent field, @Nullable String expected) {
+        return field.getText().trim().equals(expected == null ? "" : expected);
+    }
+
+    private static void saveApiKeyIfPresent(
+            @NotNull CommitMessageSettings cfg,
+            @NotNull CommitMessageProvider.Id provider,
+            @NotNull JPasswordField field) {
+        String key = new String(field.getPassword());
+        if (key.isBlank()) return;
+        cfg.saveApiKey(provider, key);
+        field.setText("");
+        setPasswordPlaceholder(field, "•••••• (saved)");
     }
 
     @Override
     public void apply() {
-        CommitMessageSettings cfg = CommitMessageSettings.getInstance();
-        CommitMessageSettings.State s = cfg.settings();
-        CommitMessageProvider.Id selected =
-            (CommitMessageProvider.Id) providerCombo.getSelectedItem();
-        if (selected != null) s.selectedProvider = selected.name();
+        suppressModifiedEvents = true;
+        try {
+            CommitMessageSettings cfg = CommitMessageSettings.getInstance();
+            CommitMessageSettings.State s = cfg.settings();
+            CommitMessageProvider.Id selected =
+                (CommitMessageProvider.Id) providerCombo.getSelectedItem();
+            if (selected != null) s.selectedProvider = selected.name();
 
-        s.openAiModel    = openAiModelField.getText().trim();
-        s.anthropicModel = anthropicModelField.getText().trim();
-        s.geminiModel    = geminiModelField.getText().trim();
-        s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
-        s.ollamaModel    = ollamaModelField.getText().trim();
-        // codex/claude keys persisted below with other PasswordSafe keys
-        s.ghCliPath      = ghCliPathField.getText().trim();
-        s.llmCliPath     = llmCliPathField.getText().trim();
-        s.llmModel       = llmModelField.getText().trim();
-        s.claudeModel    = claudeModelField.getText().trim();
-        s.claudeModel    = claudeModelField.getText().trim();
+            s.openAiModel    = openAiModelField.getText().trim();
+            s.anthropicModel = anthropicModelField.getText().trim();
+            s.geminiModel    = geminiModelField.getText().trim();
+            s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
+            s.ollamaModel    = ollamaModelField.getText().trim();
+            s.codexCliPath   = codexCliPathField.getText().trim();
+            // codex/claude keys persisted below with other PasswordSafe keys
+            s.ghCliPath      = ghCliPathField.getText().trim();
+            s.llmCliPath     = llmCliPathField.getText().trim();
+            s.llmModel       = llmModelField.getText().trim();
+            s.claudeModel    = claudeModelField.getText().trim();
 
-        s.useConventionalCommits = conventionalCommitsCheck.isSelected();
-        s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
-        s.prefixTemplate         = prefixTemplateField.getText();
-        s.language               = languageField.getText();
-        s.autoDetectScope        = autoScopeCheck.isSelected();
-        s.extraInstructions      = extraInstructionsArea.getText();
-        s.customRulesFilePath    = customRulesFileField.getText().trim();
+            s.useConventionalCommits = conventionalCommitsCheck.isSelected();
+            s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
+            s.prefixTemplate         = prefixTemplateField.getText();
+            s.language               = languageField.getText();
+            s.autoDetectScope        = autoScopeCheck.isSelected();
+            s.extraInstructions      = extraInstructionsArea.getText();
+            s.customRulesFilePath    = customRulesFileField.getText().trim();
 
-        // Persist API keys to PasswordSafe
-        String openAiKey = new String(openAiKeyField.getPassword());
-        if (!openAiKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.OPENAI, openAiKey);
-
-        String anthropicKey = new String(anthropicKeyField.getPassword());
-        if (!anthropicKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.ANTHROPIC, anthropicKey);
-
-        String geminiKey = new String(geminiKeyField.getPassword());
-        if (!geminiKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.GEMINI, geminiKey);
-
-        String codexKey = new String(codexKeyField.getPassword());
-        if (!codexKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.CODEX_CLI, codexKey);
-
-        String claudeCliKey = new String(claudeKeyField.getPassword());
-        if (!claudeCliKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.CLAUDE_CLI, claudeCliKey);
+            saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.OPENAI, openAiKeyField);
+            saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.ANTHROPIC, anthropicKeyField);
+            saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.GEMINI, geminiKeyField);
+            saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.CODEX_CLI, codexKeyField);
+            saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.CLAUDE_CLI, claudeKeyField);
+        } finally {
+            suppressModifiedEvents = false;
+            updateModifiedState();
+        }
     }
 
     @Override
     public void reset() {
         if (root == null) return;
-        CommitMessageSettings cfg = CommitMessageSettings.getInstance();
-        CommitMessageSettings.State s = cfg.settings();
-
-        CommitMessageProvider.Id id;
+        suppressModifiedEvents = true;
         try {
-            id = CommitMessageProvider.Id.valueOf(s.selectedProvider);
-        } catch (IllegalArgumentException e) {
-            id = CommitMessageProvider.Id.OPENAI;
+            CommitMessageSettings cfg = CommitMessageSettings.getInstance();
+            CommitMessageSettings.State s = cfg.settings();
+
+            CommitMessageProvider.Id id;
+            try {
+                id = CommitMessageProvider.Id.valueOf(s.selectedProvider);
+            } catch (IllegalArgumentException e) {
+                id = CommitMessageProvider.Id.OPENAI;
+            }
+            providerCombo.setSelectedItem(id);
+            showSelectedProviderCard(id);
+
+            openAiModelField.setText(s.openAiModel);
+            anthropicModelField.setText(s.anthropicModel);
+            geminiModelField.setText(s.geminiModel);
+            ollamaUrlField.setText(s.ollamaBaseUrl);
+            ollamaModelField.setText(s.ollamaModel);
+            codexCliPathField.setText(s.codexCliPath);
+            ghCliPathField.setText(s.ghCliPath);
+            llmCliPathField.setText(s.llmCliPath);
+            llmModelField.setText(s.llmModel);
+            claudeModelField.setText(s.claudeModel);
+
+            // Never pre-fill key fields — show placeholder text only
+            openAiKeyField.setText("");
+            anthropicKeyField.setText("");
+            geminiKeyField.setText("");
+            codexKeyField.setText("");
+            claudeKeyField.setText("");
+
+            boolean openAiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.OPENAI) != null;
+            boolean anthropicHasKey = cfg.loadApiKey(CommitMessageProvider.Id.ANTHROPIC) != null;
+            boolean geminiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.GEMINI) != null;
+            boolean codexHasKey     = cfg.loadApiKey(CommitMessageProvider.Id.CODEX_CLI) != null;
+            boolean claudeCliHasKey = cfg.loadApiKey(CommitMessageProvider.Id.CLAUDE_CLI) != null;
+
+            openAiKeyField.putClientProperty("JPasswordField.cutCopyAllowed", true);
+            if (openAiHasKey)    setPasswordPlaceholder(openAiKeyField, "•••••• (saved)");
+            if (anthropicHasKey) setPasswordPlaceholder(anthropicKeyField, "•••••• (saved)");
+            if (geminiHasKey)    setPasswordPlaceholder(geminiKeyField, "•••••• (saved)");
+            if (codexHasKey)     setPasswordPlaceholder(codexKeyField, "•••••• (saved)");
+            if (claudeCliHasKey) setPasswordPlaceholder(claudeKeyField, "•••••• (saved)");
+
+            conventionalCommitsCheck.setSelected(s.useConventionalCommits);
+            maxLengthSpinner.setValue(s.maxSubjectLength);
+            prefixTemplateField.setText(s.prefixTemplate);
+            languageField.setText(s.language);
+            autoScopeCheck.setSelected(s.autoDetectScope);
+            extraInstructionsArea.setText(s.extraInstructions);
+            customRulesFileField.setText(s.customRulesFilePath);
+            updateRulesFileStatus();
+
+            updateIntelliJAiStatus();
+        } finally {
+            suppressModifiedEvents = false;
+            updateModifiedState();
         }
-        providerCombo.setSelectedItem(id);
-        authCardLayout.show(authPanel, id.name());
-
-        openAiModelField.setText(s.openAiModel);
-        anthropicModelField.setText(s.anthropicModel);
-        geminiModelField.setText(s.geminiModel);
-        ollamaUrlField.setText(s.ollamaBaseUrl);
-        ollamaModelField.setText(s.ollamaModel);
-        ghCliPathField.setText(s.ghCliPath);
-        llmCliPathField.setText(s.llmCliPath);
-        llmModelField.setText(s.llmModel);
-        claudeModelField.setText(s.claudeModel);
-        claudeModelField.setText(s.claudeModel);
-
-        // Never pre-fill key fields — show placeholder text only
-        openAiKeyField.setText("");
-        anthropicKeyField.setText("");
-        geminiKeyField.setText("");
-        codexKeyField.setText("");
-        claudeKeyField.setText("");
-
-        boolean openAiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.OPENAI) != null;
-        boolean anthropicHasKey = cfg.loadApiKey(CommitMessageProvider.Id.ANTHROPIC) != null;
-        boolean geminiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.GEMINI) != null;
-        boolean codexHasKey     = cfg.loadApiKey(CommitMessageProvider.Id.CODEX_CLI) != null;
-        boolean claudeCliHasKey = cfg.loadApiKey(CommitMessageProvider.Id.CLAUDE_CLI) != null;
-
-        openAiKeyField.putClientProperty("JPasswordField.cutCopyAllowed", true);
-        if (openAiHasKey)    setPasswordPlaceholder(openAiKeyField, "•••••• (saved)");
-        if (anthropicHasKey) setPasswordPlaceholder(anthropicKeyField, "•••••• (saved)");
-        if (geminiHasKey)    setPasswordPlaceholder(geminiKeyField, "•••••• (saved)");
-        if (codexHasKey)     setPasswordPlaceholder(codexKeyField, "•••••• (saved)");
-        if (claudeCliHasKey) setPasswordPlaceholder(claudeKeyField, "•••••• (saved)");
-
-        conventionalCommitsCheck.setSelected(s.useConventionalCommits);
-        maxLengthSpinner.setValue(s.maxSubjectLength);
-        prefixTemplateField.setText(s.prefixTemplate);
-        languageField.setText(s.language);
-        autoScopeCheck.setSelected(s.autoDetectScope);
-        extraInstructionsArea.setText(s.extraInstructions);
-        customRulesFileField.setText(s.customRulesFilePath);
-        updateRulesFileStatus();
-
-        updateIntelliJAiStatus();
     }
 
     /** Updates the status label below the rules file path field. */
