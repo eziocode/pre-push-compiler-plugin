@@ -1,21 +1,29 @@
 package com.github.prepushchecker.commitgen.providers;
 
-import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import org.jetbrains.annotations.NotNull;
 
-import java.time.Duration;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * Delegates to the OpenAI Codex CLI ({@code codex}) for generation.
  *
- * <p>The prompt is written to the process <b>stdin</b> (not passed as a
- * positional argument) — this avoids argument-parser errors with multi-line
- * prompts and mirrors how {@link GhCopilotProvider} uses the {@code gh} CLI.
+ * <p>The prompt is written to the process <b>stdin</b> with no positional
+ * argument — the safest approach across all CLI versions.
+ *
+ * <p>Extra args default to <b>empty</b> (bare {@code codex} invocation).
+ * If your version supports non-interactive flags (e.g.
+ * {@code --approval-policy full-auto}), set them in Settings → Extra args.
  *
  * <h3>Authentication</h3>
  * <ul>
@@ -33,28 +41,24 @@ public final class CodexCliProvider implements CommitMessageProvider {
             throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String resolvedPath = CliPathResolver.resolve(s.codexCliPath, CLI_NAME);
-        if (resolvedPath == null) {
-            throw new RuntimeException("Configured Codex CLI path is not executable: " + s.codexCliPath);
-        }
 
-        // Build command WITHOUT a positional prompt — prompt is piped via stdin.
+        // Build command — prompt is piped via stdin, NOT passed as a positional argument.
+        // Extra args default to empty so bare "codex" works on any CLI version.
         List<String> cmd = new ArrayList<>();
         cmd.add(resolvedPath);
-        String extraArgs = s.codexExtraArgs.isBlank()
-            ? "--approval-policy full-auto"
-            : s.codexExtraArgs.trim();
-        for (String arg : extraArgs.split("\\s+")) {
-            if (!arg.isBlank()) cmd.add(arg);
+        if (!s.codexExtraArgs.isBlank()) {
+            for (String arg : s.codexExtraArgs.trim().split("\\s+")) {
+                if (!arg.isBlank()) cmd.add(arg);
+            }
         }
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(false);
         CliPathResolver.injectAugmentedPath(pb);
 
-        String fullPrompt = systemPrompt + "\n\n" + userPrompt;
-        ProcessExecution.Result processResult;
+        Process proc;
         try {
-            processResult = ProcessExecution.run(pb, Duration.ofSeconds(90), fullPrompt);
+            proc = pb.start();
         } catch (java.io.IOException e) {
             throw new RuntimeException(
                 "Cannot start Codex CLI at '" + resolvedPath + "'.\n"
@@ -63,12 +67,29 @@ public final class CodexCliProvider implements CommitMessageProvider {
                     + "Or set OPENAI_API_KEY as an environment variable.", e);
         }
 
-        if (processResult.timedOut()) {
+        // Write prompt to stdin then close so the CLI sees EOF
+        String fullPrompt = systemPrompt + "\n\n" + userPrompt;
+        try (Writer w = new OutputStreamWriter(proc.getOutputStream(), StandardCharsets.UTF_8)) {
+            w.write(fullPrompt);
+        }
+
+        String stdout;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+            stdout = r.lines().collect(Collectors.joining("\n"));
+        }
+        String stderr;
+        try (BufferedReader r = new BufferedReader(
+                new InputStreamReader(proc.getErrorStream(), StandardCharsets.UTF_8))) {
+            stderr = r.lines().collect(Collectors.joining("\n"));
+        }
+
+        boolean finished = proc.waitFor(90, TimeUnit.SECONDS);
+        if (!finished) {
+            proc.destroyForcibly();
             throw new RuntimeException("Codex CLI timed out after 90 seconds.");
         }
-        int exit = processResult.exitCode();
-        String stdout = processResult.stdout();
-        String stderr = processResult.stderr();
+        int exit = proc.exitValue();
         if (exit != 0) {
             String detail = stderr.isBlank() ? stdout : stderr;
             String hint = (detail.contains("auth") || detail.contains("login") || detail.contains("401"))

@@ -199,7 +199,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
         codexExtraArgsField = new JBTextField(30);
         codexExtraArgsField.getEmptyText().setText(
-            "blank = --approval-policy full-auto  (default for Rust CLI 2025+)");
+            "blank = no extra args (safest default — works with all versions)");
 
         JButton detectBtn = new JButton("Auto-detect");
         detectBtn.addActionListener(ev -> {
@@ -236,9 +236,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
         gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "Rust CLI (2025+): leave blank → uses <code>--approval-policy full-auto</code><br>"
-            + "Node CLI (older): try <code>--full-auto</code> or leave blank<br>"
-            + "Auth: <code>codex auth</code> (ChatGPT) or set <code>OPENAI_API_KEY</code>"
+            + "Prompt is sent via <b>stdin</b> — no positional arg needed. Leave Extra args blank for most versions.<br>"
+            + "If your version supports it: <code>--approval-policy full-auto</code> (Rust CLI 2025+)<br>"
+            + "Auth: <code>codex auth</code> (ChatGPT OAuth) or set <code>OPENAI_API_KEY</code>"
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
