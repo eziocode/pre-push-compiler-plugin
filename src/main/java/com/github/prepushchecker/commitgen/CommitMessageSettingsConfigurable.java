@@ -1,8 +1,12 @@
 package com.github.prepushchecker.commitgen;
 
+import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.options.Configurable;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.ui.Messages;
-import com.intellij.openapi.util.NlsSafe;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.ui.TextFieldWithBrowseButton;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
@@ -14,6 +18,7 @@ import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
 import java.awt.*;
+import java.nio.file.Path;
 
 /**
  * Configurable that appears under Settings → Tools → AI Commit Message Generator.
@@ -53,7 +58,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField languageField;
     private JBCheckBox autoScopeCheck;
     private JBTextArea extraInstructionsArea;
-    private JBTextField customRulesFileField;
+    private TextFieldWithBrowseButton customRulesFileField;
     private JBLabel     customRulesFileStatusLabel;
 
     @Override
@@ -384,17 +389,36 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         extraInstructionsArea.getEmptyText().setText(
             "Any additional instructions appended to every prompt…");
 
-        customRulesFileField = new JBTextField(40);
-        customRulesFileField.getEmptyText().setText(
+        customRulesFileField = new TextFieldWithBrowseButton();
+        customRulesFileField.getTextField().setToolTipText(
             "Leave blank to auto-detect (.github/commit-instructions.md or COMMIT_RULES.md)");
         customRulesFileStatusLabel = new JBLabel();
 
-        // Wire a document listener to update the status label as the user types
-        customRulesFileField.getDocument().addDocumentListener(new javax.swing.event.DocumentListener() {
-            public void insertUpdate(javax.swing.event.DocumentEvent e)  { updateRulesFileStatus(); }
-            public void removeUpdate(javax.swing.event.DocumentEvent e)  { updateRulesFileStatus(); }
-            public void changedUpdate(javax.swing.event.DocumentEvent e) { updateRulesFileStatus(); }
-        });
+        // File chooser: single .md / .txt file
+        FileChooserDescriptor fileDesc = new FileChooserDescriptor(
+                true, false, false, false, false, false)
+            .withTitle("Select Commit Rules File")
+            .withDescription("Choose a Markdown file with commit message generation rules")
+            .withFileFilter(vf -> {
+                String ext = vf.getExtension();
+                return ext != null && (ext.equalsIgnoreCase("md")
+                    || ext.equalsIgnoreCase("markdown")
+                    || ext.equalsIgnoreCase("txt"));
+            });
+        customRulesFileField.addBrowseFolderListener(
+            "Select Commit Rules File",
+            "Choose a Markdown (.md) file containing commit message generation rules",
+            getFirstOpenProject(),
+            fileDesc,
+            com.intellij.openapi.ui.TextComponentAccessor.TEXT_FIELD_WHOLE_TEXT);
+
+        // After a selection, convert absolute path → project-relative when possible
+        customRulesFileField.getTextField().getDocument().addDocumentListener(
+            new javax.swing.event.DocumentListener() {
+                public void insertUpdate(javax.swing.event.DocumentEvent e)  { normaliseAndUpdateStatus(); }
+                public void removeUpdate(javax.swing.event.DocumentEvent e)  { updateRulesFileStatus(); }
+                public void changedUpdate(javax.swing.event.DocumentEvent e) { updateRulesFileStatus(); }
+            });
 
         JPanel options = new JPanel(new GridBagLayout());
         GridBagConstraints g = new GridBagConstraints();
@@ -592,18 +616,101 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
     /** Updates the status label below the rules file path field. */
     private void updateRulesFileStatus() {
-        if (customRulesFileStatusLabel == null) return;
-        // We don't have a project reference in the configurable, so show a
-        // generic note about where files are resolved from.
+        if (customRulesFileStatusLabel == null || customRulesFileField == null) return;
         String path = customRulesFileField.getText().trim();
+        Project project = getFirstOpenProject();
+
         if (path.isBlank()) {
-            customRulesFileStatusLabel.setText(
-                "<html><i>Auto-detect: searches .github/commit-instructions.md, then COMMIT_RULES.md in project root.</i></html>");
+            // Show which auto-detected file would be used (if any)
+            if (project != null) {
+                String found = CommitMessagePromptBuilder.resolvedRuleFileName(project, "");
+                if (found != null) {
+                    customRulesFileStatusLabel.setText(
+                        "<html><i>✓ Auto-detected: <b>" + found + "</b></i></html>");
+                    customRulesFileStatusLabel.setForeground(
+                        UIManager.getColor("Label.foreground"));
+                } else {
+                    customRulesFileStatusLabel.setText(
+                        "<html><i>No rules file found — will use IDE settings only. "
+                            + "Create <code>.github/commit-instructions.md</code> or <code>COMMIT_RULES.md</code>.</i></html>");
+                    customRulesFileStatusLabel.setForeground(
+                        UIManager.getColor("Label.disabledForeground"));
+                }
+            } else {
+                customRulesFileStatusLabel.setText(
+                    "<html><i>Auto-detect: .github/commit-instructions.md → COMMIT_RULES.md</i></html>");
+                customRulesFileStatusLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+            }
         } else {
-            customRulesFileStatusLabel.setText(
-                "<html><i>Will read: &lt;project-root&gt;/" + path + "</i></html>");
+            // Show whether the specified file resolves to something that exists
+            java.nio.file.Path resolved = resolveRulesPath(project, path);
+            boolean exists = resolved != null && java.nio.file.Files.isRegularFile(resolved);
+            if (exists) {
+                customRulesFileStatusLabel.setText(
+                    "<html><i>✓ Found: <b>" + resolved.toAbsolutePath() + "</b></i></html>");
+                customRulesFileStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
+            } else {
+                customRulesFileStatusLabel.setText(
+                    "<html><i>⚠ File not found: " + path + "</i></html>");
+                customRulesFileStatusLabel.setForeground(
+                    UIManager.getColor("Component.errorFocusColor") != null
+                        ? UIManager.getColor("Component.errorFocusColor")
+                        : java.awt.Color.RED.darker());
+            }
         }
-        customRulesFileStatusLabel.setForeground(UIManager.getColor("Label.disabledForeground"));
+    }
+
+    /**
+     * Called after a browse-dialog selection: if the chosen absolute path is
+     * inside the project root, store just the relative portion.
+     */
+    private void normaliseAndUpdateStatus() {
+        if (customRulesFileField == null) return;
+        String raw = customRulesFileField.getText().trim();
+        if (raw.isBlank()) { updateRulesFileStatus(); return; }
+
+        Project project = getFirstOpenProject();
+        if (project != null && project.getBasePath() != null) {
+            try {
+                java.nio.file.Path base = java.nio.file.Path.of(project.getBasePath()).toAbsolutePath();
+                java.nio.file.Path file = java.nio.file.Path.of(raw).toAbsolutePath();
+                if (file.startsWith(base)) {
+                    String relative = base.relativize(file).toString();
+                    // Avoid recursion: only setText if it changes
+                    if (!relative.equals(raw)) {
+                        customRulesFileField.setText(relative);
+                        return; // setText fires another document event → updateRulesFileStatus
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+        updateRulesFileStatus();
+    }
+
+    /** Returns the first open non-default project, or {@code null}. */
+    @Nullable
+    private static Project getFirstOpenProject() {
+        Project[] projects = ProjectManager.getInstance().getOpenProjects();
+        for (Project p : projects) {
+            if (!p.isDefault() && p.getBasePath() != null) return p;
+        }
+        return null;
+    }
+
+    /**
+     * Resolves {@code path} against the project base (if relative) or as-is
+     * (if absolute). Returns {@code null} when neither succeeds.
+     */
+    @Nullable
+    private static java.nio.file.Path resolveRulesPath(@Nullable Project project, @NotNull String path) {
+        try {
+            java.nio.file.Path p = java.nio.file.Path.of(path);
+            if (p.isAbsolute()) return p;
+            if (project != null && project.getBasePath() != null) {
+                return java.nio.file.Path.of(project.getBasePath()).resolve(p);
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     private static void setPasswordPlaceholder(@NotNull JPasswordField field, @NotNull String hint) {

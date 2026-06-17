@@ -158,6 +158,7 @@ final class CommitMessagePromptBuilder {
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.directory(Path.of(basePath).toFile());
         pb.redirectErrorStream(true);
+        CliPathResolver.injectAugmentedPath(pb);
         Process proc = pb.start();
         String output;
         try (BufferedReader reader = new BufferedReader(

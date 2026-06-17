@@ -49,6 +49,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(false);
+        CliPathResolver.injectAugmentedPath(pb);   // ensures node, python, etc. are on PATH
 
         Process proc;
         try {

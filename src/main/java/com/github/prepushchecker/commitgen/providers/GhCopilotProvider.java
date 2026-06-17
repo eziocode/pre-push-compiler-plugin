@@ -110,6 +110,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         try {
             ProcessBuilder pb = new ProcessBuilder(ghPath, "auth", "token");
             pb.redirectErrorStream(true);
+            CliPathResolver.injectAugmentedPath(pb);
             Process proc = pb.start();
             String out;
             try (BufferedReader r = new BufferedReader(

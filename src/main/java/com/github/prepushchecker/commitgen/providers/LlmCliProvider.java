@@ -56,6 +56,7 @@ public final class LlmCliProvider implements CommitMessageProvider {
 
         ProcessBuilder pb = new ProcessBuilder(cmd);
         pb.redirectErrorStream(false);
+        CliPathResolver.injectAugmentedPath(pb);   // ensures python3 etc. are on PATH
 
         Process proc;
         try {

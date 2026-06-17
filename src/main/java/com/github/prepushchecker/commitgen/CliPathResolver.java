@@ -115,11 +115,71 @@ public final class CliPathResolver {
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     /**
+     * Resolves the full PATH string as the user's shell sees it (sources rc
+     * files + adds well-known directories) and injects it into
+     * {@code pb.environment()}.
+     *
+     * <p>Call this on every {@link ProcessBuilder} that runs a CLI tool so
+     * that scripts with shebangs like {@code #!/usr/bin/env node} or
+     * {@code #!/usr/bin/env python3} can find their runtime even when
+     * IntelliJ was launched as a GUI app with a stripped PATH.
+     *
+     * @param pb the ProcessBuilder whose environment should be augmented
+     */
+    public static void injectAugmentedPath(@NotNull ProcessBuilder pb) {
+        String resolved = resolveShellPath();
+        if (resolved != null && !resolved.isBlank()) {
+            pb.environment().put("PATH", resolved);
+        }
+    }
+
+    /**
+     * Returns the full PATH string from the user's shell (sources rc files and
+     * injects well-known directories), or {@code null} if the sub-shell fails.
+     */
+    @Nullable
+    public static String resolveShellPath() {
+        String home = System.getProperty("user.home");
+
+        StringBuilder script = new StringBuilder();
+        for (String rc : RC_FILES) {
+            Path rcFile = Path.of(home, rc);
+            if (Files.isRegularFile(rcFile)) {
+                script.append(". \"").append(rcFile).append("\" 2>/dev/null || true\n");
+            }
+        }
+        // Prepend well-known dirs so they are always available
+        script.append("for _d in");
+        for (String dir : EXTRA_PATH_DIRS) {
+            script.append(" \"").append(dir).append("\"");
+        }
+        script.append("; do\n");
+        script.append("  case \":$PATH:\" in *\":$_d:\"*) :;; *) PATH=\"$_d:$PATH\";; esac\n");
+        script.append("done\n");
+        script.append("printf '%s' \"$PATH\"");
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder("sh", "-c", script.toString());
+            pb.redirectErrorStream(false);
+            Process proc = pb.start();
+            String out;
+            try (BufferedReader r = new BufferedReader(
+                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
+                out = r.lines().collect(Collectors.joining()).trim();
+            }
+            proc.waitFor(8, TimeUnit.SECONDS);
+            return out.isBlank() ? null : out;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * Runs {@code which <name>} inside a subshell that sources the user's rc
      * files, returning the trimmed path or {@code null}.
      */
     @Nullable
-    static String whichViaShell(@NotNull String name) {
+    public static String whichViaShell(@NotNull String name) {
         String home = System.getProperty("user.home");
 
         // Build a script that sources rc files then runs `which`
