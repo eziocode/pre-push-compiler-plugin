@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.0</version>
+    <version>1.8.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,45 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.1 — Stability &amp; API compatibility fixes</h3>
+
+        <h4>Added</h4>
+        <ul>
+            <li><b>ChatGPT browser OAuth device sign-in.</b> The Codex settings card now has
+                <em>Sign In</em>, <em>Sign Out</em>, and <em>Refresh</em> actions backed by a full
+                OAuth 2.0 device-authorization flow. The browser opens for code approval, the
+                plugin polls for the token in the background, and the result is stored in
+                PasswordSafe.</li>
+            <li><b>CLI auth status labels.</b> The settings cards for GitHub Copilot, llm CLI, and
+                Claude CLI now show a live auth/availability status so you can confirm a provider
+                is ready without leaving the IDE.</li>
+        </ul>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Multi-repo diff collection:</b> AI commit prompts now gather diffs from all Git
+                roots (staged → unstaged → HEAD), fixing blank messages in multi-root projects and
+                mono-repos with sub-modules.</li>
+            <li><b>EDT freeze on Codex auth refresh:</b> auth-file reads and status checks moved
+                to a background thread; label updates on the EDT.</li>
+            <li><b>Browse listener wiring</b> for the rules-file picker — path was not populated
+                in some IDE versions.</li>
+            <li><b>Commit control <code>ClassCastException</code></b> in the Git Commit dialog
+                on recent platform builds.</li>
+            <li><b>OAuth browser launch</b> now works on Linux and older macOS JDKs via
+                <code>xdg-open</code> / <code>open</code> fallbacks.</li>
+        </ul>
+
+        <h4>Changed</h4>
+        <ul>
+            <li>Commit message injection uses the stable <code>CommitWorkflowUi</code> API.</li>
+            <li>AI plugin detection uses <code>PluginManagerCore</code> class-loader check instead
+                of the deprecated <code>isEnabled()</code>, eliminating false "not available"
+                warnings on current IDE versions.</li>
+            <li>OAuth token-refresh retry removed — stale token now fails fast and prompts
+                re-authentication.</li>
+        </ul>
+
         <h3>1.8.0 — AI Commit Message Generator</h3>
 
         <h4>New feature: AI Commit Message Generator</h4>

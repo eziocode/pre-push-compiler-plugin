@@ -1,5 +1,8 @@
 package com.github.prepushchecker.commitgen;
 
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import git4idea.repo.GitRepository;
 import git4idea.repo.GitRepositoryManager;
@@ -43,6 +46,7 @@ final class CommitMessagePromptBuilder {
     record Prompt(@NotNull String system, @NotNull String user) {}
 
     static @NotNull Prompt build(@NotNull Project project) throws Exception {
+        flushOpenDocuments();
         String diff = collectDiff(project);
         if (diff == null || diff.isBlank()) {
             throw new IllegalStateException(
@@ -63,6 +67,17 @@ final class CommitMessagePromptBuilder {
     }
 
     // ── Diff collection ───────────────────────────────────────────────────────
+
+    private static void flushOpenDocuments() {
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            FileDocumentManager.getInstance().saveAllDocuments();
+            return;
+        }
+        ApplicationManager.getApplication().invokeAndWait(
+            () -> FileDocumentManager.getInstance().saveAllDocuments(),
+            ModalityState.defaultModalityState()
+        );
+    }
 
     /**
      * Collects the combined diff across all git repositories in the project.

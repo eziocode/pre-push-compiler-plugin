@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.1]
+
+### Added
+
+- **ChatGPT browser OAuth device sign-in flow.** The Codex provider in Settings now supports a full OAuth 2.0 device-authorization flow: a browser tab opens for code approval, the plugin polls for the token in the background, and the result is stored securely in IntelliJ PasswordSafe. The Codex settings card shows live sign-in status with **Sign In**, **Sign Out**, and **Refresh** actions.
+- **CLI auth status in Settings.** The settings card for CLI-based providers (GitHub Copilot, llm, Claude CLI) now shows a live auth/availability status label so you can confirm a provider is ready without leaving the IDE.
+
+### Fixed
+
+- **Multi-repo diff collection.** The AI commit message generator now uses `GitRepositoryManager` to gather diffs from all Git roots in the project, with a per-root fallback chain (staged → unstaged → HEAD diff). Fixes blank prompts in mono-repos with sub-modules and multi-root workspaces.
+- **EDT blocking in Codex auth refresh.** Auth-file reads (`~/.codex/auth.json`) and status checks are now performed on a background thread; the settings label updates on the EDT, eliminating UI freezes when the Codex card is opened.
+- **Browse listener wiring for rules-file picker.** The file chooser browse listener was not wired correctly in certain IDE versions, preventing the rules-file path from being populated. Fixed by using the updated `addBrowseFolderListener` overload.
+- **Commit control cast in Git Commit dialog.** Resolving the commit message control now uses `e.getData(...)` directly with `COMMIT_WORKFLOW_UI` instead of casting, fixing a `ClassCastException` on some IntelliJ builds.
+- **OAuth browser launch on all platforms.** `Desktop.getDesktop().browse(...)` is now wrapped with per-OS fallbacks (`xdg-open`, `open`, `start`) so the sign-in browser tab opens correctly on Linux and older macOS JDK configurations.
+
+### Changed
+
+- **`CommitWorkflowUi` API for commit message injection.** The "Insert AI message" action now resolves the commit panel via `COMMIT_WORKFLOW_UI` and calls `commitMessageUi` — matching the stable public API and avoiding internal casts that broke on recent platform builds.
+- **AI plugin availability checks via `PluginManagerCore`.** JetBrains AI plugin detection now verifies that the plugin's class loader is present (via `PluginManagerCore`) instead of calling the deprecated `isEnabled()` method, fixing false "AI Assistant not available" warnings on current IDE versions.
+- **Removed OAuth token-refresh retry.** The Codex OAuth flow no longer retries a stale token on HTTP 401; it fails fast and prompts re-authentication instead, preventing silent infinite-retry loops.
+
+---
+
 ## [1.8.0]
 
 ### Added
