@@ -1,8 +1,7 @@
 package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
-import com.intellij.ide.plugins.IdeaPluginDescriptor;
-import com.intellij.ide.plugins.PluginManager;
+import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.extensions.PluginId;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -51,9 +50,8 @@ public final class IntelliJAiProvider implements CommitMessageProvider {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static void checkPluginAvailable() {
-        IdeaPluginDescriptor descriptor =
-            PluginManager.getInstance().findEnabledPlugin(PluginId.getId(AI_PLUGIN_ID));
-        if (descriptor == null) {
+        PluginId pluginId = PluginId.getId(AI_PLUGIN_ID);
+        if (!PluginManagerCore.isPluginInstalled(pluginId) || PluginManagerCore.isDisabled(pluginId)) {
             throw new IllegalStateException(
                 "JetBrains AI Assistant plugin (" + AI_PLUGIN_ID + ") is not installed or not enabled.\n"
                     + "Install it from Settings → Plugins → Marketplace and sign in to your JetBrains account.");

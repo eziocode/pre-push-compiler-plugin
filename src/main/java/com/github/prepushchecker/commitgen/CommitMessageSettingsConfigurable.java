@@ -5,6 +5,7 @@ import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.ui.TextBrowseFolderListener;
 import com.intellij.openapi.ui.TextFieldWithBrowseButton;
@@ -463,10 +464,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private void updateIntelliJAiStatus() {
         if (intellijAiStatusLabel == null) return;
         try {
-            com.intellij.ide.plugins.IdeaPluginDescriptor desc =
-                com.intellij.ide.plugins.PluginManager.getInstance().findEnabledPlugin(
-                    com.intellij.openapi.extensions.PluginId.getId("com.intellij.ml.llm"));
-            if (desc != null) {
+            com.intellij.openapi.extensions.PluginId pluginId =
+                com.intellij.openapi.extensions.PluginId.getId("com.intellij.ml.llm");
+            if (PluginManagerCore.isPluginInstalled(pluginId) && !PluginManagerCore.isDisabled(pluginId)) {
                 intellijAiStatusLabel.setText(
                     "✓ JetBrains AI Assistant plugin is installed and enabled.");
             } else {
