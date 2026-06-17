@@ -30,7 +30,10 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
 
         // Non-secret provider config
         public String ollamaBaseUrl  = "http://localhost:11434";
-        public String codexCliPath   = "codex";
+        public String codexCliPath   = "";   // blank = auto-detect
+        public String ghCliPath      = "";   // blank = auto-detect (for GH_COPILOT)
+        public String llmCliPath     = "";   // blank = auto-detect
+        public String llmModel       = "";   // blank = llm default model
 
         // Commit message rules
         public boolean useConventionalCommits = true;

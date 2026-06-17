@@ -40,6 +40,10 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField     ollamaUrlField;
     private JBTextField     ollamaModelField;
     private JBTextField     codexCliPathField;
+    private JBTextField     ghCliPathField;
+    private JBLabel         ghStatusLabel;
+    private JBTextField     llmCliPathField;
+    private JBTextField     llmModelField;
     private JBLabel         intellijAiStatusLabel;
 
     // Rules
@@ -93,6 +97,8 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         authPanel.add(buildGeminiCard(),     CommitMessageProvider.Id.GEMINI.name());
         authPanel.add(buildOllamaCard(),     CommitMessageProvider.Id.OLLAMA.name());
         authPanel.add(buildCodexCliCard(),   CommitMessageProvider.Id.CODEX_CLI.name());
+        authPanel.add(buildGhCopilotCard(),  CommitMessageProvider.Id.GH_COPILOT.name());
+        authPanel.add(buildLlmCliCard(),     CommitMessageProvider.Id.LLM_CLI.name());
         authPanel.add(buildIntelliJAiCard(), CommitMessageProvider.Id.INTELLIJ_AI.name());
         panel.add(authPanel, BorderLayout.CENTER);
 
@@ -179,21 +185,137 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildCodexCliCard() {
-        codexCliPathField = new JBTextField("codex", 30);
+        codexCliPathField = new JBTextField(30);
+        codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+
+        JButton detectBtn = new JButton("Auto-detect");
+        detectBtn.addActionListener(ev -> {
+            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("codex");
+            if (found != null) {
+                codexCliPathField.setText(found);
+            } else {
+                codexCliPathField.setText("");
+                Messages.showInfoMessage(
+                    "codex not found on PATH.\n\n"
+                        + "Install: npm install -g @openai/codex\n"
+                        + "Auth:    codex auth   (ChatGPT account OAuth)",
+                    "Codex CLI Not Found");
+            }
+        });
+
         JPanel card = new JPanel(new GridBagLayout());
         GridBagConstraints gbc = new GridBagConstraints();
         gbc.insets = new Insets(3, 0, 3, 6);
         gbc.anchor = GridBagConstraints.WEST;
 
-        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("Codex CLI path:"), gbc);
+        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
         gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
         card.add(codexCliPathField, gbc);
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        card.add(detectBtn, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.NONE;
-        gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
         JBLabel hint = new JBLabel("<html><i>"
-            + "Install: npm install -g @openai/codex &nbsp;|&nbsp; "
-            + "Auth: codex auth (ChatGPT account or OPENAI_API_KEY env var)"
+            + "Install: <code>npm install -g @openai/codex</code> &nbsp;|&nbsp; "
+            + "Auth: <code>codex auth</code> (sign in with ChatGPT account) or set <code>OPENAI_API_KEY</code>"
+            + "</i></html>");
+        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
+        card.add(hint, gbc);
+        return card;
+    }
+
+    private @NotNull JPanel buildGhCopilotCard() {
+        ghCliPathField  = new JBTextField(30);
+        ghCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+        ghStatusLabel   = new JBLabel(" ");
+
+        JButton detectBtn = new JButton("Auto-detect gh");
+        detectBtn.addActionListener(ev -> {
+            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("gh");
+            if (found != null) {
+                ghCliPathField.setText(found);
+                // Check auth status
+                String token = com.github.prepushchecker.commitgen.providers.GhCopilotProvider
+                    .getGhToken(found);
+                ghStatusLabel.setText(token != null
+                    ? "✓ Signed in to GitHub CLI"
+                    : "✗ Not signed in — run: gh auth login");
+            } else {
+                ghCliPathField.setText("");
+                ghStatusLabel.setText("✗ gh not found — install from cli.github.com");
+            }
+        });
+
+        JPanel card = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(3, 0, 3, 6);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("gh CLI path:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(ghCliPathField, gbc);
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        card.add(detectBtn, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3;
+        card.add(ghStatusLabel, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
+        JBLabel hint = new JBLabel("<html><i>"
+            + "Requires GitHub CLI + active Copilot subscription. "
+            + "Auth: <code>gh auth login</code> &nbsp;|&nbsp; "
+            + "Scope: <code>gh auth refresh -s copilot</code>"
+            + "</i></html>");
+        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
+        card.add(hint, gbc);
+        return card;
+    }
+
+    private @NotNull JPanel buildLlmCliCard() {
+        llmCliPathField = new JBTextField(30);
+        llmCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
+        llmModelField   = new JBTextField(20);
+        llmModelField.getEmptyText().setText("e.g. gpt-4o, claude-3-5-sonnet, gemini-1.5-flash");
+
+        JButton detectBtn = new JButton("Auto-detect");
+        detectBtn.addActionListener(ev -> {
+            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("llm");
+            if (found != null) {
+                llmCliPathField.setText(found);
+            } else {
+                llmCliPathField.setText("");
+                Messages.showInfoMessage(
+                    "llm not found on PATH.\n\n"
+                        + "Install:   pip install llm\n"
+                        + "Docs:      https://llm.datasette.io\n"
+                        + "Add keys:  llm keys set openai",
+                    "llm CLI Not Found");
+            }
+        });
+
+        JPanel card = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(3, 0, 3, 6);
+        gbc.anchor = GridBagConstraints.WEST;
+
+        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(llmCliPathField, gbc);
+        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
+        card.add(detectBtn, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        card.add(new JBLabel("Model:"), gbc);
+        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(llmModelField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
+        JBLabel hint = new JBLabel("<html><i>"
+            + "Supports 60+ models via plugins. "
+            + "Install: <code>pip install llm</code> &nbsp;|&nbsp; "
+            + "Add provider: <code>llm install llm-anthropic</code> &nbsp;|&nbsp; "
+            + "List models: <code>llm models</code>"
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
@@ -367,6 +489,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (!ollamaUrlField.getText().equals(s.ollamaBaseUrl)) return true;
         if (!ollamaModelField.getText().equals(s.ollamaModel)) return true;
         if (!codexCliPathField.getText().equals(s.codexCliPath)) return true;
+        if (!ghCliPathField.getText().equals(s.ghCliPath)) return true;
+        if (!llmCliPathField.getText().equals(s.llmCliPath)) return true;
+        if (!llmModelField.getText().equals(s.llmModel)) return true;
         if (conventionalCommitsCheck.isSelected() != s.useConventionalCommits) return true;
         if ((int) maxLengthSpinner.getValue() != s.maxSubjectLength) return true;
         if (!prefixTemplateField.getText().equals(s.prefixTemplate)) return true;
@@ -391,6 +516,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
         s.ollamaModel    = ollamaModelField.getText().trim();
         s.codexCliPath   = codexCliPathField.getText().trim();
+        s.ghCliPath      = ghCliPathField.getText().trim();
+        s.llmCliPath     = llmCliPathField.getText().trim();
+        s.llmModel       = llmModelField.getText().trim();
 
         s.useConventionalCommits = conventionalCommitsCheck.isSelected();
         s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
@@ -432,6 +560,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         ollamaUrlField.setText(s.ollamaBaseUrl);
         ollamaModelField.setText(s.ollamaModel);
         codexCliPathField.setText(s.codexCliPath);
+        ghCliPathField.setText(s.ghCliPath);
+        llmCliPathField.setText(s.llmCliPath);
+        llmModelField.setText(s.llmModel);
 
         // Never pre-fill key fields — show placeholder text only
         openAiKeyField.setText("");
@@ -516,6 +647,8 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             case GEMINI      -> new com.github.prepushchecker.commitgen.providers.GeminiProvider();
             case OLLAMA      -> new com.github.prepushchecker.commitgen.providers.OllamaProvider();
             case CODEX_CLI   -> new com.github.prepushchecker.commitgen.providers.CodexCliProvider();
+            case GH_COPILOT  -> new com.github.prepushchecker.commitgen.providers.GhCopilotProvider();
+            case LLM_CLI     -> new com.github.prepushchecker.commitgen.providers.LlmCliProvider();
         };
     }
 

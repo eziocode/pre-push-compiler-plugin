@@ -60,7 +60,7 @@
                 from staged (or HEAD) diffs using your choice of AI provider. Accessible from
                 a new toolbar button in the Compilation Checker tool window and from the
                 <em>Vcs.MessageActionGroup</em> menu in the Git Commit dialog.</li>
-            <li><b>Six AI providers:</b>
+            <li><b>Eight AI providers:</b>
                 <ul>
                     <li><b>JetBrains AI</b> — uses the AI Assistant plugin when installed.</li>
                     <li><b>OpenAI</b> — direct HTTPS call to <code>gpt-4o</code> (or any configured model).</li>
@@ -70,11 +70,24 @@
                     <li><b>OpenAI Codex CLI</b> — shells out to the <code>codex</code> CLI tool,
                         which authenticates via ChatGPT OAuth (<code>codex auth</code>) or
                         <code>OPENAI_API_KEY</code>.</li>
+                    <li><b>GitHub Copilot</b> — uses <code>gh auth token</code> and calls the
+                        Copilot Chat completions API. Requires GitHub CLI and an active Copilot subscription.</li>
+                    <li><b>llm CLI</b> — wraps Simon Willison's <code>llm</code> tool (60+ model
+                        providers via plugins). Install with <code>pip install llm</code>.</li>
                 </ul>
             </li>
+            <li><b>CLI auto-detection:</b> all CLI providers resolve their executable through a
+                shell sub-process that sources the user's rc files and probes Homebrew, npm-global,
+                asdf shims, pip <code>~/.local/bin</code>, and Cargo. IntelliJ GUI-app PATH
+                stripping no longer prevents tools from being found.</li>
+            <li><b>Auto-detect buttons:</b> each CLI card in Settings has an auto-detect button
+                that resolves the path on demand and shows install hints when not found.</li>
             <li><b>Custom commit message rules:</b> Conventional Commits enforcement, max subject
                 length, prefix/ticket template, language/tone, auto-detect scope from file paths,
                 and a free-form extra-instructions field.</li>
+            <li><b>Project rules file:</b> place <code>.github/commit-instructions.md</code>
+                (or <code>COMMIT_RULES.md</code>) in the project root; its content is appended
+                to the AI system prompt automatically — commit it to share rules with your team.</li>
             <li><b>Secure key storage:</b> API keys are stored in IntelliJ's PasswordSafe and
                 never written to the plain-text XML settings file.</li>
             <li><b>Settings page:</b> Settings → Tools → <em>AI Commit Message Generator</em>

@@ -58,6 +58,8 @@ public final class CommitMessageGeneratorService {
             case GEMINI      -> new GeminiProvider();
             case OLLAMA      -> new OllamaProvider();
             case CODEX_CLI   -> new CodexCliProvider();
+            case GH_COPILOT  -> new GhCopilotProvider();
+            case LLM_CLI     -> new LlmCliProvider();
         };
     }
 }
