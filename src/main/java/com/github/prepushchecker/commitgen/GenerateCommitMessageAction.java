@@ -14,7 +14,8 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
-import com.intellij.openapi.vcs.ui.CommitMessage;
+import com.intellij.vcs.commit.CommitWorkflowUi;
+import com.intellij.openapi.vcs.CommitMessageI;
 import com.intellij.openapi.vcs.VcsDataKeys;
 import org.jetbrains.annotations.NotNull;
 
@@ -59,8 +60,8 @@ public final class GenerateCommitMessageAction extends AnAction {
         Project project = e.getProject();
         if (project == null) return;
 
-        // Capture the commit message control from the action context (commit dialog)
-        CommitMessage commitMessageControl = getCommitMessageControl(e);
+        // Capture the commit workflow UI from the action context (commit dialog)
+        CommitWorkflowUi commitWorkflowUi = getCommitWorkflowUi(e);
 
         ProgressManager.getInstance().run(
             new Task.Backgroundable(project, "Generating Commit Message with AI", false) {
@@ -74,8 +75,8 @@ public final class GenerateCommitMessageAction extends AnAction {
                         String finalMessage = message;
                         ApplicationManager.getApplication().invokeLater(() -> {
                             if (project.isDisposed()) return;
-                            if (commitMessageControl != null) {
-                                commitMessageControl.setCommitMessage(finalMessage);
+                            if (commitWorkflowUi != null) {
+                                commitWorkflowUi.commitMessageUi.setText(finalMessage);
                             } else {
                                 // Fallback: show in a dialog the user can copy
                                 Messages.showMultilineInputDialog(
@@ -106,10 +107,10 @@ public final class GenerateCommitMessageAction extends AnAction {
             });
     }
 
-    private static CommitMessage getCommitMessageControl(@NotNull AnActionEvent e) {
+    private static CommitWorkflowUi getCommitWorkflowUi(@NotNull AnActionEvent e) {
         try {
-            var control = e.getData(VcsDataKeys.COMMIT_MESSAGE_CONTROL);
-            if (control instanceof CommitMessage cm) return cm;
+            var workflowUi = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI);
+            if (workflowUi instanceof CommitWorkflowUi ui) return ui;
         } catch (Exception ignored) {}
         return null;
     }
