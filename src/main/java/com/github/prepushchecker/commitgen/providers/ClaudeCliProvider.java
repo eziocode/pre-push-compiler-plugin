@@ -1,105 +1,120 @@
 package com.github.prepushchecker.commitgen.providers;
 
-import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
+import com.github.prepushchecker.commitgen.JsonUtil;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
-import java.util.ArrayList;
-import java.util.List;
 
 /**
- * Delegates to Anthropic's <b>{@code claude}</b> CLI for generation.
+ * Generates commit messages via the Anthropic Messages API using credentials
+ * stored by the <b>Claude CLI</b> ({@code claude}).
  *
- * <p>The prompt is written to the process <b>stdin</b> — this avoids
- * argument-parser issues and is consistent with how {@link GhCopilotProvider}
- * and {@link CodexCliProvider} are integrated.
+ * <h3>How it works — same pattern as GH Copilot</h3>
+ * <ol>
+ *   <li>Reads {@code ANTHROPIC_API_KEY} from the user's shell environment
+ *       (sources rc files so variables set in {@code .zshrc} / {@code .bashrc}
+ *       are visible even from a GUI-launched IntelliJ).</li>
+ *   <li>Falls back to the PasswordSafe-stored key if the env var is absent.</li>
+ *   <li>Calls {@code api.anthropic.com/v1/messages} directly — no subprocess,
+ *       no TTY requirement.</li>
+ * </ol>
  *
- * <h3>Quick start</h3>
- * <pre>
- *   # Install
- *   npm install -g @anthropic-ai/claude-code    # or: brew install anthropic
- *
- *   # Authenticate (API key stored securely by the CLI)
- *   claude                                       # opens interactive auth on first run
- *   # or set ANTHROPIC_API_KEY in your environment
- * </pre>
- *
- * <h3>Non-interactive flags</h3>
- * Default extra args: {@code --print} — outputs the response to stdout and
- * exits immediately. Configure via Settings → Extra args if your version
- * uses a different flag (e.g. {@code -p}).
+ * <h3>Authentication</h3>
+ * <ul>
+ *   <li>Run the Claude CLI once in a terminal to authenticate — it sets
+ *       {@code ANTHROPIC_API_KEY} in your shell environment.</li>
+ *   <li>Or add {@code export ANTHROPIC_API_KEY=sk-ant-...} to your
+ *       {@code .zshrc} / {@code .bashrc}.</li>
+ *   <li>Or enter the key in
+ *       Settings → Tools → Pre-Push Checker — AI Commit Message Generator.</li>
+ * </ul>
  */
 public final class ClaudeCliProvider implements CommitMessageProvider {
 
     public static final String CLI_NAME = "claude";
+    private static final String API_URL = "https://api.anthropic.com/v1/messages";
+    private static final String ANTHROPIC_VERSION = "2023-06-01";
 
     @Override
     public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
             throws Exception {
+        String apiKey = resolveApiKey();
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException(
+                "No Anthropic API key found for Claude CLI.\n\n"
+                    + "Options:\n"
+                    + "  1. Run 'claude' in a terminal to authenticate\n"
+                    + "  2. Add 'export ANTHROPIC_API_KEY=sk-ant-...' to your .zshrc / .bashrc\n"
+                    + "  3. Enter the key in Settings → Tools → "
+                    + "Pre-Push Checker — AI Commit Message Generator");
+        }
+
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        String resolvedPath = CliPathResolver.resolve(s.claudeCliPath, CLI_NAME);
-        if (resolvedPath == null) {
-            throw new RuntimeException("Configured Claude CLI path is not executable: " + s.claudeCliPath);
-        }
+        String model = s.claudeModel.isBlank() ? "claude-3-5-sonnet-20241022" : s.claudeModel;
 
-        // Build command WITHOUT a positional prompt — prompt is piped via stdin.
-        List<String> cmd = new ArrayList<>();
-        cmd.add(resolvedPath);
+        String body = "{"
+            + "\"model\":" + JsonUtil.quoted(model) + ","
+            + "\"max_tokens\":300,"
+            + "\"system\":" + JsonUtil.quoted(systemPrompt) + ","
+            + "\"messages\":["
+            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
+            + "]}";
 
-        // Default: --print (non-interactive, writes response to stdout and exits)
-        String extraArgs = s.claudeExtraArgs.isBlank()
-            ? "--print"
-            : s.claudeExtraArgs.trim();
-        for (String arg : extraArgs.split("\\s+")) {
-            if (!arg.isBlank()) cmd.add(arg);
-        }
+        HttpClient client = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(30))
+            .build();
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create(API_URL))
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("Content-Type", "application/json")
+            .timeout(Duration.ofSeconds(60))
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build();
 
-        // Optional model override
-        if (!s.claudeModel.isBlank()) {
-            cmd.add("--model");
-            cmd.add(s.claudeModel.trim());
-        }
-
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(false);
-        CliPathResolver.injectAugmentedPath(pb);
-
-        String fullPrompt = systemPrompt + "\n\n" + userPrompt;
-        ProcessExecution.Result processResult;
-        try {
-            processResult = ProcessExecution.run(pb, Duration.ofSeconds(120), fullPrompt);
-        } catch (java.io.IOException e) {
+        HttpResponse<String> response =
+            client.send(request, HttpResponse.BodyHandlers.ofString());
+        if (response.statusCode() == 401) {
             throw new RuntimeException(
-                "Cannot start Claude CLI at '" + resolvedPath + "'.\n"
-                    + "Install: npm install -g @anthropic-ai/claude-code\n"
-                    + "Auth:    run 'claude' once in a terminal, or set ANTHROPIC_API_KEY.", e);
+                "Anthropic API key is invalid or expired.\n"
+                    + "Run 'claude' to refresh credentials, or update ANTHROPIC_API_KEY.");
         }
-
-        if (processResult.timedOut()) {
-            throw new RuntimeException("Claude CLI timed out after 120 seconds.");
-        }
-        int exit = processResult.exitCode();
-        String stdout = processResult.stdout();
-        String stderr = processResult.stderr();
-        if (exit != 0) {
-            String detail = stderr.isBlank() ? stdout : stderr;
-            String hint = (detail.contains("auth") || detail.contains("API key") || detail.contains("401"))
-                ? "\nRun 'claude' in a terminal to authenticate, or set ANTHROPIC_API_KEY." : "";
-            throw new RuntimeException("Claude CLI exited with code " + exit
-                + (detail.isBlank() ? "" : ": " + detail.trim()) + hint);
-        }
-        String result = stdout.trim();
-        if (result.isBlank()) {
+        if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "Claude CLI returned an empty response. "
-                    + "Run 'claude' in a terminal to authenticate, or set ANTHROPIC_API_KEY.");
+                "Anthropic API error " + response.statusCode() + ": " + response.body());
         }
-        return result;
+        String text = JsonUtil.extractString(response.body(), "text");
+        if (text == null) {
+            throw new RuntimeException("Unexpected Anthropic response: " + response.body());
+        }
+        return text.trim();
     }
 
     @Override
     public @NotNull Id id() { return Id.CLAUDE_CLI; }
+
+    // ── Credential resolution (GH-Copilot-style) ─────────────────────────────
+
+    /**
+     * Resolves the Anthropic API key in priority order:
+     * <ol>
+     *   <li>Shell environment ({@code ANTHROPIC_API_KEY}).</li>
+     *   <li>PasswordSafe stored key (entered manually in Settings).</li>
+     * </ol>
+     */
+    @Nullable
+    static String resolveApiKey() {
+        String fromEnv = CliPathResolver.resolveEnvVar("ANTHROPIC_API_KEY");
+        if (fromEnv != null && !fromEnv.isBlank()) return fromEnv;
+        return CommitMessageSettings.getInstance().loadApiKey(Id.CLAUDE_CLI);
+    }
 }

@@ -44,15 +44,15 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField     geminiModelField;
     private JBTextField     ollamaUrlField;
     private JBTextField     ollamaModelField;
-    private JBTextField     codexCliPathField;
-    private JBTextField     codexExtraArgsField;
+    private JPasswordField  codexKeyField;
+    private JBLabel         codexEnvStatusLabel;
     private JBTextField     ghCliPathField;
     private JBLabel         ghStatusLabel;
     private JBTextField     llmCliPathField;
     private JBTextField     llmModelField;
-    private JBTextField     claudeCliPathField;
+    private JPasswordField  claudeKeyField;
     private JBTextField     claudeModelField;
-    private JBTextField     claudeExtraArgsField;
+    private JBLabel         claudeEnvStatusLabel;
     private JBLabel         intellijAiStatusLabel;
 
     // Rules
@@ -195,24 +195,19 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildCodexCliCard() {
-        codexCliPathField = new JBTextField(30);
-        codexCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
-        codexExtraArgsField = new JBTextField(30);
-        codexExtraArgsField.getEmptyText().setText(
-            "blank = no extra args (safest default — works with all versions)");
+        codexKeyField = new JPasswordField(30);
+        codexEnvStatusLabel = new JBLabel();
 
-        JButton detectBtn = new JButton("Auto-detect");
-        detectBtn.addActionListener(ev -> {
-            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("codex");
-            if (found != null) {
-                codexCliPathField.setText(found);
+        JButton checkEnvBtn = new JButton("Check OPENAI_API_KEY");
+        checkEnvBtn.addActionListener(ev -> {
+            String val = com.github.prepushchecker.commitgen.CliPathResolver.resolveEnvVar("OPENAI_API_KEY");
+            if (val != null && !val.isBlank()) {
+                codexEnvStatusLabel.setText("✓ OPENAI_API_KEY found in shell environment");
+                codexEnvStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
             } else {
-                codexCliPathField.setText("");
-                Messages.showInfoMessage(
-                    "codex not found on PATH.\n\n"
-                        + "Install: npm install -g @openai/codex\n"
-                        + "Auth:    codex auth   (ChatGPT account OAuth)",
-                    "Codex CLI Not Found");
+                codexEnvStatusLabel.setText("✗ OPENAI_API_KEY not set — see instructions below");
+                codexEnvStatusLabel.setForeground(UIManager.getColor("Component.errorFocusColor") != null
+                    ? UIManager.getColor("Component.errorFocusColor") : java.awt.Color.RED.darker());
             }
         });
 
@@ -221,24 +216,23 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         gbc.insets = new Insets(3, 0, 3, 6);
         gbc.anchor = GridBagConstraints.WEST;
 
-        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(codexCliPathField, gbc);
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        card.add(detectBtn, gbc);
+        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 3;
+        card.add(codexEnvStatusLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        gbc.fill = GridBagConstraints.NONE;
-        card.add(new JBLabel("Extra args:"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(codexExtraArgsField, gbc);
+        card.add(checkEnvBtn, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
-        gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
+        card.add(new JBLabel("API key (fallback):"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(codexKeyField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "Prompt is sent via <b>stdin</b> — no positional arg needed. Leave Extra args blank for most versions.<br>"
-            + "If your version supports it: <code>--approval-policy full-auto</code> (Rust CLI 2025+)<br>"
-            + "Auth: <code>codex auth</code> (ChatGPT OAuth) or set <code>OPENAI_API_KEY</code>"
+            + "<b>Uses OPENAI_API_KEY from your shell environment</b> — same key as codex auth.<br>"
+            + "Auth flow: run <code>codex auth</code> in a terminal (ChatGPT OAuth), or:<br>"
+            + "Add <code>export OPENAI_API_KEY=sk-...</code> to your <code>.zshrc</code> / <code>.bashrc</code><br>"
+            + "Or enter the key above (stored in PasswordSafe, used as fallback)."
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
@@ -344,25 +338,21 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     }
 
     private @NotNull JPanel buildClaudeCliCard() {
-        claudeCliPathField   = new JBTextField(30);
-        claudeCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
-        claudeModelField     = new JBTextField(20);
-        claudeModelField.getEmptyText().setText("e.g. claude-opus-4-5 (blank = CLI default)");
-        claudeExtraArgsField = new JBTextField(30);
-        claudeExtraArgsField.getEmptyText().setText("blank = --print  (non-interactive mode)");
+        claudeKeyField = new JPasswordField(30);
+        claudeModelField = new JBTextField(20);
+        claudeModelField.getEmptyText().setText("e.g. claude-opus-4-5 (blank = claude-3-5-sonnet)");
+        claudeEnvStatusLabel = new JBLabel();
 
-        JButton detectBtn = new JButton("Auto-detect");
-        detectBtn.addActionListener(ev -> {
-            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("claude");
-            if (found != null) {
-                claudeCliPathField.setText(found);
+        JButton checkEnvBtn = new JButton("Check ANTHROPIC_API_KEY");
+        checkEnvBtn.addActionListener(ev -> {
+            String val = com.github.prepushchecker.commitgen.CliPathResolver.resolveEnvVar("ANTHROPIC_API_KEY");
+            if (val != null && !val.isBlank()) {
+                claudeEnvStatusLabel.setText("✓ ANTHROPIC_API_KEY found in shell environment");
+                claudeEnvStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
             } else {
-                claudeCliPathField.setText("");
-                Messages.showInfoMessage(
-                    "claude not found on PATH.\n\n"
-                        + "Install: npm install -g @anthropic-ai/claude-code\n"
-                        + "Auth:    run 'claude' once in a terminal, or set ANTHROPIC_API_KEY",
-                    "Claude CLI Not Found");
+                claudeEnvStatusLabel.setText("✗ ANTHROPIC_API_KEY not set — see instructions below");
+                claudeEnvStatusLabel.setForeground(UIManager.getColor("Component.errorFocusColor") != null
+                    ? UIManager.getColor("Component.errorFocusColor") : java.awt.Color.RED.darker());
             }
         });
 
@@ -371,29 +361,28 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         gbc.insets = new Insets(3, 0, 3, 6);
         gbc.anchor = GridBagConstraints.WEST;
 
-        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(claudeCliPathField, gbc);
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        card.add(detectBtn, gbc);
+        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 3;
+        card.add(claudeEnvStatusLabel, gbc);
 
         gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        gbc.fill = GridBagConstraints.NONE;
+        card.add(checkEnvBtn, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
+        card.add(new JBLabel("API key (fallback):"), gbc);
+        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
+        card.add(claudeKeyField, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 1; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
         card.add(new JBLabel("Model:"), gbc);
         gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
         card.add(claudeModelField, gbc);
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
-        gbc.fill = GridBagConstraints.NONE;
-        card.add(new JBLabel("Extra args:"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(claudeExtraArgsField, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE;
-        gbc.weightx = 0;
+        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
         JBLabel hint = new JBLabel("<html><i>"
-            + "Install: <code>npm install -g @anthropic-ai/claude-code</code><br>"
-            + "Auth: run <code>claude</code> once in a terminal, or set <code>ANTHROPIC_API_KEY</code>"
+            + "<b>Uses ANTHROPIC_API_KEY from your shell environment</b> — same key as claude auth.<br>"
+            + "Auth: run <code>claude</code> in a terminal, or:<br>"
+            + "Add <code>export ANTHROPIC_API_KEY=sk-ant-...</code> to your <code>.zshrc</code> / <code>.bashrc</code><br>"
+            + "Or enter the key above (stored in PasswordSafe, used as fallback)."
             + "</i></html>");
         hint.setForeground(UIManager.getColor("Label.disabledForeground"));
         card.add(hint, gbc);
@@ -585,14 +574,10 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (!geminiModelField.getText().equals(s.geminiModel)) return true;
         if (!ollamaUrlField.getText().equals(s.ollamaBaseUrl)) return true;
         if (!ollamaModelField.getText().equals(s.ollamaModel)) return true;
-        if (!codexCliPathField.getText().equals(s.codexCliPath)) return true;
-        if (!codexExtraArgsField.getText().equals(s.codexExtraArgs)) return true;
         if (!ghCliPathField.getText().equals(s.ghCliPath)) return true;
         if (!llmCliPathField.getText().equals(s.llmCliPath)) return true;
         if (!llmModelField.getText().equals(s.llmModel)) return true;
-        if (!claudeCliPathField.getText().equals(s.claudeCliPath)) return true;
         if (!claudeModelField.getText().equals(s.claudeModel)) return true;
-        if (!claudeExtraArgsField.getText().equals(s.claudeExtraArgs)) return true;
         if (conventionalCommitsCheck.isSelected() != s.useConventionalCommits) return true;
         if ((int) maxLengthSpinner.getValue() != s.maxSubjectLength) return true;
         if (!prefixTemplateField.getText().equals(s.prefixTemplate)) return true;
@@ -616,17 +601,12 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.geminiModel    = geminiModelField.getText().trim();
         s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
         s.ollamaModel    = ollamaModelField.getText().trim();
-        s.codexCliPath   = codexCliPathField.getText().trim();
-        s.codexExtraArgs    = codexExtraArgsField.getText().trim();
+        // codex/claude keys persisted below with other PasswordSafe keys
         s.ghCliPath      = ghCliPathField.getText().trim();
         s.llmCliPath     = llmCliPathField.getText().trim();
         s.llmModel       = llmModelField.getText().trim();
-        s.claudeCliPath  = claudeCliPathField.getText().trim();
         s.claudeModel    = claudeModelField.getText().trim();
-        s.claudeExtraArgs = claudeExtraArgsField.getText().trim();
-        s.claudeCliPath  = claudeCliPathField.getText().trim();
         s.claudeModel    = claudeModelField.getText().trim();
-        s.claudeExtraArgs = claudeExtraArgsField.getText().trim();
 
         s.useConventionalCommits = conventionalCommitsCheck.isSelected();
         s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
@@ -645,6 +625,12 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
         String geminiKey = new String(geminiKeyField.getPassword());
         if (!geminiKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.GEMINI, geminiKey);
+
+        String codexKey = new String(codexKeyField.getPassword());
+        if (!codexKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.CODEX_CLI, codexKey);
+
+        String claudeCliKey = new String(claudeKeyField.getPassword());
+        if (!claudeCliKey.isBlank()) cfg.saveApiKey(CommitMessageProvider.Id.CLAUDE_CLI, claudeCliKey);
     }
 
     @Override
@@ -667,31 +653,31 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         geminiModelField.setText(s.geminiModel);
         ollamaUrlField.setText(s.ollamaBaseUrl);
         ollamaModelField.setText(s.ollamaModel);
-        codexCliPathField.setText(s.codexCliPath);
-        codexExtraArgsField.setText(s.codexExtraArgs);
         ghCliPathField.setText(s.ghCliPath);
         llmCliPathField.setText(s.llmCliPath);
         llmModelField.setText(s.llmModel);
-        claudeCliPathField.setText(s.claudeCliPath);
         claudeModelField.setText(s.claudeModel);
-        claudeExtraArgsField.setText(s.claudeExtraArgs);
-        claudeCliPathField.setText(s.claudeCliPath);
         claudeModelField.setText(s.claudeModel);
-        claudeExtraArgsField.setText(s.claudeExtraArgs);
 
         // Never pre-fill key fields — show placeholder text only
         openAiKeyField.setText("");
         anthropicKeyField.setText("");
         geminiKeyField.setText("");
+        codexKeyField.setText("");
+        claudeKeyField.setText("");
 
         boolean openAiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.OPENAI) != null;
         boolean anthropicHasKey = cfg.loadApiKey(CommitMessageProvider.Id.ANTHROPIC) != null;
         boolean geminiHasKey    = cfg.loadApiKey(CommitMessageProvider.Id.GEMINI) != null;
+        boolean codexHasKey     = cfg.loadApiKey(CommitMessageProvider.Id.CODEX_CLI) != null;
+        boolean claudeCliHasKey = cfg.loadApiKey(CommitMessageProvider.Id.CLAUDE_CLI) != null;
 
         openAiKeyField.putClientProperty("JPasswordField.cutCopyAllowed", true);
         if (openAiHasKey)    setPasswordPlaceholder(openAiKeyField, "•••••• (saved)");
         if (anthropicHasKey) setPasswordPlaceholder(anthropicKeyField, "•••••• (saved)");
         if (geminiHasKey)    setPasswordPlaceholder(geminiKeyField, "•••••• (saved)");
+        if (codexHasKey)     setPasswordPlaceholder(codexKeyField, "•••••• (saved)");
+        if (claudeCliHasKey) setPasswordPlaceholder(claudeKeyField, "•••••• (saved)");
 
         conventionalCommitsCheck.setSelected(s.useConventionalCommits);
         maxLengthSpinner.setValue(s.maxSubjectLength);
