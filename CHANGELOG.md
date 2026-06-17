@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.0]
+
+### Added
+- **AI Commit Message Generator.** Generates a ready-to-use git commit message from staged (or HEAD) diffs using any of six configurable AI providers:
+  - **JetBrains AI** — delegates to the AI Assistant plugin when installed.
+  - **OpenAI** — calls `gpt-4o` (or any configured model) via the Chat Completions API.
+  - **Anthropic** — calls Claude 3.5 Sonnet via the Messages API.
+  - **Google Gemini** — calls Gemini 1.5 Flash via the generateContent API.
+  - **Ollama** — calls a locally running Ollama server (default `localhost:11434`), no key needed.
+  - **Codex CLI** — shells out to the `codex` CLI tool; authenticate once with `codex auth` (ChatGPT account) or set `OPENAI_API_KEY`.
+- **Commit message rules.** All providers honour: Conventional Commits enforcement, max subject length, prefix/ticket template, language/tone, auto-detect scope from file paths, and a free-form extra-instructions field.
+- **PasswordSafe API key storage.** API keys are stored in IntelliJ's PasswordSafe and never serialised to the XML state file.
+- **Settings page.** Settings → Tools → *AI Commit Message Generator* with per-provider auth, model override, "Test Connection" button, and all rule options.
+- **Tool window button.** ⚡ *Generate Commit Message with AI* toolbar button added to the Compilation Checker panel.
+- **Commit dialog action.** *Generate Commit Message with AI* action in `Vcs.MessageActionGroup`, injecting the result directly into the commit message text area.
+- **Optional JetBrains AI soft dependency.** The plugin continues to work without the AI Assistant plugin; the `com.intellij.ml.llm` dependency is optional.
+
 ---
 
 ## [1.7.2]

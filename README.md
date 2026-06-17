@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-1.4.6-blue)
+![Version](https://img.shields.io/badge/version-1.8.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -30,6 +30,58 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
 - **Refresh action** — re-run the compilation check from within the push-block dialog without cancelling the push flow
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
+
+---
+
+## AI Commit Message Generator
+
+Generate a ready-to-use git commit message from your staged changes with a single click, powered by any of six AI providers.
+
+### Providers
+
+| Provider | Auth | Notes |
+|----------|------|-------|
+| **JetBrains AI** | IDE sign-in | Requires the AI Assistant plugin (`com.intellij.ml.llm`) |
+| **OpenAI** | API key | Calls `gpt-4o` (or any configured model) |
+| **Anthropic** | API key | Calls Claude 3.5 Sonnet |
+| **Google Gemini** | API key | Calls Gemini 1.5 Flash |
+| **Ollama** | None | Local model — `ollama serve` must be running |
+| **Codex CLI** | ChatGPT OAuth / API key | Run `codex auth` once, then the plugin calls `codex -q` |
+
+### Usage
+
+1. Open **Settings → Tools → AI Commit Message Generator** to choose a provider, enter your API key (stored securely in PasswordSafe), and configure commit message rules.
+2. In the **Compilation Checker** tool window, click the ⚡ **Generate Commit Message with AI** button.
+   *Or* open the Git Commit dialog and choose **Generate Commit Message with AI** from the commit message area action menu.
+3. The generated message is injected into the commit message field (commit dialog) or shown in a copy dialog (tool window).
+
+### Custom Rules
+
+| Rule | Default |
+|------|---------|
+| Conventional Commits format | ✓ enabled |
+| Max subject line length | 72 characters |
+| Prefix / ticket template | *(empty)* |
+| Language / tone | English, concise |
+| Auto-detect scope from file paths | ✓ enabled |
+| Extra instructions | *(empty)* |
+
+All rules are configurable per project in **Settings → Tools → AI Commit Message Generator**.
+
+### Project-level rules file (shared with your team)
+
+Place a markdown file at **`.github/commit-instructions.md`** (or `COMMIT_RULES.md` in the project root) and commit it to VCS. The plugin reads it at generation time and appends it to the AI system prompt — every developer on the team picks up the same rules automatically, with no IDE settings change required.
+
+```
+<project-root>/
+├── .github/
+│   └── commit-instructions.md   ← auto-detected (highest priority)
+└── COMMIT_RULES.md              ← auto-detected fallback
+```
+
+You can also specify a custom path in **Settings → Tools → AI Commit Message Generator → Rules file path**.
+
+A starter template is included at `.github/commit-instructions.md` in this repository.
 
 ---
 

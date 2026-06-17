@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.7.2</version>
+    <version>1.8.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -54,6 +54,34 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.0</h3>
+        <ul>
+            <li><b>AI Commit Message Generator:</b> generates ready-to-use git commit messages
+                from staged (or HEAD) diffs using your choice of AI provider. Accessible from
+                a new toolbar button in the Compilation Checker tool window and from the
+                <em>Vcs.MessageActionGroup</em> menu in the Git Commit dialog.</li>
+            <li><b>Six AI providers:</b>
+                <ul>
+                    <li><b>JetBrains AI</b> — uses the AI Assistant plugin when installed.</li>
+                    <li><b>OpenAI</b> — direct HTTPS call to <code>gpt-4o</code> (or any configured model).</li>
+                    <li><b>Anthropic</b> — Claude via the Anthropic Messages API.</li>
+                    <li><b>Google Gemini</b> — Gemini 1.5 Flash via the generateContent API.</li>
+                    <li><b>Ollama</b> — local model served at a configurable base URL (default <code>localhost:11434</code>).</li>
+                    <li><b>OpenAI Codex CLI</b> — shells out to the <code>codex</code> CLI tool,
+                        which authenticates via ChatGPT OAuth (<code>codex auth</code>) or
+                        <code>OPENAI_API_KEY</code>.</li>
+                </ul>
+            </li>
+            <li><b>Custom commit message rules:</b> Conventional Commits enforcement, max subject
+                length, prefix/ticket template, language/tone, auto-detect scope from file paths,
+                and a free-form extra-instructions field.</li>
+            <li><b>Secure key storage:</b> API keys are stored in IntelliJ's PasswordSafe and
+                never written to the plain-text XML settings file.</li>
+            <li><b>Settings page:</b> Settings → Tools → <em>AI Commit Message Generator</em>
+                with per-provider auth configuration, model override, a "Test Connection" button,
+                and all rule options.</li>
+        </ul>
+
         <h3>1.7.2</h3>
         <ul>
             <li><b>Consistent <code>.kts</code> handling:</b> Kotlin script files are now
@@ -363,6 +391,9 @@
     <depends>com.intellij.java</depends>
     <depends>Git4Idea</depends>
 
+    <!-- Optional soft dependency: JetBrains AI Assistant plugin -->
+    <depends optional="true" config-file="commitgen-intellij-ai.xml">com.intellij.ml.llm</depends>
+
     <extensions defaultExtensionNs="com.intellij">
         <prePushHandler implementation="com.github.prepushchecker.PrePushCompilationHandler"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$GitHookInstallerActivity"/>
@@ -373,6 +404,18 @@
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationWarmupService"/>
         <projectService serviceImplementation="com.github.prepushchecker.PrePushLocalServer"/>
+
+        <!-- AI Commit Message Generator -->
+        <applicationService
+            serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageSettings"/>
+        <projectService
+            serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageGeneratorService"/>
+        <applicationConfigurable
+            parentId="tools"
+            id="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
+            instance="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
+            displayName="AI Commit Message Generator"/>
+
         <registryKey key="prepushchecker.warmup.enabled"
                      defaultValue="true"
                      description="Run a debounced background compile of recently saved files so pre-push checks hit the cache and finish instantly."/>
@@ -387,6 +430,17 @@
                     factoryClass="com.github.prepushchecker.CompilationCheckerToolWindowFactory"
                     icon="/icons/toolWindowCompilation.svg"/>
     </extensions>
+
+    <actions>
+        <action id="CommitMessageGenerator.Generate"
+                class="com.github.prepushchecker.commitgen.GenerateCommitMessageAction"
+                text="Generate Commit Message with AI"
+                description="Generate a commit message from staged changes using the configured AI provider"
+                icon="AllIcons.Actions.Lightning">
+            <!-- Appears in the Vcs.MessageActionGroup (commit message area context) -->
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+        </action>
+    </actions>
 
     <applicationListeners>
         <listener class="com.github.prepushchecker.PluginLifecycleListener"

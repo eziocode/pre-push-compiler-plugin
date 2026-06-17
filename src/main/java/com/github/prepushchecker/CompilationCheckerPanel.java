@@ -1,5 +1,6 @@
 package com.github.prepushchecker;
 
+import com.github.prepushchecker.commitgen.CommitMessageGeneratorService;
 import com.intellij.notification.NotificationGroupManager;
 import com.intellij.notification.NotificationType;
 import com.intellij.icons.AllIcons;
@@ -68,6 +69,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         group.add(new RepairHooksAction());
         group.addSeparator();
         group.add(new ForceNextPushAction());
+        group.addSeparator();
+        group.add(new GenerateCommitMsgAction());
         group.addSeparator();
         group.add(new ReportAction());
         var toolbar = ActionManager.getInstance()
@@ -403,6 +406,65 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             String url = ISSUES_NEW_URL + "?title="
                 + URLEncoder.encode(title, StandardCharsets.UTF_8);
             BrowserUtil.browse(url);
+        }
+    }
+
+    private final class GenerateCommitMsgAction extends AnAction {
+
+        GenerateCommitMsgAction() {
+            super("Generate Commit Message with AI",
+                "Generate a commit message from staged changes using the configured AI provider",
+                AllIcons.Actions.Lightning);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            com.intellij.openapi.progress.ProgressManager.getInstance().run(
+                new com.intellij.openapi.progress.Task.Backgroundable(
+                        project, "Generating Commit Message with AI", false) {
+                    @Override
+                    public void run(
+                            @NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
+                        indicator.setIndeterminate(true);
+                        indicator.setText("Contacting AI provider…");
+                        try {
+                            String message =
+                                CommitMessageGeneratorService.getInstance(project).generate();
+                            String finalMessage = message;
+                            com.intellij.openapi.application.ApplicationManager
+                                .getApplication().invokeLater(() -> {
+                                    if (project.isDisposed()) return;
+                                    com.intellij.openapi.ui.Messages.showMultilineInputDialog(
+                                        project,
+                                        "Generated commit message (copy into your commit dialog):",
+                                        "Generated Commit Message",
+                                        finalMessage,
+                                        AllIcons.Actions.Lightning,
+                                        null);
+                                }, com.intellij.openapi.application.ModalityState.defaultModalityState());
+                        } catch (Exception ex) {
+                            com.intellij.openapi.application.ApplicationManager
+                                .getApplication().invokeLater(() -> {
+                                    if (project.isDisposed()) return;
+                                    String msg = ex.getMessage() != null
+                                        ? ex.getMessage()
+                                        : ex.getClass().getSimpleName();
+                                    NotificationGroupManager.getInstance()
+                                        .getNotificationGroup("Pre-Push Compilation Checker")
+                                        .createNotification(
+                                            "AI commit message generation failed",
+                                            msg,
+                                            NotificationType.WARNING)
+                                        .notify(project);
+                                }, com.intellij.openapi.application.ModalityState.defaultModalityState());
+                        }
+                    }
+                });
         }
     }
 }

@@ -1,0 +1,8 @@
+<idea-plugin>
+    <!--
+        This file is loaded only when the JetBrains AI Assistant plugin
+        (com.intellij.ml.llm) is installed and enabled.
+        Currently no additional extensions are needed — the IntelliJAiProvider
+        uses runtime reflection to locate the AI service.
+    -->
+</idea-plugin>

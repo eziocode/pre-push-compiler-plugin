@@ -4,3 +4,4 @@ build/
 *.class
 graphify-out/
 .graphify_cache/
+.github/commit-instructions.md
