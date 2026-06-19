@@ -4,6 +4,8 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vcs.changes.Change;
+import com.intellij.openapi.vcs.changes.ContentRevision;
 import git4idea.repo.GitRepository;
 import git4idea.repo.GitRepositoryManager;
 import org.jetbrains.annotations.NotNull;
@@ -14,7 +16,10 @@ import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -46,8 +51,20 @@ final class CommitMessagePromptBuilder {
     record Prompt(@NotNull String system, @NotNull String user) {}
 
     static @NotNull Prompt build(@NotNull Project project) throws Exception {
+        return build(project, Collections.emptyList());
+    }
+
+    /**
+     * Builds the prompt using only the {@code selectedChanges} (checked files in the
+     * commit panel). When {@code selectedChanges} is empty the diff falls back to all
+     * staged/unstaged changes, preserving the original "generate for everything" behaviour.
+     */
+    static @NotNull Prompt build(@NotNull Project project,
+                                 @NotNull List<Change> selectedChanges) throws Exception {
         flushOpenDocuments();
-        String diff = collectDiff(project);
+        String diff = selectedChanges.isEmpty()
+            ? collectDiff(project)
+            : collectDiffForChanges(project, selectedChanges);
         if (diff == null || diff.isBlank()) {
             throw new IllegalStateException(
                 "No staged or uncommitted changes found to generate a commit message from.\n"
@@ -120,6 +137,81 @@ final class CommitMessagePromptBuilder {
         String head = runGitInDir(basePath, "diff", "HEAD");
         if (head != null && !head.isBlank()) return head;
         return null;
+    }
+
+    /**
+     * Collects diff scoped to the given {@code selectedChanges} (the checked files in
+     * the commit panel). For each git repository, maps each change to a repo-relative
+     * path and runs {@code git diff} with those paths as operands. The staged →
+     * unstaged → HEAD fallback is preserved, just scoped to the selected paths.
+     */
+    @Nullable
+    private static String collectDiffForChanges(@NotNull Project project,
+                                                @NotNull List<Change> selectedChanges) throws Exception {
+        List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
+        if (!repos.isEmpty()) {
+            StringBuilder combined = new StringBuilder();
+            for (GitRepository repo : repos) {
+                appendDiffForChanges(combined, repo.getRoot().getPath(), selectedChanges);
+            }
+            if (!combined.toString().isBlank()) return combined.toString();
+        }
+
+        // Fallback: single-repo or non-git4idea context
+        String basePath = project.getBasePath();
+        if (basePath == null) return null;
+        StringBuilder sb = new StringBuilder();
+        appendDiffForChanges(sb, basePath, selectedChanges);
+        String result = sb.toString();
+        return result.isBlank() ? null : result;
+    }
+
+    /** Appends the scoped diff for {@code changes} in the repo rooted at {@code root}. */
+    private static void appendDiffForChanges(@NotNull StringBuilder combined,
+                                             @NotNull String root,
+                                             @NotNull List<Change> changes) {
+        List<String> paths = extractRelativePaths(root, changes);
+        if (paths.isEmpty()) return;
+
+        // 1. staged
+        String staged = runGitInDir(root, buildArgs(List.of("diff", "--cached", "--"), paths));
+        if (staged != null && !staged.isBlank()) { combined.append(staged); return; }
+
+        // 2. unstaged
+        String unstaged = runGitInDir(root, buildArgs(List.of("diff", "--"), paths));
+        if (unstaged != null && !unstaged.isBlank()) { combined.append(unstaged); return; }
+
+        // 3. HEAD (handles initial-commit edge case)
+        String head = runGitInDir(root, buildArgs(List.of("diff", "HEAD", "--"), paths));
+        if (head != null && !head.isBlank()) combined.append(head);
+    }
+
+    /**
+     * Returns paths of {@code changes} that belong to the repo at {@code root},
+     * expressed relative to that root (as expected by git on the command line).
+     */
+    private static @NotNull List<String> extractRelativePaths(@NotNull String root,
+                                                               @NotNull List<Change> changes) {
+        Path rootPath = Path.of(root);
+        return changes.stream()
+            .map(change -> {
+                ContentRevision rev = change.getAfterRevision() != null
+                    ? change.getAfterRevision()
+                    : change.getBeforeRevision();
+                if (rev == null) return null;
+                Path filePath = Path.of(rev.getFile().getPath());
+                if (!filePath.startsWith(rootPath)) return null;
+                return rootPath.relativize(filePath).toString();
+            })
+            .filter(Objects::nonNull)
+            .collect(Collectors.toList());
+    }
+
+    /** Concatenates {@code prefix} and {@code suffix} into a single {@code String[]}. */
+    private static String[] buildArgs(@NotNull List<String> prefix, @NotNull List<String> suffix) {
+        List<String> all = new ArrayList<>(prefix);
+        all.addAll(suffix);
+        return all.toArray(new String[0]);
     }
 
     // ── System prompt ─────────────────────────────────────────────────────────

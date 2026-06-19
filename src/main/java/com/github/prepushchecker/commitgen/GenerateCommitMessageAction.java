@@ -13,10 +13,14 @@ import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.vcs.commit.CommitWorkflowUi;
 import com.intellij.openapi.vcs.VcsDataKeys;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Action that generates a commit message for the current git diff using the
@@ -62,6 +66,12 @@ public final class GenerateCommitMessageAction extends AnAction {
         // Capture the commit workflow UI from the action context (commit dialog)
         CommitWorkflowUi commitWorkflowUi = getCommitWorkflowUi(e);
 
+        // Respect the file-level checkboxes: only generate for the checked files.
+        // Fall back to all changes when no specific files are selected (empty list).
+        List<Change> includedChanges = commitWorkflowUi != null
+            ? commitWorkflowUi.getIncludedChanges()
+            : Collections.emptyList();
+
         ProgressManager.getInstance().run(
             new Task.Backgroundable(project, "Generating Commit Message with AI", false) {
                 @Override
@@ -70,7 +80,7 @@ public final class GenerateCommitMessageAction extends AnAction {
                     indicator.setText("Contacting AI provider…");
                     try {
                         String message =
-                            CommitMessageGeneratorService.getInstance(project).generate();
+                            CommitMessageGeneratorService.getInstance(project).generate(includedChanges);
                         String finalMessage = message;
                         ApplicationManager.getApplication().invokeLater(() -> {
                             if (project.isDisposed()) return;

@@ -3,7 +3,11 @@ package com.github.prepushchecker.commitgen;
 import com.github.prepushchecker.commitgen.providers.*;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.vcs.changes.Change;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Project-level service that orchestrates commit message generation.
@@ -30,7 +34,17 @@ public final class CommitMessageGeneratorService {
      * @throws Exception on diff failure, auth error, or API error
      */
     public @NotNull String generate() throws Exception {
-        CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.build(project);
+        return generate(Collections.emptyList());
+    }
+
+    /**
+     * Generates a commit message using only the {@code selectedChanges} (the checked
+     * files in IntelliJ's Commit panel). Pass an empty list to use all staged/unstaged
+     * changes (same as {@link #generate()}).
+     */
+    public @NotNull String generate(@NotNull List<Change> selectedChanges) throws Exception {
+        CommitMessagePromptBuilder.Prompt prompt =
+            CommitMessagePromptBuilder.build(project, selectedChanges);
         CommitMessageProvider provider = resolveProvider();
         return provider.generate(prompt.system(), prompt.user());
     }
