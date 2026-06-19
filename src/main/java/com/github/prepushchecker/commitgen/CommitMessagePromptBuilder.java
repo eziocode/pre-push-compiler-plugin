@@ -80,7 +80,12 @@ final class CommitMessagePromptBuilder {
                 + MAX_DIFF_CHARS + " chars shown]";
         }
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return new Prompt(buildSystemPrompt(project, s), "Git diff:\n```\n" + diff + "\n```");
+        String branch = resolveBranchName(project);
+        String branchContext = (branch != null && !branch.isBlank() && !branch.equals("HEAD"))
+            ? "Current branch: " + branch + "\n\n"
+            : "";
+        return new Prompt(buildSystemPrompt(project, s, branch),
+            branchContext + "Git diff:\n```\n" + diff + "\n```");
     }
 
     // ── Diff collection ───────────────────────────────────────────────────────
@@ -219,6 +224,13 @@ final class CommitMessagePromptBuilder {
     @NotNull
     static String buildSystemPrompt(@NotNull Project project,
                                     @NotNull CommitMessageSettings.State s) {
+        return buildSystemPrompt(project, s, resolveBranchName(project));
+    }
+
+    @NotNull
+    static String buildSystemPrompt(@NotNull Project project,
+                                    @NotNull CommitMessageSettings.State s,
+                                    @Nullable String currentBranch) {
         StringBuilder sb = new StringBuilder();
         sb.append("You are a commit message writer. ")
           .append("Generate a single, ready-to-use git commit message for the provided diff. ")
@@ -233,7 +245,15 @@ final class CommitMessagePromptBuilder {
             sb.append("Keep the subject line under ").append(s.maxSubjectLength).append(" characters.\n");
         }
         if (!s.prefixTemplate.isBlank()) {
-            sb.append("Prepend every commit subject with: ").append(s.prefixTemplate).append("\n");
+            String prefix = s.prefixTemplate;
+            if (prefix.contains("{branch}")) {
+                String branch = (currentBranch != null && !currentBranch.isBlank()
+                    && !currentBranch.equals("HEAD")) ? currentBranch : "";
+                prefix = prefix.replace("{branch}", branch);
+            }
+            if (!prefix.isBlank()) {
+                sb.append("Prepend every commit subject with: ").append(prefix).append("\n");
+            }
         }
         if (!s.language.isBlank()) {
             sb.append("Write in ").append(s.language).append(".\n");
@@ -254,6 +274,29 @@ final class CommitMessagePromptBuilder {
               .append(mdRules.trim()).append("\n");
         }
         return sb.toString().trim();
+    }
+
+    // ── Branch resolution ─────────────────────────────────────────────────────
+
+    /**
+     * Returns the short name of the currently checked-out branch (e.g. {@code feature/PROJ-123}).
+     * Returns {@code null} when the HEAD is detached, the project has no git repository,
+     * or the branch name cannot be determined.
+     */
+    @Nullable
+    static String resolveBranchName(@NotNull Project project) {
+        // Primary: git4idea repository manager (handles multi-root projects)
+        List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
+        if (!repos.isEmpty()) {
+            var branch = repos.get(0).getCurrentBranch();
+            if (branch != null) return branch.getName();
+        }
+        // Fallback: git subprocess (non-git4idea contexts, e.g. test sandbox)
+        String basePath = project.getBasePath();
+        if (basePath == null) return null;
+        String name = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "HEAD");
+        if (name == null || name.isBlank() || name.equals("HEAD")) return null;
+        return name.trim();
     }
 
     // ── Rules file ────────────────────────────────────────────────────────────
