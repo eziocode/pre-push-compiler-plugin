@@ -1,9 +1,11 @@
 package com.github.prepushchecker.commitgen;
 
+import com.github.prepushchecker.ProcessExecution;
 import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.Credentials;
 import com.intellij.ide.passwordSafe.PasswordSafe;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBLabel;
 import org.jetbrains.annotations.NotNull;
@@ -12,14 +14,13 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.*;
 import java.awt.*;
 import java.awt.datatransfer.StringSelection;
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.IOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 /**
  * Manages ChatGPT authentication for the Codex provider.
@@ -40,6 +41,7 @@ import java.util.stream.Collectors;
  */
 public final class ChatGPTOAuthFlow {
 
+    private static final Logger LOG = Logger.getInstance(ChatGPTOAuthFlow.class);
     private static final String CRED_SERVICE = "PrePushChecker.ChatGPTManualKey";
     private static final String CRED_KEY     = "manual_api_key";
 
@@ -76,16 +78,18 @@ public final class ChatGPTOAuthFlow {
                 ProcessBuilder pb = new ProcessBuilder(codexPath, "login", "status");
                 pb.redirectErrorStream(true);
                 CliPathResolver.injectAugmentedPath(pb);
-                Process proc = pb.start();
-                String out;
-                try (BufferedReader r = new BufferedReader(
-                        new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                    out = r.lines().collect(Collectors.joining(" ")).trim();
+                ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(8));
+                String out = result.combinedOutput().trim();
+                if (result.timedOut()) {
+                    LOG.debug("Timed out checking Codex login status.");
                 }
-                boolean done = proc.waitFor(8, TimeUnit.SECONDS);
-                if (!done) proc.destroyForcibly();
                 if (!out.isBlank()) return out; // e.g. "Logged in using ChatGPT"
-            } catch (Exception ignored) {}
+            } catch (IOException e) {
+                LOG.debug("Could not check Codex login status.", e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                LOG.debug("Interrupted while checking Codex login status.", e);
+            }
         }
 
         // 2. Check ~/.codex/auth.json

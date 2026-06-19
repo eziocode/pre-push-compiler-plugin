@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.2]
+
+### Fixed
+
+- **Branch-specific prefix not applied in AI commit message generator.**
+  The `{branch}` placeholder in the *Prefix / ticket template* setting was never resolved —
+  the raw token `{branch}` was sent verbatim to the AI, which either echoed it or silently
+  dropped the instruction. The generator now reads the current branch name via
+  `GitRepositoryManager` (with a `git rev-parse --abbrev-ref HEAD` subprocess fallback) and
+  substitutes the placeholder before building the prompt.
+  Degrades gracefully to an empty string on detached HEAD.
+
+- **AI ignores branch gate in Decision Tree rule files — wrong prefix selected.**
+  When a rules file (`.github/commit-instructions.md` / `COMMIT_RULES.md`) contains a
+  Decision Tree with a branch gate (e.g. "default branch → `ISSUEFIX:`, feature branch →
+  `TESTCASE:`"), the AI was producing the wrong prefix (`TESTCASE:`, `REFACTOR:`) even on
+  the default branch. Root causes fixed:
+  - The rules file is now placed **at the top** of the system prompt so it is evaluated
+    before any other instruction, and a `=== … OVERRIDE all generic guidance ===` header
+    makes its precedence explicit.
+  - The generic Conventional Commits type list (`feat, fix, refactor, test, …`) is now
+    **suppressed** when a rules file is present — it was the primary cause of the wrong
+    prefix because the AI pattern-matched diff content to those generic types before
+    applying the branch gate.
+  - A `CRITICAL ENFORCEMENT` directive is injected immediately after the rules file content,
+    naming the current branch and mandating step-by-step execution of the Decision Tree.
+  - Staged file paths are extracted from the diff and listed as `Staged files:` in the user
+    prompt so the AI can evaluate file-type steps (doc vs. non-doc) without parsing the
+    full diff body.
+
+- **AI unaware of current branch when applying rule-file prefix rules.**
+  The system prompt previously contained no branch context, so branch-specific instructions
+  could not be honoured. The user prompt now includes `Current branch: <name>` and the
+  system prompt includes the branch in the enforcement directive.
+
+### Changed
+
+- **`.github/commit-instructions.md`** — added *Branch-specific prefix* and
+  *Decision Tree support* sections documenting the `{branch}` placeholder, prompt
+  structure, and enforcement behaviour.
+
+---
+
 ## [1.8.1]
 
 ### Added

@@ -55,6 +55,10 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("if [ $rc -ne 0 ] && suppression_hard_gate_allows \"$TMP_OUT\" \"$TMP_REC\"; then"));
         assertFalse(script.contains("project_uses_lombok && all_error_records_safe_generated_symbols"));
         assertTrue(script.contains("Build-tool fallback reported only safe generated-symbol records outside pushed files"));
+        assertTrue(script.contains("STASH_RESTORE_FAILED=1"));
+        assertTrue(script.contains("stash restore failed. Your changes are still saved in the stash."));
+        assertFalse(script.contains("git checkout -- ."));
+        assertFalse(script.contains("git clean -fd"));
     }
 
     public void testManagedHookContainsSelfCleanup() {

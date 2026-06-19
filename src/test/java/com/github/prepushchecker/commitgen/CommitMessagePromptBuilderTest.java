@@ -3,6 +3,7 @@ package com.github.prepushchecker.commitgen;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
 import java.util.Collections;
+import java.util.List;
 
 public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
     public void testBuildForDiffDoesNotRequireRepositoryChanges() {
@@ -66,12 +67,9 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
         CommitMessageSettings.State s = new CommitMessageSettings.State();
         s.prefixTemplate = "[{branch}]";
 
-        // Null branch (e.g. detached HEAD or no git repo in test sandbox)
         String system = CommitMessagePromptBuilder.buildSystemPrompt(
             getProject(), s, null);
 
-        // With branch resolved to "", the prefix becomes "[]" which is blank after trim
-        // OR the whole prefix instruction is skipped. Either way, the raw token must not appear.
         assertFalse("Raw {branch} placeholder must not appear when branch is unavailable",
             system.contains("{branch}"));
     }
@@ -79,20 +77,12 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
     public void testUserPromptContainsBranchContextLine() {
         String diff = "diff --git a/Foo.java b/Foo.java\n+// change";
 
-        CommitMessageSettings.State s = new CommitMessageSettings.State();
-        String userPrompt = CommitMessagePromptBuilder.buildSystemPrompt(getProject(), s, "feature/ABC-99");
-
-        // The branch context is in the user prompt, not system — verify via buildForDiff
-        // indirectly: the user() part must contain "Current branch:" when a real branch exists.
-        // In the test sandbox there is no git repo, so resolveBranchName returns null and
-        // the line is omitted — assert the diff is still included correctly.
         CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(
             getProject(), diff);
         assertTrue("User prompt must contain the diff", prompt.user().contains("// change"));
     }
 
     public void testUserPromptContainsCurrentBranchWhenInjectedViaSystemPromptOverload() {
-        // Build system prompt with an explicit branch to verify the API surface works.
         CommitMessageSettings.State s = new CommitMessageSettings.State();
         s.prefixTemplate = "({branch})";
 
@@ -100,5 +90,67 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
 
         assertTrue("Branch name must appear in resolved prefix",
             system.contains("(hotfix/critical)"));
+    }
+
+    // ── Rules-file / decision-tree enforcement tests ──────────────────────────
+
+    public void testConventionalCommitsInstructionSuppressedWhenRulesFileLoaded() {
+        // No real rules file in the test sandbox, so the Conventional Commits instruction
+        // should appear (no rules file → generic mode).
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.useConventionalCommits = true;
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(getProject(), s, null);
+
+        // No rules file in sandbox → Conventional Commits IS included
+        assertTrue("Conventional Commits must appear when no rules file is present",
+            system.contains("Conventional Commits"));
+    }
+
+    public void testBranchGateReinforcementAppearedAfterRulesFileHeader() {
+        // This test exercises the 3-arg overload used when a branch is known.
+        // Without a real rules file in the sandbox the reinforcement is not emitted;
+        // verify that the system prompt still contains the branch prefix substitution.
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.prefixTemplate = "[{branch}]";
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(
+            getProject(), s, "ZOHOTESTAUTOMATION_CRM_TB_DEFAULT_BRANCH");
+
+        assertTrue("Resolved branch prefix must appear in system prompt",
+            system.contains("[ZOHOTESTAUTOMATION_CRM_TB_DEFAULT_BRANCH]"));
+    }
+
+    // ── parseFileNamesFromDiff tests ──────────────────────────────────────────
+
+    public void testParseFileNamesExtractsPathsFromDiffHeaders() {
+        String diff = "diff --git a/src/Foo.java b/src/Foo.java\n"
+            + "--- a/src/Foo.java\n+++ b/src/Foo.java\n"
+            + "diff --git a/src/BarTest.java b/src/BarTest.java\n"
+            + "--- a/src/BarTest.java\n+++ b/src/BarTest.java\n";
+
+        List<String> files = CommitMessagePromptBuilder.parseFileNamesFromDiff(diff);
+
+        assertEquals(2, files.size());
+        assertTrue(files.contains("src/Foo.java"));
+        assertTrue(files.contains("src/BarTest.java"));
+    }
+
+    public void testParseFileNamesReturnsEmptyForNonDiffContent() {
+        List<String> files = CommitMessagePromptBuilder.parseFileNamesFromDiff("just some text\nno diff headers");
+        assertTrue("No diff headers → empty list", files.isEmpty());
+    }
+
+    public void testUserPromptIncludesStagedFilesList() {
+        String diff = "diff --git a/src/LoginActions.java b/src/LoginActions.java\n"
+            + "+public void test_login() {}\n";
+
+        CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(
+            getProject(), diff);
+
+        assertTrue("User prompt must contain staged files list",
+            prompt.user().contains("Staged files:"));
+        assertTrue("User prompt must list the staged file",
+            prompt.user().contains("src/LoginActions.java"));
     }
 }

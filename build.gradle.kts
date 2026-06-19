@@ -1,7 +1,7 @@
 plugins {
     id("java")
     kotlin("jvm") version "1.9.25"
-    id("org.jetbrains.intellij") version "1.17.4"
+    id("org.jetbrains.intellij.platform") version "2.16.0"
 }
 
 group = providers.gradleProperty("pluginGroup").get()
@@ -9,13 +9,22 @@ version = providers.gradleProperty("pluginVersion").get()
 
 repositories {
     mavenCentral()
+    intellijPlatform {
+        defaultRepositories()
+    }
 }
 
-intellij {
-    pluginName.set(providers.gradleProperty("pluginName").get())
-    type.set(providers.gradleProperty("platformType").get())
-    version.set(providers.gradleProperty("platformVersion").get())
-    plugins.set(listOf("vcs-git", "java"))
+dependencies {
+    intellijPlatform {
+        create(
+            providers.gradleProperty("platformType"),
+            providers.gradleProperty("platformVersion")
+        )
+        bundledPlugin("Git4Idea")
+        bundledPlugin("com.intellij.java")
+        testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
+    }
+    testImplementation("junit:junit:4.13.2")
 }
 
 tasks {
@@ -31,19 +40,25 @@ tasks {
         }
     }
 
-    patchPluginXml {
-        version.set(providers.gradleProperty("pluginVersion").get())
-        sinceBuild.set("233")
-        untilBuild.set("")
+}
+
+intellijPlatform {
+    pluginConfiguration {
+        name = providers.gradleProperty("pluginName")
+        version = providers.gradleProperty("pluginVersion")
+        ideaVersion {
+            sinceBuild = "233"
+            untilBuild = provider { null }
+        }
     }
 
-    signPlugin {
-        certificateChain.set(System.getenv("CERTIFICATE_CHAIN") ?: "")
-        privateKey.set(System.getenv("PRIVATE_KEY") ?: "")
-        password.set(System.getenv("PRIVATE_KEY_PASSWORD") ?: "")
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
     }
 
-    publishPlugin {
-        token.set(System.getenv("PUBLISH_TOKEN") ?: "")
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
     }
 }

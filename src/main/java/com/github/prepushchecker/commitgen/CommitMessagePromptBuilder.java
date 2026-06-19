@@ -81,11 +81,20 @@ final class CommitMessagePromptBuilder {
         }
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String branch = resolveBranchName(project);
-        String branchContext = (branch != null && !branch.isBlank() && !branch.equals("HEAD"))
-            ? "Current branch: " + branch + "\n\n"
-            : "";
-        return new Prompt(buildSystemPrompt(project, s, branch),
-            branchContext + "Git diff:\n```\n" + diff + "\n```");
+
+        StringBuilder user = new StringBuilder();
+        if (branch != null && !branch.isBlank() && !branch.equals("HEAD")) {
+            user.append("Current branch: ").append(branch).append("\n\n");
+        }
+        List<String> files = parseFileNamesFromDiff(diff);
+        if (!files.isEmpty()) {
+            user.append("Staged files:\n");
+            files.forEach(f -> user.append("- ").append(f).append("\n"));
+            user.append("\n");
+        }
+        user.append("Git diff:\n```\n").append(diff).append("\n```");
+
+        return new Prompt(buildSystemPrompt(project, s, branch), user.toString());
     }
 
     // ── Diff collection ───────────────────────────────────────────────────────
@@ -236,7 +245,30 @@ final class CommitMessagePromptBuilder {
           .append("Generate a single, ready-to-use git commit message for the provided diff. ")
           .append("Return ONLY the commit message text — no explanations, no markdown fences, no surrounding quotes.\n\n");
 
-        if (s.useConventionalCommits) {
+        // ── Project rules (loaded first so they take highest priority) ──────────
+        String mdRules = loadMarkdownRules(project, s.customRulesFilePath);
+        boolean hasCustomRules = mdRules != null && !mdRules.isBlank();
+
+        if (hasCustomRules) {
+            String fileName = resolvedRuleFileName(project, s.customRulesFilePath);
+            sb.append("=== Project commit rules (from ")
+              .append(fileName != null ? fileName : "rules file")
+              .append(") — these rules OVERRIDE all generic guidance below ===\n")
+              .append(mdRules.trim()).append("\n")
+              .append("=== End of project commit rules ===\n\n");
+
+            // Enforce the branch gate when the rules contain a Decision Tree
+            if (currentBranch != null && !currentBranch.isBlank() && !currentBranch.equals("HEAD")) {
+                sb.append("CRITICAL ENFORCEMENT: The current branch is '")
+                  .append(currentBranch)
+                  .append("'. You MUST execute the Decision Tree above step-by-step, ")
+                  .append("beginning with Step 0 (Branch gate), before choosing any prefix. ")
+                  .append("Do not skip steps. The branch gate is a HARD GATE — evaluate it first.\n\n");
+            }
+        }
+
+        // ── Generic fallback instructions (ignored when rules file is present) ──
+        if (s.useConventionalCommits && !hasCustomRules) {
             sb.append("REQUIRED: Follow the Conventional Commits spec: ")
               .append("<type>(<optional scope>): <subject>. ")
               .append("Allowed types: feat, fix, refactor, docs, test, chore, style, perf, ci, build, revert.\n");
@@ -258,21 +290,13 @@ final class CommitMessagePromptBuilder {
         if (!s.language.isBlank()) {
             sb.append("Write in ").append(s.language).append(".\n");
         }
-        if (s.autoDetectScope) {
+        if (s.autoDetectScope && !hasCustomRules) {
             sb.append("Auto-detect the scope from the changed file paths (e.g. the module or package name).\n");
         }
         if (!s.extraInstructions.isBlank()) {
             sb.append("Additional instructions: ").append(s.extraInstructions).append("\n");
         }
 
-        String mdRules = loadMarkdownRules(project, s.customRulesFilePath);
-        if (mdRules != null && !mdRules.isBlank()) {
-            String fileName = resolvedRuleFileName(project, s.customRulesFilePath);
-            sb.append("\n--- Project commit rules (from ")
-              .append(fileName != null ? fileName : "rules file")
-              .append(") ---\n")
-              .append(mdRules.trim()).append("\n");
-        }
         return sb.toString().trim();
     }
 
@@ -297,6 +321,28 @@ final class CommitMessagePromptBuilder {
         String name = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "HEAD");
         if (name == null || name.isBlank() || name.equals("HEAD")) return null;
         return name.trim();
+    }
+
+    /**
+     * Parses the file paths touched by the diff from {@code diff --git a/X b/X} header lines.
+     * Used to surface a concise "Staged files:" list in the user prompt so the AI can
+     * evaluate decision-tree steps without scanning the full diff body.
+     */
+    @NotNull
+    static List<String> parseFileNamesFromDiff(@NotNull String diff) {
+        List<String> files = new ArrayList<>();
+        for (String line : diff.split("\n")) {
+            if (line.startsWith("diff --git ")) {
+                // "diff --git a/path/to/file.java b/path/to/file.java"
+                // Use the b/ path (after-side); handles renames gracefully.
+                int bIdx = line.lastIndexOf(" b/");
+                if (bIdx != -1) {
+                    String path = line.substring(bIdx + 3).trim();
+                    if (!path.isEmpty()) files.add(path);
+                }
+            }
+        }
+        return files;
     }
 
     // ── Rules file ────────────────────────────────────────────────────────────
