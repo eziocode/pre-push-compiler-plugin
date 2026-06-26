@@ -10,6 +10,7 @@ import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessage;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
+import com.intellij.openapi.ide.CopyPasteManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.module.Module;
@@ -32,6 +33,7 @@ import com.intellij.problems.WolfTheProblemSolver;
 import com.intellij.vcs.log.VcsFullCommitDetails;
 import org.jetbrains.annotations.NotNull;
 
+import java.awt.datatransfer.StringSelection;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -74,7 +76,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             PushChangeSet changeSet = collectRelevantChanges(pushDetails, indicator);
             if (!changeSet.hasRelevantChanges()) {
                 LOG.info("Skipping pre-push compilation check because no source/build files are affected.");
-                return Result.OK;
+                return okWithClipboard(project, pushDetails);
             }
 
             // Optional: fetch each root and prompt to rebase if the remote is ahead,
@@ -109,7 +111,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 );
                 if (outcome == DialogOutcome.PUSH_ANYWAY) {
                     PrePushCheckerSettings.setForcePushBypass(project);
-                    return Result.OK;
+                    return okWithClipboard(project, pushDetails);
                 }
                 if (outcome != DialogOutcome.RESOLVED) return Result.ABORT;
             }
@@ -145,14 +147,14 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 );
                 if (outcome == DialogOutcome.PUSH_ANYWAY) {
                     PrePushCheckerSettings.setForcePushBypass(project);
-                    return Result.OK;
+                    return okWithClipboard(project, pushDetails);
                 }
                 if (outcome == DialogOutcome.RESOLVED) errorService.setErrors(Collections.emptyList());
-                return outcome == DialogOutcome.RESOLVED ? Result.OK : Result.ABORT;
+                return outcome == DialogOutcome.RESOLVED ? okWithClipboard(project, pushDetails) : Result.ABORT;
             }
 
             errorService.setErrors(Collections.emptyList());
-            return Result.OK;
+            return okWithClipboard(project, pushDetails);
         } catch (ProcessCanceledException ignored) {
             LOG.info("Pre-push compilation check canceled.");
             return Result.ABORT;
@@ -1096,6 +1098,40 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return changeSet.requiresProjectBuild()
             ? compileProject(project, indicator)
             : compileFiles(project, changeSet.getSourceFiles(), indicator);
+    }
+
+    private static Result okWithClipboard(
+        @NotNull Project project,
+        @NotNull List<PushInfo> pushDetails
+    ) {
+        copyHeadShaToClipboard(project, pushDetails);
+        return Result.OK;
+    }
+
+    private static void copyHeadShaToClipboard(
+        @NotNull Project project,
+        @NotNull List<PushInfo> pushDetails
+    ) {
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            String sha = null;
+            outer:
+            for (PushInfo info : pushDetails) {
+                for (VcsFullCommitDetails commit : info.getCommits()) {
+                    VirtualFile root = commit.getRoot();
+                    if (root != null) {
+                        sha = GitOperations.headSha(root.getPath());
+                        if (sha != null) break outer;
+                    }
+                }
+            }
+            if (sha == null) return;
+            final String commitSha = sha;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                CopyPasteManager.getInstance().setContents(new StringSelection(commitSha));
+                notify(project, "Commit SHA Copied", commitSha,
+                    com.intellij.notification.NotificationType.INFORMATION);
+            });
+        });
     }
 
     private static void notify(
