@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.3]
+
+### Added
+
+- **Commit SHA auto-copied to clipboard after push.**
+  Every time the pre-push check passes and the push is allowed, the full 40-character
+  HEAD commit SHA is automatically written to the system clipboard. A balloon notification
+  *"Commit SHA Copied"* confirms the action in the IDE — the SHA is immediately ready to
+  paste into a PR description, ticket, Slack message, or anywhere else.
+  Covers all push-allowed paths: clean compile pass, IDE-problems overridden with
+  "Push Anyway", errors resolved, and no-source-change pushes.
+
+---
+
 ## [1.8.2]
 
 ### Fixed
