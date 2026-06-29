@@ -20,6 +20,18 @@ final class PrePushCheckerSettings {
         "prepushchecker.buildToolFallback.disabled";
     private static final String REBASE_PRECHECK_KEY =
         "prepushchecker.rebasePrecheck.enabled";
+    private static final String COPY_SHA_ENABLED_KEY =
+        "prepushchecker.copyCommitSha.enabled";
+    private static final String COPY_SHA_FORMAT_KEY =
+        "prepushchecker.copyCommitSha.format";
+    private static final String COPY_SHA_TRIGGER_KEY =
+        "prepushchecker.copyCommitSha.trigger";
+
+    /** Full 40-character SHA or the standard 7-character abbreviated form. */
+    enum ShaFormat { FULL, SHORT }
+
+    /** When the commit SHA should be auto-copied to the clipboard. */
+    enum ShaTrigger { AFTER_PUSH, AFTER_COMMIT }
 
     private static final String BYPASS_TOKEN_NAME = "bypass-token";
     private static final long BYPASS_TOKEN_MAX_AGE_MS = 60 * 60 * 1000L; // 1 hour
@@ -72,6 +84,43 @@ final class PrePushCheckerSettings {
     static void setRebasePrecheckEnabled(@NotNull Project project, boolean enabled) {
         PropertiesComponent.getInstance(project)
             .setValue(REBASE_PRECHECK_KEY, enabled, false);
+    }
+
+    /** Returns {@code true} if the auto-copy-SHA feature is active (default {@code true}). */
+    static boolean isCopyCommitShaEnabled(@NotNull Project project) {
+        return PropertiesComponent.getInstance(project)
+            .getBoolean(COPY_SHA_ENABLED_KEY, true);
+    }
+
+    static void setCopyCommitShaEnabled(@NotNull Project project, boolean enabled) {
+        PropertiesComponent.getInstance(project)
+            .setValue(COPY_SHA_ENABLED_KEY, enabled, true);
+    }
+
+    /** Returns the SHA format to copy — {@link ShaFormat#FULL} by default. */
+    static @NotNull ShaFormat getCopyCommitShaFormat(@NotNull Project project) {
+        String val = PropertiesComponent.getInstance(project)
+            .getValue(COPY_SHA_FORMAT_KEY, ShaFormat.FULL.name());
+        try { return ShaFormat.valueOf(val); }
+        catch (IllegalArgumentException ignored) { return ShaFormat.FULL; }
+    }
+
+    static void setCopyCommitShaFormat(@NotNull Project project, @NotNull ShaFormat format) {
+        PropertiesComponent.getInstance(project)
+            .setValue(COPY_SHA_FORMAT_KEY, format.name());
+    }
+
+    /** Returns when to copy — {@link ShaTrigger#AFTER_PUSH} by default. */
+    static @NotNull ShaTrigger getCopyCommitShaTrigger(@NotNull Project project) {
+        String val = PropertiesComponent.getInstance(project)
+            .getValue(COPY_SHA_TRIGGER_KEY, ShaTrigger.AFTER_PUSH.name());
+        try { return ShaTrigger.valueOf(val); }
+        catch (IllegalArgumentException ignored) { return ShaTrigger.AFTER_PUSH; }
+    }
+
+    static void setCopyCommitShaTrigger(@NotNull Project project, @NotNull ShaTrigger trigger) {
+        PropertiesComponent.getInstance(project)
+            .setValue(COPY_SHA_TRIGGER_KEY, trigger.name());
     }
 
     /**

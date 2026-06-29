@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.3</version>
+    <version>1.8.4</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,21 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.4 — Configurable clipboard SHA settings</h3>
+
+        <h4>Added</h4>
+        <ul>
+            <li><b>SHA format choice:</b> the Compilation Checker settings panel now has
+                <em>Full SHA (40 chars)</em> / <em>Short SHA (7 chars)</em> radio buttons so
+                you can choose which form is copied to the clipboard.</li>
+            <li><b>Copy trigger choice:</b> <em>After Push</em> (previous default) or
+                <em>After Commit</em> — when set to "After Commit", the SHA is copied
+                immediately after a successful IDE commit, before the push step.</li>
+            <li><b>Enable / disable toggle:</b> a new "Copy commit SHA to clipboard
+                automatically" checkbox lets you turn the whole feature off without losing
+                your format/trigger preferences.</li>
+        </ul>
+
         <h3>1.8.3 — Copy commit SHA to clipboard after push</h3>
 
         <h4>Added</h4>
@@ -513,6 +528,7 @@
             instance="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
             displayName="Pre-Push Checker — AI Commit Message Generator"/>
 
+        <checkinHandlerFactory implementation="com.github.prepushchecker.CommitShaClipboardCheckinHandler"/>
         <registryKey key="prepushchecker.warmup.enabled"
                      defaultValue="true"
                      description="Run a debounced background compile of recently saved files so pre-push checks hit the cache and finish instantly."/>

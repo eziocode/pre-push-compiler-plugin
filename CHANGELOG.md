@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.4]
+
+### Added
+
+- **Configurable clipboard SHA settings.** The Compilation Checker settings panel now exposes three options for the auto-copy feature introduced in 1.8.3:
+  - **Enable / disable** — "Copy commit SHA to clipboard automatically" checkbox (default: on). Unchecking it disables the feature entirely while preserving your format and trigger preferences.
+  - **SHA format** — `Full SHA (40 chars)` / `Short SHA (7 chars)` radio buttons. Short SHA uses the standard 7-character abbreviation.
+  - **Copy trigger** — `After Push` / `After Commit` radio buttons. "After Push" is the previous default — the SHA is copied once the push is allowed. "After Commit" copies immediately after a successful IDE commit (before the push step), implemented via a `CheckinHandlerFactory`.
+
+---
+
 ## [1.8.3]
 
 ### Added

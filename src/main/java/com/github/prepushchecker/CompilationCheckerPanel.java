@@ -167,6 +167,52 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             "If so, prompt to rebase first so compilation runs against the integrated tree. " +
             "Off by default because every push performs a network fetch.");
 
+        // ── Clipboard SHA settings ────────────────────────────────────────────
+        JBCheckBox copySha = new JBCheckBox("Copy commit SHA to clipboard automatically");
+        copySha.setSelected(PrePushCheckerSettings.isCopyCommitShaEnabled(project));
+        copySha.setToolTipText("Copies the HEAD commit SHA to the clipboard after the chosen event.");
+
+        JRadioButton shaFull  = new JRadioButton("Full SHA (40 chars)");
+        JRadioButton shaShort = new JRadioButton("Short SHA (7 chars)");
+        ButtonGroup shaFormatGroup = new ButtonGroup();
+        shaFormatGroup.add(shaFull);
+        shaFormatGroup.add(shaShort);
+        boolean isShort = PrePushCheckerSettings.getCopyCommitShaFormat(project)
+            == PrePushCheckerSettings.ShaFormat.SHORT;
+        shaFull.setSelected(!isShort);
+        shaShort.setSelected(isShort);
+
+        JRadioButton triggerPush   = new JRadioButton("After push");
+        JRadioButton triggerCommit = new JRadioButton("After commit");
+        ButtonGroup triggerGroup = new ButtonGroup();
+        triggerGroup.add(triggerPush);
+        triggerGroup.add(triggerCommit);
+        boolean isAfterCommit = PrePushCheckerSettings.getCopyCommitShaTrigger(project)
+            == PrePushCheckerSettings.ShaTrigger.AFTER_COMMIT;
+        triggerPush.setSelected(!isAfterCommit);
+        triggerCommit.setSelected(isAfterCommit);
+
+        // Build the indented sub-row: "Format: ● Full  ○ Short   Copy on: ● After push  ○ After commit"
+        JPanel shaSubPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        shaSubPanel.add(new JBLabel("Format:"));
+        shaSubPanel.add(shaFull);
+        shaSubPanel.add(shaShort);
+        shaSubPanel.add(Box.createHorizontalStrut(12));
+        shaSubPanel.add(new JBLabel("Copy on:"));
+        shaSubPanel.add(triggerPush);
+        shaSubPanel.add(triggerCommit);
+        shaSubPanel.setBorder(BorderFactory.createEmptyBorder(0, 20, 0, 0));
+
+        // Wire up enable/disable
+        Runnable updateShaSubPanel = () -> {
+            boolean enabled = copySha.isSelected();
+            shaFull.setEnabled(enabled);
+            shaShort.setEnabled(enabled);
+            triggerPush.setEnabled(enabled);
+            triggerCommit.setEnabled(enabled);
+        };
+        updateShaSubPanel.run();
+
         strictGuard.addActionListener(event -> {
             boolean selected = strictGuard.isSelected();
             PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, selected);
@@ -180,6 +226,18 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         });
         rebasePrecheck.addActionListener(event ->
             PrePushCheckerSettings.setRebasePrecheckEnabled(project, rebasePrecheck.isSelected()));
+        copySha.addActionListener(event -> {
+            PrePushCheckerSettings.setCopyCommitShaEnabled(project, copySha.isSelected());
+            updateShaSubPanel.run();
+        });
+        shaFull.addActionListener(event ->
+            PrePushCheckerSettings.setCopyCommitShaFormat(project, PrePushCheckerSettings.ShaFormat.FULL));
+        shaShort.addActionListener(event ->
+            PrePushCheckerSettings.setCopyCommitShaFormat(project, PrePushCheckerSettings.ShaFormat.SHORT));
+        triggerPush.addActionListener(event ->
+            PrePushCheckerSettings.setCopyCommitShaTrigger(project, PrePushCheckerSettings.ShaTrigger.AFTER_PUSH));
+        triggerCommit.addActionListener(event ->
+            PrePushCheckerSettings.setCopyCommitShaTrigger(project, PrePushCheckerSettings.ShaTrigger.AFTER_COMMIT));
 
         JPanel options = new JPanel();
         options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
@@ -190,6 +248,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         options.add(disableFallback);
         options.add(Box.createVerticalStrut(2));
         options.add(rebasePrecheck);
+        options.add(Box.createVerticalStrut(4));
+        options.add(copySha);
+        options.add(shaSubPanel);
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createCompoundBorder(

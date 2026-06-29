@@ -1112,6 +1112,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         @NotNull Project project,
         @NotNull List<PushInfo> pushDetails
     ) {
+        if (!PrePushCheckerSettings.isCopyCommitShaEnabled(project)) return;
+        if (PrePushCheckerSettings.getCopyCommitShaTrigger(project)
+                != PrePushCheckerSettings.ShaTrigger.AFTER_PUSH) return;
+
+        PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             String sha = null;
             outer:
@@ -1125,10 +1130,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 }
             }
             if (sha == null) return;
-            final String commitSha = sha;
+            final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
+                ? sha.substring(0, 7) : sha;
             ApplicationManager.getApplication().invokeLater(() -> {
-                CopyPasteManager.getInstance().setContents(new StringSelection(commitSha));
-                notify(project, "Commit SHA Copied", commitSha,
+                CopyPasteManager.getInstance().setContents(new StringSelection(displaySha));
+                notify(project, "Commit SHA Copied", displaySha,
                     com.intellij.notification.NotificationType.INFORMATION);
             });
         });

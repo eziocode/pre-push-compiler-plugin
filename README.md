@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-1.8.0-blue)
+![Version](https://img.shields.io/badge/version-1.8.4-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -29,6 +29,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Git hook repair action** — rechecks and repairs the terminal hook from the tool window if another tool overwrites or edits it
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
 - **Refresh action** — re-run the compilation check from within the push-block dialog without cancelling the push flow
+- **Auto-copy commit SHA to clipboard** — when a push is allowed (or after an IDE commit, depending on your setting), the HEAD commit SHA is automatically copied to the clipboard and confirmed with a balloon notification. Configurable: enable/disable, full 40-char or short 7-char format, and copy trigger (after push or after commit)
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
 
 ---
@@ -160,6 +161,7 @@ Open **View → Tool Windows → Compilation Checker** (or click the side panel 
 
 - View errors from the last pre-push check or manual run, rendered as `FileName:line:col — message` with the full path available on hover
 - Toggle **Enable strict A/B dependency guard** for the project. It is off by default; when enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
+- Configure **clipboard SHA settings** — "Copy commit SHA to clipboard automatically" checkbox with sub-options for SHA format (`Full / Short`) and copy trigger (`After Push / After Commit`). When "After Commit" is selected, the SHA is copied right after an IDE commit before the push step.
 - See file-type icons for quick visual identification
 - **Run Check** button (hammer icon) — triggers a full project compile on demand
 - **Recheck / Repair Git Hooks** button (refresh icon) — verifies the terminal hook path and repairs missing, edited, or duplicated plugin-managed hook content
@@ -191,4 +193,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.4.6**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.8.4**.
