@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.5</version>
+    <version>1.8.6</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,16 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.6 — Settings panel: Copy-on row moved to its own line</h3>
+
+        <h4>Improved</h4>
+        <ul>
+            <li><b>Settings panel layout.</b> The "Copy on: ● After push  ○ After commit" row
+                now appears on its own line beneath "Format: ● Full  ○ Short", instead of being
+                placed to the right of the Format row. This prevents the sub-panel from wrapping
+                or getting cut off on narrower tool-window widths.</li>
+        </ul>
+
         <h3>1.8.5 — Auto-copy SHA reliability fix &amp; settings panel alignment</h3>
 
         <h4>Fixed</h4>
