@@ -192,15 +192,23 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         triggerPush.setSelected(!isAfterCommit);
         triggerCommit.setSelected(isAfterCommit);
 
-        // Build the indented sub-row: "Format: ● Full  ○ Short   Copy on: ● After push  ○ After commit"
-        JPanel shaSubPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-        shaSubPanel.add(new JBLabel("Format:"));
-        shaSubPanel.add(shaFull);
-        shaSubPanel.add(shaShort);
-        shaSubPanel.add(Box.createHorizontalStrut(12));
-        shaSubPanel.add(new JBLabel("Copy on:"));
-        shaSubPanel.add(triggerPush);
-        shaSubPanel.add(triggerCommit);
+        // Build two indented sub-rows:
+        //   Row 1: "Format: ● Full  ○ Short"
+        //   Row 2: "Copy on: ● After push  ○ After commit"
+        JPanel shaFormatRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        shaFormatRow.add(new JBLabel("Format:"));
+        shaFormatRow.add(shaFull);
+        shaFormatRow.add(shaShort);
+
+        JPanel shaCopyOnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        shaCopyOnRow.add(new JBLabel("Copy on:"));
+        shaCopyOnRow.add(triggerPush);
+        shaCopyOnRow.add(triggerCommit);
+
+        JPanel shaSubPanel = new JPanel();
+        shaSubPanel.setLayout(new BoxLayout(shaSubPanel, BoxLayout.Y_AXIS));
+        shaSubPanel.add(shaFormatRow);
+        shaSubPanel.add(shaCopyOnRow);
         shaSubPanel.setBorder(BorderFactory.createEmptyBorder(0, 20, 0, 0));
         shaSubPanel.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
 
