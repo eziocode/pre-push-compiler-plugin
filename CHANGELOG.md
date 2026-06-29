@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.5]
+
+### Fixed
+
+- **Auto-copy SHA not working on macOS (After Commit).**
+  `CheckinProjectPanel.getRoots()` was called from a background thread inside `executeOnPooledThread`. On macOS, AWT's stricter threading model caused `getRoots()` to return an empty/invalid result so the HEAD SHA was never resolved and nothing reached the clipboard.
+  Fix: roots are now captured on the EDT (where `checkinSuccessful()` is invoked) before dispatching to the pooled thread.
+
+- **Auto-copy SHA not working on macOS (After Push) — edge-case fallback.**
+  When `PushInfo.getCommits()` returned commits without a resolvable `VirtualFile` root (force-push or empty-push edge cases), the SHA lookup fell through with a null result and no copy occurred.
+  Fix: added a fallback to `project.getBasePath()` so the HEAD SHA is still resolved even when commits carry no root.
+
+- **Settings panel: Format / Copy-on sub-row misaligned.**
+  The "Format: … Copy on: …" row below the "Copy commit SHA to clipboard automatically" checkbox was shifting right in the tool window. In a `BoxLayout Y_AXIS` container, the row's default `CENTER_ALIGNMENT` conflicted with the `LEFT_ALIGNMENT` of the checkboxes above it.
+  Fix: `shaSubPanel.setAlignmentX(Component.LEFT_ALIGNMENT)`.
+
+---
+
 ## [1.8.4]
 
 ### Added

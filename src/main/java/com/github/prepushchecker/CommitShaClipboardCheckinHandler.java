@@ -38,9 +38,13 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 PrePushCheckerSettings.ShaFormat format =
                     PrePushCheckerSettings.getCopyCommitShaFormat(project);
 
+                // Capture roots on the EDT (checkinSuccessful is called on the EDT);
+                // getRoots() must not be called from a background thread.
+                VirtualFile[] roots = panel.getRoots();
+
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
                     String sha = null;
-                    for (VirtualFile root : panel.getRoots()) {
+                    for (VirtualFile root : roots) {
                         sha = GitOperations.headSha(root.getPath());
                         if (sha != null) break;
                     }

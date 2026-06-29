@@ -202,6 +202,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         shaSubPanel.add(triggerPush);
         shaSubPanel.add(triggerCommit);
         shaSubPanel.setBorder(BorderFactory.createEmptyBorder(0, 20, 0, 0));
+        shaSubPanel.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT);
 
         // Wire up enable/disable
         Runnable updateShaSubPanel = () -> {

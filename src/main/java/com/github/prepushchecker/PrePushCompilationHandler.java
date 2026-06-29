@@ -1129,6 +1129,11 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     }
                 }
             }
+            if (sha == null) {
+                // Fallback: commits may have no root in some push scenarios; resolve from project base path.
+                String basePath = project.getBasePath();
+                if (basePath != null) sha = GitOperations.headSha(basePath);
+            }
             if (sha == null) return;
             final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
                 ? sha.substring(0, 7) : sha;

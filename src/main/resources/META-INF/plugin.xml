@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.4</version>
+    <version>1.8.5</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,31 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.5 — Auto-copy SHA reliability fix &amp; settings panel alignment</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Auto-copy SHA not working on macOS (After Commit).</b>
+                <code>CheckinProjectPanel.getRoots()</code> was called from a background thread
+                inside <code>executeOnPooledThread</code>. On macOS, AWT's threading model is
+                stricter and this caused <code>getRoots()</code> to return an empty or invalid
+                result, so the HEAD SHA was never resolved and nothing was copied to the clipboard.
+                The roots are now captured on the EDT (where
+                <code>checkinSuccessful()</code> is invoked) before dispatching to the
+                background thread.</li>
+            <li><b>Auto-copy SHA not working on macOS (After Push) — edge-case fallback.</b>
+                When <code>PushInfo.getCommits()</code> returns commits without a resolvable
+                VirtualFile root (certain force-push or empty-push scenarios), the SHA lookup
+                fell through with a null result. A fallback to <code>project.getBasePath()</code>
+                now covers these cases.</li>
+            <li><b>Settings panel: Format / Copy-on sub-row alignment.</b>
+                The "Format: … Copy on: …" row below the clipboard checkbox was misaligned in
+                the tool window. In a <code>BoxLayout Y_AXIS</code> container the row's default
+                <code>CENTER_ALIGNMENT</code> conflicted with the checkboxes' <code>LEFT_ALIGNMENT</code>,
+                causing the row to shift right. Fixed by explicitly setting
+                <code>LEFT_ALIGNMENT</code> on the sub-panel.</li>
+        </ul>
+
         <h3>1.8.4 — Configurable clipboard SHA settings</h3>
 
         <h4>Added</h4>
