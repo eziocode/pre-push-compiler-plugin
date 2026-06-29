@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 
 import java.awt.datatransfer.StringSelection;
+import java.util.Collection;
 
 /**
  * Copies the HEAD commit SHA to the system clipboard immediately after a
@@ -40,7 +41,7 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
 
                 // Capture roots on the EDT (checkinSuccessful is called on the EDT);
                 // getRoots() must not be called from a background thread.
-                VirtualFile[] roots = panel.getRoots();
+                Collection<VirtualFile> roots = panel.getRoots();
 
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
                     String sha = null;
