@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.7]
+
+### Fixed
+
+- **Wrong SHA copied to clipboard after push (After Push trigger).**
+  The previous implementation called `git rev-parse HEAD` from `commit.getRoot().getPath()`. When a push includes submodule-update commits their root resolves to the submodule directory, so `HEAD` there is the submodule's tip — not the commit the user actually pushed.
+  Fix: reads the SHA directly from `VcsFullCommitDetails.getId()` (the commit with the highest timestamp across all push details), with no subprocess and no dependency on root-path resolution. The old git-subprocess loop and `project.getBasePath()` fallback are retained in order.
+
+- **Stale or wrong SHA copied to clipboard after commit (After Commit trigger).**
+  The previous implementation iterated `panel.getRoots()` with a bare `git rev-parse HEAD` subprocess, which could return a pre-commit cached value on some systems or pick the wrong repository root in multi-root projects.
+  Fix: uses `GitRepositoryManager → repo.update() → getCurrentRevision()` as the primary path (forces a fresh read of `.git/HEAD` through git4idea's own model). The subprocess-per-root loop and `project.getBasePath()` are retained as ordered fallbacks.
+
+---
+
 ## [1.8.5]
 
 ### Fixed

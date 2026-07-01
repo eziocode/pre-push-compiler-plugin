@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.6</version>
+    <version>1.8.7</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,30 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.7 — Fix wrong SHA copied to clipboard</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Wrong SHA copied after push (After Push trigger).</b>
+                The previous code called <code>git rev-parse HEAD</code> via
+                <code>commit.getRoot()</code>. When a push includes submodule-update
+                commits their root resolves to the submodule directory, so HEAD there
+                is the submodule tip rather than the commit the user actually pushed.
+                Fixed by reading the SHA directly from
+                <code>VcsFullCommitDetails.getId()</code> (the commit with the highest
+                timestamp in the push set), with the git-subprocess path retained as a
+                fallback.</li>
+            <li><b>Stale or wrong SHA copied after commit (After Commit trigger).</b>
+                The previous code relied solely on a bare
+                <code>git rev-parse HEAD</code> subprocess, which could return a
+                pre-commit cached value on some systems or pick the wrong repository in
+                multi-root projects. Fixed by using
+                <code>GitRepositoryManager → repo.update() → getCurrentRevision()</code>
+                as the primary path (forces a fresh read of <code>.git/HEAD</code>
+                through git4idea's model), with the subprocess and
+                <code>project.getBasePath()</code> retained as ordered fallbacks.</li>
+        </ul>
+
         <h3>1.8.6 — Settings panel: Copy-on row moved to its own line</h3>
 
         <h4>Improved</h4>
