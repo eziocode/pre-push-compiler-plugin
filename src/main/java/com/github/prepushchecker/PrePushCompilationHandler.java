@@ -1118,19 +1118,27 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
         PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            String sha = null;
-            outer:
-            for (PushInfo info : pushDetails) {
-                for (VcsFullCommitDetails commit : info.getCommits()) {
-                    VirtualFile root = commit.getRoot();
-                    if (root != null) {
-                        sha = GitOperations.headSha(root.getPath());
-                        if (sha != null) break outer;
+            // Primary: read the SHA directly from the pushed commit objects. Using the
+            // commit with the highest timestamp gives us the tip of the push without
+            // spawning a git subprocess or being misled by a wrong repo root (e.g.
+            // when the push includes submodule updates that yield a different root).
+            String sha = pushedTipSha(pushDetails);
+
+            // Fallback: if commit metadata is unavailable, resolve HEAD from the repo
+            // root carried by the push info, then from project.getBasePath().
+            if (sha == null) {
+                outer:
+                for (PushInfo info : pushDetails) {
+                    for (VcsFullCommitDetails commit : info.getCommits()) {
+                        VirtualFile root = commit.getRoot();
+                        if (root != null) {
+                            sha = GitOperations.headSha(root.getPath());
+                            if (sha != null) break outer;
+                        }
                     }
                 }
             }
             if (sha == null) {
-                // Fallback: commits may have no root in some push scenarios; resolve from project base path.
                 String basePath = project.getBasePath();
                 if (basePath != null) sha = GitOperations.headSha(basePath);
             }
@@ -1143,6 +1151,34 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     com.intellij.notification.NotificationType.INFORMATION);
             });
         });
+    }
+
+    /**
+     * Returns the SHA of the most recent commit across all {@code pushDetails} by
+     * reading {@link VcsFullCommitDetails#getId()} directly — no git subprocess and
+     * no dependency on which root is returned by {@link VcsFullCommitDetails#getRoot()}.
+     * Returns {@code null} when the list is empty or no valid 40-char hex SHA is found.
+     */
+    @org.jetbrains.annotations.Nullable
+    private static String pushedTipSha(@NotNull List<PushInfo> pushDetails) {
+        VcsFullCommitDetails tip = null;
+        for (PushInfo info : pushDetails) {
+            for (VcsFullCommitDetails commit : info.getCommits()) {
+                if (tip == null || commit.getCommitTime() > tip.getCommitTime()) {
+                    tip = commit;
+                }
+            }
+        }
+        if (tip == null) return null;
+        String sha = tip.getId().asString();
+        if (sha == null || sha.length() != 40) return null;
+        for (int i = 0; i < sha.length(); i++) {
+            char c = sha.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+                return null;
+            }
+        }
+        return sha;
     }
 
     private static void notify(
