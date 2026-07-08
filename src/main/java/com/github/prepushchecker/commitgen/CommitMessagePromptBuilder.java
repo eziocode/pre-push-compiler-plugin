@@ -43,6 +43,7 @@ final class CommitMessagePromptBuilder {
 
     private static final List<String> DEFAULT_RULE_FILE_CANDIDATES = List.of(
         ".github/commit-instructions.md",
+        ".github/git-commit-instructions.md",
         "COMMIT_RULES.md"
     );
 
@@ -257,13 +258,33 @@ final class CommitMessagePromptBuilder {
               .append(mdRules.trim()).append("\n")
               .append("=== End of project commit rules ===\n\n");
 
-            // Enforce the branch gate when the rules contain a Decision Tree
+            // Enforce the branch gate when the rules contain a Decision Tree.
+            // The AI cannot run `git branch --show-current` itself, so we resolve
+            // the current branch AND classify it (default vs non-default) here and
+            // hand the model a concrete verdict. This removes the model's discretion,
+            // which was the root cause of the prefix applying on some branches but
+            // not others.
             if (currentBranch != null && !currentBranch.isBlank() && !currentBranch.equals("HEAD")) {
-                sb.append("CRITICAL ENFORCEMENT: The current branch is '")
-                  .append(currentBranch)
-                  .append("'. You MUST execute the Decision Tree above step-by-step, ")
-                  .append("beginning with Step 0 (Branch gate), before choosing any prefix. ")
-                  .append("Do not skip steps. The branch gate is a HARD GATE — evaluate it first.\n\n");
+                String defaultBranch = resolveDefaultBranchName(project);
+                boolean isDefault = defaultBranch != null
+                    && currentBranch.equalsIgnoreCase(defaultBranch);
+
+                sb.append("CRITICAL ENFORCEMENT — branch gate has ALREADY been evaluated for you:\n")
+                  .append("- Current branch: '").append(currentBranch).append("'\n");
+                if (defaultBranch != null) {
+                    sb.append("- Repository default branch: '").append(defaultBranch).append("'\n");
+                }
+                if (isDefault) {
+                    sb.append("- Verdict: this IS the DEFAULT branch. Apply the DEFAULT-branch rules ")
+                      .append("(Steps 1–3). ISSUEFIX: / DOCS: selection applies here.\n");
+                } else {
+                    sb.append("- Verdict: this is a NON-DEFAULT branch. ISSUEFIX: is FORBIDDEN. ")
+                      .append("Skip the default-branch steps and apply the NON-DEFAULT rules ")
+                      .append("(METHOD_ENTRY: / TESTCASE: / FEATURE: / REFACTOR: per the decision tree).\n");
+                }
+                sb.append("You MUST honour this verdict. Then execute the remaining decision-tree ")
+                  .append("steps in order, using the staged files listed in the user message, ")
+                  .append("before choosing the final prefix. Do not re-decide the branch gate.\n\n");
             }
         }
 
@@ -315,12 +336,53 @@ final class CommitMessagePromptBuilder {
             var branch = repos.get(0).getCurrentBranch();
             if (branch != null) return branch.getName();
         }
-        // Fallback: git subprocess (non-git4idea contexts, e.g. test sandbox)
+        // Fallback: git subprocess (non-git4idea contexts, e.g. test sandbox).
+        // Use the exact command the rules file references so the resolved value
+        // matches what a user running it manually would see.
         String basePath = project.getBasePath();
         if (basePath == null) return null;
         String name = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "HEAD");
+        if (name == null || name.isBlank() || name.equals("HEAD")) {
+            name = runGitInDir(basePath, "branch", "--show-current");
+        }
         if (name == null || name.isBlank() || name.equals("HEAD")) return null;
         return name.trim();
+    }
+
+    /**
+     * Resolves the repository's default branch name (e.g. {@code main}, {@code master},
+     * or a team-specific default) so the branch gate can be evaluated deterministically
+     * in code instead of being guessed by the AI. Resolution order:
+     * <ol>
+     *   <li>{@code git symbolic-ref --short refs/remotes/origin/HEAD} → strip {@code origin/}</li>
+     *   <li>{@code git rev-parse --abbrev-ref origin/HEAD} → strip {@code origin/}</li>
+     * </ol>
+     * Returns {@code null} when it cannot be determined (in which case the AI is left to
+     * apply the decision tree using the branch name alone, preserving prior behaviour).
+     */
+    @Nullable
+    static String resolveDefaultBranchName(@NotNull Project project) {
+        String basePath = project.getBasePath();
+        if (basePath == null) {
+            List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
+            if (repos.isEmpty()) return null;
+            basePath = repos.get(0).getRoot().getPath();
+        }
+        String head = runGitInDir(basePath, "symbolic-ref", "--short", "refs/remotes/origin/HEAD");
+        String stripped = stripOriginPrefix(head);
+        if (stripped != null) return stripped;
+
+        head = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "origin/HEAD");
+        return stripOriginPrefix(head);
+    }
+
+    @Nullable
+    private static String stripOriginPrefix(@Nullable String ref) {
+        if (ref == null) return null;
+        String trimmed = ref.trim();
+        if (trimmed.isEmpty() || trimmed.equals("origin/HEAD")) return null;
+        if (trimmed.startsWith("origin/")) trimmed = trimmed.substring("origin/".length());
+        return trimmed.isBlank() ? null : trimmed;
     }
 
     /**
@@ -356,11 +418,43 @@ final class CommitMessagePromptBuilder {
         for (String candidate : candidates) {
             Path file = Path.of(basePath).resolve(candidate);
             if (Files.isRegularFile(file)) {
-                try { return Files.readString(file, StandardCharsets.UTF_8); }
+                try { return stripFrontMatter(Files.readString(file, StandardCharsets.UTF_8)); }
                 catch (Exception ignored) {}
             }
         }
         return null;
+    }
+
+    /**
+     * Removes a leading YAML front-matter block (delimited by {@code ---} on its own
+     * line at the very start of the file, e.g. {@code --- apply: always ---}) so it is
+     * not fed to the AI as rule content. Only a front-matter block at the very top of
+     * the file is stripped; {@code ---} horizontal rules elsewhere in the body are
+     * left untouched.
+     */
+    @NotNull
+    static String stripFrontMatter(@NotNull String content) {
+        // Tolerate a leading BOM / blank lines before the opening delimiter.
+        String working = content.startsWith("\uFEFF") ? content.substring(1) : content;
+        String[] lines = working.split("\n", -1);
+        int idx = 0;
+        while (idx < lines.length && lines[idx].trim().isEmpty()) idx++;
+        if (idx >= lines.length || !lines[idx].trim().equals("---")) {
+            return content; // no front-matter block at the top
+        }
+        // Find the closing delimiter.
+        for (int j = idx + 1; j < lines.length; j++) {
+            if (lines[j].trim().equals("---")) {
+                StringBuilder rest = new StringBuilder();
+                for (int k = j + 1; k < lines.length; k++) {
+                    rest.append(lines[k]);
+                    if (k < lines.length - 1) rest.append('\n');
+                }
+                return rest.toString().stripLeading();
+            }
+        }
+        // Unterminated front-matter — leave content unchanged to be safe.
+        return content;
     }
 
     @Nullable

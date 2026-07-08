@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.8.8]
+
+### Fixed
+
+- **Branch-specific commit rules applied inconsistently.**
+  The branch gate in a team rules file (e.g. `.github/git-commit-instructions.md`) relied entirely on the AI running `git branch --show-current` and guessing whether the current branch was the repository default. As a result the prefix (`ISSUEFIX:` vs `METHOD_ENTRY:`/`TESTCASE:`) applied on some branches but not others.
+  Fix: the plugin now resolves the current branch **and** the repository default branch (`git symbolic-ref --short refs/remotes/origin/HEAD`, falling back to `git rev-parse --abbrev-ref origin/HEAD`) in code, then injects a concrete *default / non-default* verdict into the system prompt so the branch gate is deterministic instead of guessed by the model.
+
+- **`.github/git-commit-instructions.md` not auto-detected.**
+  Added it to the default rules-file candidate list (previously only `.github/commit-instructions.md` and `COMMIT_RULES.md` were auto-detected), so teams using this filename get their rules applied without setting a custom path.
+
+- **YAML front-matter leaked into the AI prompt.**
+  A leading `--- apply: always ---` block is now stripped from the rules file before it is sent to the model. `---` horizontal rules elsewhere in the body are preserved.
+
+- **Wrong commit SHA copied to clipboard (After Push trigger).**
+  The pushed tip was chosen by the highest committer *timestamp*, which is not the branch head after a rebase, amend, or cherry-pick (commit dates are not monotonic with DAG order), so a non-tip commit could be copied.
+  Fix: the tip is now selected **topologically** — the commit in the push set that is not a parent of any other commit — with the timestamp heuristic retained only as a fallback when no unique tip can be determined.
+
+- **Stale or wrong SHA copied to clipboard (After Commit trigger).**
+  The primary source was git4idea's `repo.update()` + `getCurrentRevision()`, whose refresh is asynchronous and could return the pre-commit (parent) revision.
+  Fix: the primary source is now a synchronous `git rev-parse HEAD` subprocess run after the commit object is written (which always returns the newly created commit). The git4idea model and `project.getBasePath()` lookups are retained as ordered fallbacks.
+
+---
+
 ## [1.8.7]
 
 ### Fixed

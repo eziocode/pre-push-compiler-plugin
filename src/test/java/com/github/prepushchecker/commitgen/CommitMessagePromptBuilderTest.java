@@ -121,6 +121,34 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
             system.contains("[ZOHOTESTAUTOMATION_CRM_TB_DEFAULT_BRANCH]"));
     }
 
+    // ── Front-matter stripping tests ──────────────────────────────────────────
+
+    public void testStripFrontMatterRemovesLeadingYamlBlock() {
+        String content = "---\napply: always\n---\n\n# Commit Message Convention\nrules here";
+        String stripped = CommitMessagePromptBuilder.stripFrontMatter(content);
+
+        assertFalse("apply: always front-matter must be removed",
+            stripped.contains("apply: always"));
+        assertTrue("Body content must be preserved",
+            stripped.startsWith("# Commit Message Convention"));
+    }
+
+    public void testStripFrontMatterLeavesBodyHorizontalRulesIntact() {
+        // A --- separator in the body (not at the top) must NOT be treated as
+        // front-matter and must survive untouched.
+        String content = "# Title\n\nSection one\n\n---\n\nSection two";
+        String stripped = CommitMessagePromptBuilder.stripFrontMatter(content);
+
+        assertEquals("Content without a leading front-matter block is unchanged",
+            content, stripped);
+        assertTrue("Body horizontal rule must be preserved", stripped.contains("\n---\n"));
+    }
+
+    public void testStripFrontMatterNoOpWhenAbsent() {
+        String content = "# Commit Message Convention\nno front matter";
+        assertEquals(content, CommitMessagePromptBuilder.stripFrontMatter(content));
+    }
+
     // ── parseFileNamesFromDiff tests ──────────────────────────────────────────
 
     public void testParseFileNamesExtractsPathsFromDiffHeaders() {

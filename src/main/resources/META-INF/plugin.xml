@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.7</version>
+    <version>1.8.8</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,41 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.8 — Branch-rule &amp; commit-SHA correctness fixes</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Branch-specific commit rules applied inconsistently.</b> The branch
+                gate in a team rules file (e.g. <code>.github/git-commit-instructions.md</code>)
+                relied entirely on the AI running <code>git branch --show-current</code> and
+                guessing whether the current branch was the repository default — so the prefix
+                (<code>ISSUEFIX:</code> vs <code>METHOD_ENTRY:</code>/<code>TESTCASE:</code>)
+                applied on some branches but not others. The plugin now resolves the current
+                branch AND the repository default branch
+                (<code>git symbolic-ref refs/remotes/origin/HEAD</code>) in code, and injects a
+                concrete <em>default / non-default</em> verdict into the prompt so the branch
+                gate is deterministic instead of guessed.</li>
+            <li><b><code>.github/git-commit-instructions.md</code> not auto-detected.</b> Added it
+                to the default rules-file candidate list (previously only
+                <code>.github/commit-instructions.md</code> and <code>COMMIT_RULES.md</code>
+                were auto-detected).</li>
+            <li><b>YAML front-matter leaked into the AI prompt.</b> A leading
+                <code>--- apply: always ---</code> block is now stripped from the rules file
+                before it is sent to the model; <code>---</code> horizontal rules in the body
+                are preserved.</li>
+            <li><b>Wrong commit SHA copied (After Push).</b> The pushed tip was chosen by the
+                highest committer <em>timestamp</em>, which is not the branch head after a
+                rebase/amend/cherry-pick (commit dates are not monotonic with DAG order). The
+                tip is now selected <em>topologically</em> — the commit that is not a parent of
+                any other commit in the push set — with the timestamp heuristic kept only as a
+                fallback when no unique tip exists.</li>
+            <li><b>Stale/parent SHA copied (After Commit).</b> Switched the primary source to a
+                synchronous <code>git rev-parse HEAD</code> subprocess (run after the commit is
+                written) instead of git4idea's asynchronous <code>repo.update()</code> refresh,
+                which could return the pre-commit (parent) revision. The git4idea model and
+                base-path lookups are retained as ordered fallbacks.</li>
+        </ul>
+
         <h3>1.8.7 — Fix wrong SHA copied to clipboard</h3>
 
         <h4>Fixed</h4>

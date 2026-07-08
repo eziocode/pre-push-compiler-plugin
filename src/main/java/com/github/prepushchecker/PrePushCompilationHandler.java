@@ -1118,14 +1118,16 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
         PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            // Primary: read the SHA directly from the pushed commit objects. Using the
-            // commit with the highest timestamp gives us the tip of the push without
-            // spawning a git subprocess or being misled by a wrong repo root (e.g.
-            // when the push includes submodule updates that yield a different root).
+            // Primary: resolve the ACTUAL pushed tip topologically from the commit
+            // objects. The tip is the commit that is not a parent of any other commit
+            // in the push set — this is unambiguous, unlike the previous highest-
+            // timestamp heuristic which could pick an ancestor after a rebase, amend,
+            // or cherry-pick (committer dates are not monotonic with DAG order). This
+            // was the root cause of the "copied SHA is a different commit" report.
             String sha = pushedTipSha(pushDetails);
 
-            // Fallback: if commit metadata is unavailable, resolve HEAD from the repo
-            // root carried by the push info, then from project.getBasePath().
+            // Fallback 1: resolve HEAD via `git rev-parse HEAD` from the repo root
+            // carried by the push info (authoritative for a normal current-branch push).
             if (sha == null) {
                 outer:
                 for (PushInfo info : pushDetails) {
@@ -1154,23 +1156,74 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     }
 
     /**
-     * Returns the SHA of the most recent commit across all {@code pushDetails} by
-     * reading {@link VcsFullCommitDetails#getId()} directly — no git subprocess and
+     * Returns the SHA of the <em>actual pushed tip</em> across all {@code pushDetails}
+     * by reading {@link VcsFullCommitDetails#getId()} directly — no git subprocess and
      * no dependency on which root is returned by {@link VcsFullCommitDetails#getRoot()}.
-     * Returns {@code null} when the list is empty or no valid 40-char hex SHA is found.
+     *
+     * <p>The tip is selected <b>topologically</b>: the commit whose id is not listed as
+     * a parent of any other commit in the push set. This is the true branch head being
+     * pushed. The previous implementation picked the commit with the highest
+     * {@link VcsFullCommitDetails#getCommitTime() committer timestamp}, which is <em>not</em>
+     * guaranteed to be the tip — rebases, amends, cherry-picks and clock skew can give an
+     * ancestor a later commit time, causing the wrong (non-tip) SHA to be copied.
+     *
+     * <p>Falls back to the highest-timestamp commit only when topology cannot single out a
+     * unique tip (e.g. the push set is a disjoint/partial view). Returns {@code null} when
+     * the list is empty or no valid 40-char hex SHA is found.
      */
     @org.jetbrains.annotations.Nullable
-    private static String pushedTipSha(@NotNull List<PushInfo> pushDetails) {
-        VcsFullCommitDetails tip = null;
+    static String pushedTipSha(@NotNull List<PushInfo> pushDetails) {
+        List<CommitNode> nodes = new ArrayList<>();
         for (PushInfo info : pushDetails) {
             for (VcsFullCommitDetails commit : info.getCommits()) {
-                if (tip == null || commit.getCommitTime() > tip.getCommitTime()) {
-                    tip = commit;
+                List<String> parents = new ArrayList<>();
+                for (var parent : commit.getParents()) {
+                    parents.add(parent.asString());
+                }
+                nodes.add(new CommitNode(commit.getId().asString(), parents, commit.getCommitTime()));
+            }
+        }
+        return normalizeSha(selectTipSha(nodes));
+    }
+
+    /** Minimal DAG node used by {@link #selectTipSha} — decouples tip selection from git4idea. */
+    record CommitNode(@NotNull String id, @NotNull List<String> parentIds, long commitTime) {}
+
+    /**
+     * Selects the topological tip from {@code nodes}: the commit whose id is not a parent
+     * of any other commit in the set. Falls back to the highest-timestamp commit when
+     * topology does not single out exactly one tip. Returns {@code null} for an empty set.
+     */
+    @org.jetbrains.annotations.Nullable
+    static String selectTipSha(@NotNull List<CommitNode> nodes) {
+        if (nodes.isEmpty()) return null;
+
+        Set<String> parentIds = new java.util.HashSet<>();
+        for (CommitNode n : nodes) parentIds.addAll(n.parentIds());
+
+        CommitNode tip = null;
+        int tipCount = 0;
+        for (CommitNode n : nodes) {
+            if (!parentIds.contains(n.id())) {
+                tip = n;
+                tipCount++;
+            }
+        }
+
+        if (tipCount != 1) {
+            tip = null;
+            for (CommitNode n : nodes) {
+                if (tip == null || n.commitTime() > tip.commitTime()) {
+                    tip = n;
                 }
             }
         }
-        if (tip == null) return null;
-        String sha = tip.getId().asString();
+        return tip == null ? null : tip.id();
+    }
+
+    /** Returns {@code sha} when it is a valid 40-char lower/upper hex string, else {@code null}. */
+    @org.jetbrains.annotations.Nullable
+    private static String normalizeSha(@org.jetbrains.annotations.Nullable String sha) {
         if (sha == null || sha.length() != 40) return null;
         for (int i = 0; i < sha.length(); i++) {
             char c = sha.charAt(i);
