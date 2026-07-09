@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.8.8</version>
+    <version>1.9.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,35 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.1 — Branch prefix &amp; commit-SHA correctness via IntelliJ Git integration</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Branch-wise prefix convention not followed (regression).</b> The AI commit
+                message generator resolved the current branch by shelling out to <code>git</code>
+                against <code>project.getBasePath()</code> <em>first</em>, only consulting
+                IntelliJ's Git integration as a fallback. In multi-root projects — or whenever the
+                project base path is not the repository root that owns the staged changes — this
+                returned the wrong or a stale branch, so the rules-file branch gate selected the
+                wrong prefix (while GitHub Copilot, which reads the IDE's live branch, worked
+                correctly with the same <code>.md</code>). Branch resolution now consults
+                IntelliJ's <code>GitRepositoryManager → GitRepository.getCurrentBranch()</code>
+                (the live, authoritative repository model that watches <code>.git/HEAD</code>) as
+                the primary source for every repo root, falling back to a <code>git</code>
+                subprocess only when the model is not populated (detached HEAD, non-git4idea/test
+                contexts). No branch names or prefixes are hardcoded — the rules file still drives
+                every decision, repository-agnostically.</li>
+            <li><b>Incorrect commit SHA copied to clipboard.</b> The clipboard read
+                <code>HEAD</code> from the raw <code>commit.getRoot()</code> / panel-root path,
+                which can point at a submodule directory or an unrelated root in multi-root
+                layouts, so the copied id was not the commit git actually created. Every
+                committed/pushed root is now mapped to its enclosing repository via IntelliJ's Git
+                integration (<code>getRepositoryForRootQuick</code> /
+                <code>getRepositoryForFileQuick</code>) before the authoritative
+                <code>git rev-parse HEAD</code> is run against that repository's canonical root.
+                Applies to both the <em>After Commit</em> and <em>After Push</em> triggers.</li>
+        </ul>
+
         <h3>1.8.9 — Default-branch gate fix for <code>ISSUEFIX:</code></h3>
 
         <h4>Fixed</h4>
