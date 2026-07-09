@@ -422,7 +422,6 @@ final class CommitMessagePromptBuilder {
      * <ol>
      *   <li>{@code git symbolic-ref --short refs/remotes/origin/HEAD} → strip {@code origin/}</li>
      *   <li>{@code git rev-parse --abbrev-ref origin/HEAD} → strip {@code origin/}</li>
-     *   <li>{@code git config --get init.defaultBranch}</li>
      * </ol>
      * Returns {@code null} when it cannot be determined (in which case the caller keeps
      * the classification {@code UNKNOWN} and lets the AI run Step 0 itself).
@@ -443,11 +442,6 @@ final class CommitMessagePromptBuilder {
         stripped = stripOriginPrefix(head);
         if (stripped != null) return stripped;
 
-        String configured = runGitInDir(basePath, "config", "--get", "init.defaultBranch");
-        if (configured != null && !configured.isBlank()) {
-            String t = configured.trim();
-            if (!t.isEmpty()) return t;
-        }
         return null;
     }
 
