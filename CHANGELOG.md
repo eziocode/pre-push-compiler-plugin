@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.0]
+
+### Fixed
+
+- **Branch-wise prefix convention not followed (regression).**
+  The AI commit message generator resolved the current branch by shelling out to `git` against `project.getBasePath()` *first*, only consulting IntelliJ's Git integration as a fallback. In multi-root projects — or whenever the project base path is not the repository root that owns the staged changes — this returned the wrong or a stale branch, so the rules-file branch gate selected the wrong prefix (while GitHub Copilot, which reads the IDE's live branch, worked correctly with the same `.md`).
+  Fix: branch resolution now consults IntelliJ's **`GitRepositoryManager` → `GitRepository.getCurrentBranch()`** (the IDE's live, authoritative repository model that watches `.git/HEAD`) as the primary source for every repo root, falling back to a `git` subprocess only when the model is not populated (detached HEAD, non-git4idea/test contexts). The branch that owns the collected diff is threaded straight through into both the system prompt (prefix/`{branch}` substitution and the git-facts block) and the user prompt (`Current branch: <name>`), so the prefix reflects the actually checked-out branch. No branch names or prefixes are hardcoded — the rules file still drives every decision, repository-agnostically.
+
+- **Incorrect commit SHA copied to clipboard.**
+  The clipboard read `HEAD` from the raw `commit.getRoot()` / panel-root path, which can point at a submodule directory or an unrelated root in multi-root layouts, so the copied id was not the commit git actually created.
+  Fix: every committed/pushed root is now mapped to its enclosing repository via IntelliJ's Git integration (**`getRepositoryForRootQuick` / `getRepositoryForFileQuick`**) before the authoritative `git rev-parse HEAD` is run against that repository's canonical root. This applies to both the *After Commit* and *After Push* triggers. The copied SHA is therefore always the real Git commit id, across any repository. Base-path and VCS-log lookups are retained only as ordered fallbacks.
+
+### Tests
+
+- Added regression coverage asserting the resolved active branch is threaded into the prompt (`CommitMessagePromptBuilderTest`) and that repository-root selection for the clipboard SHA is prefix-safe in multi-root layouts (`CommitShaClipboardCheckinHandlerTest`).
+
+---
+
 ## [1.8.9]
 
 ### Fixed

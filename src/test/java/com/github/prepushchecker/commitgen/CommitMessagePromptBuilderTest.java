@@ -107,6 +107,19 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
             system.contains("(hotfix/critical)"));
     }
 
+    public void testBuildForDiffUsesProvidedRepositoryBranchContext() {
+        writeSandboxRulesFile();
+        String diff = "diff --git a/src/App.java b/src/App.java\n+class App {}";
+
+        CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(
+            getProject(), diff, "feature/from-selected-root", null);
+
+        assertTrue("User prompt must report the branch from the repo that owns the diff",
+            prompt.user().contains("Current branch: feature/from-selected-root"));
+        assertTrue("Git facts must report the same branch for rules-file branch gates",
+            prompt.system().contains("Current branch (`git branch --show-current`): feature/from-selected-root"));
+    }
+
     // ── Rules-file / decision-tree enforcement tests ──────────────────────────
 
     public void testConventionalCommitsInstructionSuppressedWhenRulesFileLoaded() {
@@ -144,6 +157,37 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
         assertTrue(CommitMessagePromptBuilder.branchNamesMatch("refs/heads/develop", "develop"));
         assertFalse(CommitMessagePromptBuilder.branchNamesMatch("feature/x", "main"));
         assertFalse(CommitMessagePromptBuilder.branchNamesMatch(null, "main"));
+    }
+
+    // ── Branch resolution via IntelliJ Git integration (regression) ───────────
+
+    public void testResolvedBranchIsThreadedIntoPromptWithoutRunningGit() {
+        // The prefix/facts must reflect the branch that the *caller* resolved via
+        // IntelliJ's Git integration and passed in — NOT a value the prompt builder
+        // re-derives from a possibly-wrong project base path. This is the core of the
+        // regression fix: the resolved active branch flows straight into the prompt.
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.prefixTemplate = "[{branch}]";
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(
+            getProject(), s, "feature/PROJ-99-checkout", "/tmp/some/repo/root");
+
+        assertTrue("Resolved branch must be substituted into the prefix",
+            system.contains("[feature/PROJ-99-checkout]"));
+        assertFalse(system.contains("{branch}"));
+    }
+
+    public void testBuildForDiffUsesCallerSuppliedBranchAndRepoRoot() {
+        // buildForDiff(project, diff, branch, repoRoot) must honour the branch the
+        // caller resolved from the repository that owns the diff — repository-agnostic,
+        // no hardcoded branch names.
+        String diff = "diff --git a/Foo.java b/Foo.java\n+// change";
+
+        CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(
+            getProject(), diff, "release/1.2", "/tmp/repo");
+
+        assertTrue("User prompt must carry the caller-resolved current branch",
+            prompt.user().contains("Current branch: release/1.2"));
     }
 
     public void testConfiguredDefaultBranchIsAuthoritativeForFactsBlock() {

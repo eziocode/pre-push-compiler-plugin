@@ -50,6 +50,9 @@ final class CommitMessagePromptBuilder {
     private CommitMessagePromptBuilder() {}
 
     record Prompt(@NotNull String system, @NotNull String user) {}
+    private record DiffContext(@NotNull String diff,
+                               @Nullable String branchName,
+                               @Nullable String repoRoot) {}
 
     static @NotNull Prompt build(@NotNull Project project) throws Exception {
         return build(project, Collections.emptyList());
@@ -63,25 +66,32 @@ final class CommitMessagePromptBuilder {
     static @NotNull Prompt build(@NotNull Project project,
                                  @NotNull List<Change> selectedChanges) throws Exception {
         flushOpenDocuments();
-        String diff = selectedChanges.isEmpty()
+        DiffContext diffContext = selectedChanges.isEmpty()
             ? collectDiff(project)
             : collectDiffForChanges(project, selectedChanges);
-        if (diff == null || diff.isBlank()) {
+        if (diffContext == null || diffContext.diff().isBlank()) {
             throw new IllegalStateException(
                 "No staged or uncommitted changes found to generate a commit message from.\n"
                     + "Stage or modify at least one file, then try again.");
         }
-        return buildForDiff(project, diff);
+        return buildForDiff(project, diffContext.diff(), diffContext.branchName(), diffContext.repoRoot());
     }
 
     static @NotNull Prompt buildForDiff(@NotNull Project project, @NotNull String diff) {
+        return buildForDiff(project, diff, resolveBranchName(project), null);
+    }
+
+    static @NotNull Prompt buildForDiff(@NotNull Project project,
+                                        @NotNull String diff,
+                                        @Nullable String currentBranch,
+                                        @Nullable String repoRoot) {
         if (diff.isBlank()) throw new IllegalArgumentException("No diff content.");
         if (diff.length() > MAX_DIFF_CHARS) {
             diff = diff.substring(0, MAX_DIFF_CHARS) + "\n\n[diff truncated — first "
                 + MAX_DIFF_CHARS + " chars shown]";
         }
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        String branch = resolveBranchName(project);
+        String branch = normalizeBranchForPrompt(currentBranch);
 
         StringBuilder user = new StringBuilder();
         if (branch != null && !branch.isBlank() && !branch.equals("HEAD")) {
@@ -95,7 +105,7 @@ final class CommitMessagePromptBuilder {
         }
         user.append("Git diff:\n```\n").append(diff).append("\n```");
 
-        return new Prompt(buildSystemPrompt(project, s, branch), user.toString());
+        return new Prompt(buildSystemPrompt(project, s, branch, repoRoot), user.toString());
     }
 
     // ── Diff collection ───────────────────────────────────────────────────────
@@ -118,13 +128,16 @@ final class CommitMessagePromptBuilder {
      * as a module root are all handled correctly.
      */
     @Nullable
-    private static String collectDiff(@NotNull Project project) throws Exception {
+    private static DiffContext collectDiff(@NotNull Project project) throws Exception {
         // Primary: use GitRepositoryManager to find all real git repo roots
         List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
         if (!repos.isEmpty()) {
             StringBuilder combined = new StringBuilder();
+            String branch = null;
+            String diffRepoRoot = null;
             for (GitRepository repo : repos) {
                 String root = repo.getRoot().getPath();
+                int beforeLength = combined.length();
                 // 1. staged changes
                 String staged = runGitInDir(root, "diff", "--cached");
                 if (staged != null && !staged.isBlank()) {
@@ -140,17 +153,27 @@ final class CommitMessagePromptBuilder {
                         if (head != null && !head.isBlank()) combined.append(head);
                     }
                 }
+                if (combined.length() > beforeLength && diffRepoRoot == null) {
+                    diffRepoRoot = root;
+                    branch = resolveBranchName(repo);
+                }
             }
-            if (!combined.toString().isBlank()) return combined.toString();
+            if (!combined.toString().isBlank()) {
+                return new DiffContext(combined.toString(), branch, diffRepoRoot);
+            }
         }
 
         // Fallback: run from project.getBasePath() (single-repo or non-git4idea context)
         String basePath = project.getBasePath();
         if (basePath == null) return null;
         String staged = runGitInDir(basePath, "diff", "--cached");
-        if (staged != null && !staged.isBlank()) return staged;
+        if (staged != null && !staged.isBlank()) {
+            return new DiffContext(staged, resolveBranchName(basePath), basePath);
+        }
         String head = runGitInDir(basePath, "diff", "HEAD");
-        if (head != null && !head.isBlank()) return head;
+        if (head != null && !head.isBlank()) {
+            return new DiffContext(head, resolveBranchName(basePath), basePath);
+        }
         return null;
     }
 
@@ -161,44 +184,58 @@ final class CommitMessagePromptBuilder {
      * unstaged → HEAD fallback is preserved, just scoped to the selected paths.
      */
     @Nullable
-    private static String collectDiffForChanges(@NotNull Project project,
+    private static DiffContext collectDiffForChanges(@NotNull Project project,
                                                 @NotNull List<Change> selectedChanges) throws Exception {
         List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
         if (!repos.isEmpty()) {
             StringBuilder combined = new StringBuilder();
+            String branch = null;
+            String diffRepoRoot = null;
             for (GitRepository repo : repos) {
-                appendDiffForChanges(combined, repo.getRoot().getPath(), selectedChanges);
+                String root = repo.getRoot().getPath();
+                if (appendDiffForChanges(combined, root, selectedChanges) && diffRepoRoot == null) {
+                    diffRepoRoot = root;
+                    branch = resolveBranchName(repo);
+                }
             }
-            if (!combined.toString().isBlank()) return combined.toString();
+            if (!combined.toString().isBlank()) {
+                return new DiffContext(combined.toString(), branch, diffRepoRoot);
+            }
         }
 
         // Fallback: single-repo or non-git4idea context
         String basePath = project.getBasePath();
         if (basePath == null) return null;
         StringBuilder sb = new StringBuilder();
-        appendDiffForChanges(sb, basePath, selectedChanges);
+        boolean appended = appendDiffForChanges(sb, basePath, selectedChanges);
         String result = sb.toString();
-        return result.isBlank() ? null : result;
+        return result.isBlank()
+            ? null
+            : new DiffContext(result, appended ? resolveBranchName(basePath) : null, basePath);
     }
 
     /** Appends the scoped diff for {@code changes} in the repo rooted at {@code root}. */
-    private static void appendDiffForChanges(@NotNull StringBuilder combined,
-                                             @NotNull String root,
-                                             @NotNull List<Change> changes) {
+    private static boolean appendDiffForChanges(@NotNull StringBuilder combined,
+                                                @NotNull String root,
+                                                @NotNull List<Change> changes) {
         List<String> paths = extractRelativePaths(root, changes);
-        if (paths.isEmpty()) return;
+        if (paths.isEmpty()) return false;
 
         // 1. staged
         String staged = runGitInDir(root, buildArgs(List.of("diff", "--cached", "--"), paths));
-        if (staged != null && !staged.isBlank()) { combined.append(staged); return; }
+        if (staged != null && !staged.isBlank()) { combined.append(staged); return true; }
 
         // 2. unstaged
         String unstaged = runGitInDir(root, buildArgs(List.of("diff", "--"), paths));
-        if (unstaged != null && !unstaged.isBlank()) { combined.append(unstaged); return; }
+        if (unstaged != null && !unstaged.isBlank()) { combined.append(unstaged); return true; }
 
         // 3. HEAD (handles initial-commit edge case)
         String head = runGitInDir(root, buildArgs(List.of("diff", "HEAD", "--"), paths));
-        if (head != null && !head.isBlank()) combined.append(head);
+        if (head != null && !head.isBlank()) {
+            combined.append(head);
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -241,6 +278,14 @@ final class CommitMessagePromptBuilder {
     static String buildSystemPrompt(@NotNull Project project,
                                     @NotNull CommitMessageSettings.State s,
                                     @Nullable String currentBranch) {
+        return buildSystemPrompt(project, s, currentBranch, null);
+    }
+
+    @NotNull
+    static String buildSystemPrompt(@NotNull Project project,
+                                    @NotNull CommitMessageSettings.State s,
+                                    @Nullable String currentBranch,
+                                    @Nullable String repoRoot) {
         StringBuilder sb = new StringBuilder();
         sb.append("You are a commit message writer. ")
           .append("Generate a single, ready-to-use git commit message for the provided diff. ")
@@ -268,7 +313,7 @@ final class CommitMessagePromptBuilder {
             // rules file drive every decision (branch gate, prefix selection, file-type
             // gates, etc.). This keeps the tool generic across any team/rule set, exactly
             // like the reference GitHub commit-message generator.
-            String factsBlock = buildGitFactsBlock(project, s, currentBranch);
+            String factsBlock = buildGitFactsBlock(project, s, currentBranch, repoRoot);
             if (!factsBlock.isBlank()) {
                 sb.append(factsBlock).append("\n");
             }
@@ -315,24 +360,79 @@ final class CommitMessagePromptBuilder {
      * or the branch name cannot be determined.
      */
     @Nullable
-    static String resolveBranchName(@NotNull Project project) {
-        // Primary: git4idea repository manager (handles multi-root projects)
-        List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
-        if (!repos.isEmpty()) {
-            var branch = repos.get(0).getCurrentBranch();
-            if (branch != null) return branch.getName();
-        }
-        // Fallback: git subprocess (non-git4idea contexts, e.g. test sandbox).
+    private static String resolveBranchName(@NotNull String repoRoot) {
         // Use the exact command the rules file references so the resolved value
-        // matches what a user running it manually would see.
-        String basePath = project.getBasePath();
-        if (basePath == null) return null;
-        String name = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "HEAD");
+        // matches what a user running it manually would see. This reads the real
+        // .git state for the repo that owns the diff instead of a cached/default project root.
+        String name = runGitInDir(repoRoot, "branch", "--show-current");
         if (name == null || name.isBlank() || name.equals("HEAD")) {
-            name = runGitInDir(basePath, "branch", "--show-current");
+            name = runGitInDir(repoRoot, "rev-parse", "--abbrev-ref", "HEAD");
         }
-        if (name == null || name.isBlank() || name.equals("HEAD")) return null;
-        return name.trim();
+        return normalizeBranchForPrompt(name);
+    }
+
+    /**
+     * Resolves the current branch for a git4idea {@link GitRepository} using IntelliJ's
+     * own Git integration as the <b>authoritative primary source</b>.
+     *
+     * <p>git4idea's {@link GitRepository#getCurrentBranch()} is backed by the IDE's live
+     * repository model (it watches {@code .git/HEAD}), so it reports exactly the branch the
+     * user has checked out — the same value IntelliJ shows in its own status bar and the
+     * value the reference GitHub Copilot generator sees. A raw {@code git} subprocess is
+     * only used as a fallback for the rare case where the in-memory model has not been
+     * populated yet (e.g. immediately after project open).</p>
+     */
+    @Nullable
+    private static String resolveBranchName(@NotNull GitRepository repo) {
+        // Primary: IntelliJ's Git integration (live, authoritative, repository-agnostic).
+        var branch = repo.getCurrentBranch();
+        String name = branch == null ? null : normalizeBranchForPrompt(branch.getName());
+        if (name != null) return name;
+        // The model may be momentarily stale (e.g. just after open) — force a refresh.
+        repo.update();
+        branch = repo.getCurrentBranch();
+        name = branch == null ? null : normalizeBranchForPrompt(branch.getName());
+        if (name != null) return name;
+        // Fallback: git subprocess against the repo's real root (detached HEAD or
+        // non-populated model). Uses the exact command the rules file references so the
+        // resolved value matches what a user running it manually would see.
+        return resolveBranchName(repo.getRoot().getPath());
+    }
+
+    /**
+     * Resolves the current branch for {@code project}, preferring IntelliJ's Git
+     * integration ({@link GitRepositoryManager}) over any subprocess or base-path guess.
+     *
+     * <p>The previous implementation queried {@code project.getBasePath()} with a raw
+     * {@code git} subprocess <em>first</em>. In multi-root projects — or whenever the
+     * project base path is not the actual repository root that owns the changes — that
+     * returned the wrong (or a stale) branch, so the rules-file branch gate selected the
+     * wrong prefix. Consulting {@link GitRepositoryManager} first fixes that regression
+     * without hardcoding any branch name: the IDE's live model is the source of truth,
+     * exactly as the reference Copilot generator behaves.</p>
+     */
+    static String resolveBranchName(@NotNull Project project) {
+        // Primary: IntelliJ's Git integration for every repo root in the project.
+        List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
+        for (GitRepository repo : repos) {
+            String branch = resolveBranchName(repo);
+            if (branch != null) return branch;
+        }
+        // Fallback: subprocess against the project base path (non-git4idea contexts,
+        // e.g. the test sandbox where the repository model is not registered).
+        String basePath = project.getBasePath();
+        if (basePath != null) {
+            String branch = resolveBranchName(basePath);
+            if (branch != null) return branch;
+        }
+        return null;
+    }
+
+    @Nullable
+    private static String normalizeBranchForPrompt(@Nullable String branch) {
+        if (branch == null) return null;
+        String trimmed = branch.trim();
+        return trimmed.isBlank() || trimmed.equals("HEAD") ? null : trimmed;
     }
 
     /**
@@ -357,11 +457,19 @@ final class CommitMessagePromptBuilder {
     static String buildGitFactsBlock(@NotNull Project project,
                                      @NotNull CommitMessageSettings.State s,
                                      @Nullable String currentBranch) {
+        return buildGitFactsBlock(project, s, currentBranch, null);
+    }
+
+    @NotNull
+    static String buildGitFactsBlock(@NotNull Project project,
+                                     @NotNull CommitMessageSettings.State s,
+                                     @Nullable String currentBranch,
+                                     @Nullable String repoRoot) {
         boolean haveBranch = currentBranch != null && !currentBranch.isBlank()
             && !currentBranch.equals("HEAD");
         if (!haveBranch) return "";
 
-        String defaultBranch = resolveConfiguredOrDetectedDefaultBranch(project, s);
+        String defaultBranch = resolveConfiguredOrDetectedDefaultBranch(project, s, repoRoot);
 
         StringBuilder b = new StringBuilder();
         b.append("=== Git context (facts for evaluating the rules above — do NOT run git yourself) ===\n");
@@ -387,9 +495,16 @@ final class CommitMessagePromptBuilder {
     @Nullable
     static String resolveConfiguredOrDetectedDefaultBranch(@NotNull Project project,
                                                            @NotNull CommitMessageSettings.State s) {
+        return resolveConfiguredOrDetectedDefaultBranch(project, s, null);
+    }
+
+    @Nullable
+    static String resolveConfiguredOrDetectedDefaultBranch(@NotNull Project project,
+                                                           @NotNull CommitMessageSettings.State s,
+                                                           @Nullable String repoRoot) {
         String configured = s.defaultBranchName == null ? "" : s.defaultBranchName.trim();
         if (!configured.isBlank()) return configured;
-        return resolveDefaultBranchName(project);
+        return resolveDefaultBranchName(project, repoRoot);
     }
 
     /**
@@ -428,8 +543,16 @@ final class CommitMessagePromptBuilder {
      */
     @Nullable
     static String resolveDefaultBranchName(@NotNull Project project) {
-        String basePath = project.getBasePath();
-        if (basePath == null) {
+        return resolveDefaultBranchName(project, null);
+    }
+
+    @Nullable
+    static String resolveDefaultBranchName(@NotNull Project project, @Nullable String repoRoot) {
+        String basePath = repoRoot;
+        if (basePath == null || basePath.isBlank()) {
+            basePath = project.getBasePath();
+        }
+        if (basePath == null || basePath.isBlank()) {
             List<GitRepository> repos = GitRepositoryManager.getInstance(project).getRepositories();
             if (repos.isEmpty()) return null;
             basePath = repos.get(0).getRoot().getPath();

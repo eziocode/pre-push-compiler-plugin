@@ -1117,36 +1117,30 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 != PrePushCheckerSettings.ShaTrigger.AFTER_PUSH) return;
 
         PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
+        // Resolve the git repository roots that own the pushed commits using IntelliJ's
+        // own Git integration on the EDT/model thread BEFORE going to the pooled thread.
+        // Mapping each push root through GitRepositoryManager guarantees we read HEAD from
+        // the actual repository the user pushed — not a submodule directory that a raw
+        // commit.getRoot() might point at (the 1.8.7 mis-copy cause).
+        List<String> pushRepoRoots = resolvePushRepositoryRoots(project, pushDetails);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             // Primary: read the ACTUAL commit SHA on disk with `git rev-parse HEAD`
-            // against each push root. This is the only authoritative source of "the
-            // commit that is about to be pushed". IntelliJ's VcsFullCommitDetails push
-            // model (used below as a fallback) is backed by the VCS-log cache, which is
-            // rebuilt/stale after an IDE restart and can return an OLD outgoing commit
-            // rather than the current branch head — the root cause of the "copied SHA
-            // differs from the actual commit after restarting IntelliJ" report.
+            // against each repository root resolved via IntelliJ's Git integration. This
+            // is the only authoritative source of "the commit that was just created" —
+            // it returns the exact new commit id git wrote, so the copied SHA always
+            // matches the real Git commit. We intentionally do not fall back to
+            // VcsFullCommitDetails#getId() for the clipboard value because that model is
+            // backed by the VCS-log cache and can be stale after IDE restarts.
             String sha = null;
-            outer:
-            for (PushInfo info : pushDetails) {
-                for (VcsFullCommitDetails commit : info.getCommits()) {
-                    VirtualFile root = commit.getRoot();
-                    if (root != null) {
-                        sha = GitOperations.headSha(root.getPath());
-                        if (sha != null) break outer;
-                    }
-                }
+            for (String root : pushRepoRoots) {
+                sha = GitOperations.headSha(root);
+                if (sha != null) break;
             }
             // Fallback 1: project base path (single-repo projects where the push root
-            // could not be resolved from the push details).
+            // could not be resolved from the push details / repository model).
             if (sha == null) {
                 String basePath = project.getBasePath();
                 if (basePath != null) sha = GitOperations.headSha(basePath);
-            }
-            // Fallback 2 (last resort): topological tip of the push set from the VCS-log
-            // model. Only used when no on-disk git root could be resolved at all. This is
-            // the potentially-stale source, so it is intentionally the final fallback.
-            if (sha == null) {
-                sha = pushedTipSha(pushDetails);
             }
             if (sha == null) return;
             final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
@@ -1157,6 +1151,45 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                     com.intellij.notification.NotificationType.INFORMATION);
             });
         });
+    }
+
+    /**
+     * Resolves the git repository root path(s) that own the pushed commits, using
+     * IntelliJ's own Git integration ({@link git4idea.repo.GitRepositoryManager}) rather
+     * than trusting {@link VcsFullCommitDetails#getRoot()} directly.
+     *
+     * <p>{@code commit.getRoot()} can point at a submodule directory (for submodule-update
+     * commits), whose {@code HEAD} is the submodule tip — not the repository the user
+     * pushed. Mapping each candidate root through {@code getRepositoryForRoot}/
+     * {@code getRepositoryForFile} yields the enclosing repository's canonical root, so the
+     * subsequent {@code git rev-parse HEAD} reads the correct branch head. The result is an
+     * ordered, de-duplicated list preserving push order. Falls back to the raw
+     * {@code commit.getRoot()} path when the model cannot map it, keeping behaviour robust
+     * and repository-agnostic.</p>
+     */
+    @NotNull
+    private static List<String> resolvePushRepositoryRoots(
+        @NotNull Project project,
+        @NotNull List<PushInfo> pushDetails
+    ) {
+        git4idea.repo.GitRepositoryManager repoManager =
+            git4idea.repo.GitRepositoryManager.getInstance(project);
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        for (PushInfo info : pushDetails) {
+            for (VcsFullCommitDetails commit : info.getCommits()) {
+                VirtualFile root = commit.getRoot();
+                if (root == null) continue;
+                git4idea.repo.GitRepository repo = repoManager.getRepositoryForRootQuick(root);
+                if (repo == null) repo = repoManager.getRepositoryForFileQuick(root);
+                if (repo != null) {
+                    roots.add(repo.getRoot().getPath());
+                } else {
+                    // Model could not map it — fall back to the raw commit root.
+                    roots.add(root.getPath());
+                }
+            }
+        }
+        return new ArrayList<>(roots);
     }
 
     /**
