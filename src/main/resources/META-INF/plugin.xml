@@ -69,6 +69,25 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.8.9 — Default-branch gate fix for <code>ISSUEFIX:</code></h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b><code>ISSUEFIX:</code> not applied on the default branch.</b> 1.8.8 resolved
+                the default branch only from git (<code>origin/HEAD</code>). When
+                <code>origin/HEAD</code> is unset locally, or the team's default branch name
+                does not match it, the gate wrongly classified the real default branch as
+                <em>non-default</em> and suppressed <code>ISSUEFIX:</code> on it. Added an explicit
+                <b>Default branch (rules gate)</b> setting under
+                <em>Settings → AI Commit Message Generator</em>: when set it is authoritative, so
+                <code>ISSUEFIX:</code>/<code>DOCS:</code> are allowed on that branch and forbidden
+                on every other branch, exactly per the rules file. Auto-detection (now also using
+                <code>init.defaultBranch</code>) is used only when the field is blank, and when
+                nothing can be resolved the plugin no longer asserts a wrong verdict — it asks the
+                model to run Step 0 itself. Branch comparison is case-insensitive and tolerant of
+                <code>refs/heads/</code>/<code>origin/</code> prefixes.</li>
+        </ul>
+
         <h3>1.8.8 — Branch-rule &amp; commit-SHA correctness fixes</h3>
 
         <h4>Fixed</h4>

@@ -1118,31 +1118,35 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
         PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            // Primary: resolve the ACTUAL pushed tip topologically from the commit
-            // objects. The tip is the commit that is not a parent of any other commit
-            // in the push set — this is unambiguous, unlike the previous highest-
-            // timestamp heuristic which could pick an ancestor after a rebase, amend,
-            // or cherry-pick (committer dates are not monotonic with DAG order). This
-            // was the root cause of the "copied SHA is a different commit" report.
-            String sha = pushedTipSha(pushDetails);
-
-            // Fallback 1: resolve HEAD via `git rev-parse HEAD` from the repo root
-            // carried by the push info (authoritative for a normal current-branch push).
-            if (sha == null) {
-                outer:
-                for (PushInfo info : pushDetails) {
-                    for (VcsFullCommitDetails commit : info.getCommits()) {
-                        VirtualFile root = commit.getRoot();
-                        if (root != null) {
-                            sha = GitOperations.headSha(root.getPath());
-                            if (sha != null) break outer;
-                        }
+            // Primary: read the ACTUAL commit SHA on disk with `git rev-parse HEAD`
+            // against each push root. This is the only authoritative source of "the
+            // commit that is about to be pushed". IntelliJ's VcsFullCommitDetails push
+            // model (used below as a fallback) is backed by the VCS-log cache, which is
+            // rebuilt/stale after an IDE restart and can return an OLD outgoing commit
+            // rather than the current branch head — the root cause of the "copied SHA
+            // differs from the actual commit after restarting IntelliJ" report.
+            String sha = null;
+            outer:
+            for (PushInfo info : pushDetails) {
+                for (VcsFullCommitDetails commit : info.getCommits()) {
+                    VirtualFile root = commit.getRoot();
+                    if (root != null) {
+                        sha = GitOperations.headSha(root.getPath());
+                        if (sha != null) break outer;
                     }
                 }
             }
+            // Fallback 1: project base path (single-repo projects where the push root
+            // could not be resolved from the push details).
             if (sha == null) {
                 String basePath = project.getBasePath();
                 if (basePath != null) sha = GitOperations.headSha(basePath);
+            }
+            // Fallback 2 (last resort): topological tip of the push set from the VCS-log
+            // model. Only used when no on-disk git root could be resolved at all. This is
+            // the potentially-stale source, so it is intentionally the final fallback.
+            if (sha == null) {
+                sha = pushedTipSha(pushDetails);
             }
             if (sha == null) return;
             final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT

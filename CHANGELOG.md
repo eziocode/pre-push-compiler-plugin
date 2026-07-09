@@ -6,7 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
-## [1.8.8]
+## [1.8.9]
+
+### Fixed
+
+- **`ISSUEFIX:` not applied on the default branch (branch-gate mis-classification).**
+  1.8.8 resolved the default branch only from git (`git symbolic-ref refs/remotes/origin/HEAD`). When `origin/HEAD` is unset locally, or the team's default branch name does not match what `origin/HEAD` points to, the gate wrongly classified the real default branch as *non-default* and therefore suppressed `ISSUEFIX:` on it (while still applying it elsewhere).
+  Fix: added an explicit **Default branch (rules gate)** setting under *Settings → AI Commit Message Generator*. When set it is authoritative for the branch gate, so `ISSUEFIX:`/`DOCS:` are treated as allowed on that branch and forbidden on every other branch — exactly as the rules file specifies. Git auto-detection (now also consulting `init.defaultBranch`) is used only when the field is blank, and when nothing can be resolved the plugin no longer asserts a wrong verdict — it instructs the model to run Step 0 itself.
+  Branch-name comparison is now case-insensitive and tolerant of `refs/heads/` / `origin/` prefixes, and the verdict block spells out the allowed/forbidden prefixes explicitly.
+
+### [1.8.8]
 
 ### Fixed
 

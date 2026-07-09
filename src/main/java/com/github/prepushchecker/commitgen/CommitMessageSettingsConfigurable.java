@@ -68,6 +68,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextArea extraInstructionsArea;
     private TextFieldWithBrowseButton customRulesFileField;
     private JBLabel     customRulesFileStatusLabel;
+    private JBTextField defaultBranchField;
 
     @Override
     public @Nls(capitalization = Nls.Capitalization.Title) String getDisplayName() {
@@ -559,6 +560,18 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         options.add(languageField, g);
         row++;
 
+        defaultBranchField = new JBTextField(30);
+        defaultBranchField.getEmptyText().setText("blank = auto-detect (git origin/HEAD)");
+        defaultBranchField.setToolTipText(
+            "Team default branch used by the rules-file branch gate. When set, ISSUEFIX:/DOCS: "
+                + "prefixes are treated as allowed on this branch and forbidden on all others. "
+                + "Leave blank to auto-detect from git.");
+        g.gridx = 0; g.gridy = row; g.gridwidth = 1; g.weightx = 0;
+        options.add(new JBLabel("Default branch (rules gate):"), g);
+        g.gridx = 1; g.weightx = 1;
+        options.add(defaultBranchField, g);
+        row++;
+
         g.gridx = 0; g.gridy = row++; g.gridwidth = 2; g.weightx = 1;
         options.add(autoScopeCheck, g);
 
@@ -642,6 +655,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (autoScopeCheck.isSelected() != s.autoDetectScope) return true;
         if (!extraInstructionsArea.getText().equals(s.extraInstructions)) return true;
         if (!trimmedTextEquals(customRulesFileField.getTextField(), s.customRulesFilePath)) return true;
+        if (!trimmedTextEquals(defaultBranchField, s.defaultBranchName)) return true;
         return false;
     }
 
@@ -690,6 +704,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.autoDetectScope        = autoScopeCheck.isSelected();
         s.extraInstructions      = extraInstructionsArea.getText();
         s.customRulesFilePath    = customRulesFileField.getText().trim();
+        s.defaultBranchName      = defaultBranchField.getText().trim();
 
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.OPENAI, openAiKeyField);
         saveApiKeyIfPresent(cfg, CommitMessageProvider.Id.ANTHROPIC, anthropicKeyField);
@@ -755,6 +770,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         autoScopeCheck.setSelected(s.autoDetectScope);
         extraInstructionsArea.setText(s.extraInstructions);
         customRulesFileField.setText(s.customRulesFilePath);
+        defaultBranchField.setText(s.defaultBranchName);
         updateRulesFileStatus();
 
         updateIntelliJAiStatus();

@@ -54,6 +54,22 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
          * Leave blank to use the default search order.
          */
         public String  customRulesFilePath    = "";
+
+        /**
+         * Team's default branch name used by the rules-file branch gate
+         * (e.g. the branch on which {@code ISSUEFIX:} is allowed). Many teams use a
+         * default branch whose name does not match what {@code origin/HEAD} points to
+         * (or {@code origin/HEAD} is not set locally), so relying on git auto-detection
+         * alone produced a wrong "non-default" verdict and suppressed {@code ISSUEFIX:}
+         * even on the real default branch.
+         *
+         * <p>When set, this value is authoritative for the branch-gate verdict. When
+         * blank, the plugin falls back to git auto-detection
+         * ({@code git symbolic-ref refs/remotes/origin/HEAD}); if that also fails no
+         * hard verdict is asserted and the AI applies the rules-file decision tree
+         * using the branch name alone (preserving the pre-1.8.8 behaviour).</p>
+         */
+        public String  defaultBranchName      = "";
     }
 
     private State state = new State();

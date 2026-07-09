@@ -254,37 +254,23 @@ final class CommitMessagePromptBuilder {
             String fileName = resolvedRuleFileName(project, s.customRulesFilePath);
             sb.append("=== Project commit rules (from ")
               .append(fileName != null ? fileName : "rules file")
-              .append(") — these rules OVERRIDE all generic guidance below ===\n")
+              .append(") — these rules OVERRIDE all generic guidance below. "
+                    + "Follow them EXACTLY, including any decision tree, branch gate, or file-type gate. ===\n")
               .append(mdRules.trim()).append("\n")
               .append("=== End of project commit rules ===\n\n");
 
-            // Enforce the branch gate when the rules contain a Decision Tree.
-            // The AI cannot run `git branch --show-current` itself, so we resolve
-            // the current branch AND classify it (default vs non-default) here and
-            // hand the model a concrete verdict. This removes the model's discretion,
-            // which was the root cause of the prefix applying on some branches but
-            // not others.
-            if (currentBranch != null && !currentBranch.isBlank() && !currentBranch.equals("HEAD")) {
-                String defaultBranch = resolveDefaultBranchName(project);
-                boolean isDefault = defaultBranch != null
-                    && currentBranch.equalsIgnoreCase(defaultBranch);
-
-                sb.append("CRITICAL ENFORCEMENT — branch gate has ALREADY been evaluated for you:\n")
-                  .append("- Current branch: '").append(currentBranch).append("'\n");
-                if (defaultBranch != null) {
-                    sb.append("- Repository default branch: '").append(defaultBranch).append("'\n");
-                }
-                if (isDefault) {
-                    sb.append("- Verdict: this IS the DEFAULT branch. Apply the DEFAULT-branch rules ")
-                      .append("(Steps 1–3). ISSUEFIX: / DOCS: selection applies here.\n");
-                } else {
-                    sb.append("- Verdict: this is a NON-DEFAULT branch. ISSUEFIX: is FORBIDDEN. ")
-                      .append("Skip the default-branch steps and apply the NON-DEFAULT rules ")
-                      .append("(METHOD_ENTRY: / TESTCASE: / FEATURE: / REFACTOR: per the decision tree).\n");
-                }
-                sb.append("You MUST honour this verdict. Then execute the remaining decision-tree ")
-                  .append("steps in order, using the staged files listed in the user message, ")
-                  .append("before choosing the final prefix. Do not re-decide the branch gate.\n\n");
+            // Provide the concrete git FACTS the rules may reference (current branch,
+            // repository default branch) so the model can execute the rules' own
+            // decision tree without having to shell out to git — which it cannot do.
+            //
+            // IMPORTANT: nothing here is hardcoded to any specific project's branch
+            // names or prefixes. We only surface neutral, factual context and let the
+            // rules file drive every decision (branch gate, prefix selection, file-type
+            // gates, etc.). This keeps the tool generic across any team/rule set, exactly
+            // like the reference GitHub commit-message generator.
+            String factsBlock = buildGitFactsBlock(project, s, currentBranch);
+            if (!factsBlock.isBlank()) {
+                sb.append(factsBlock).append("\n");
             }
         }
 
@@ -350,15 +336,96 @@ final class CommitMessagePromptBuilder {
     }
 
     /**
+     * Builds a neutral, factual git-context block that the rules file can reference when
+     * executing its own decision tree (branch gate, file-type gates, etc.). The AI cannot
+     * run git itself, so we surface the facts it would otherwise have to shell out for:
+     * the current branch, the repository default branch, and whether the two match.
+     *
+     * <p><b>No project-specific branch names or prefixes are hardcoded.</b> This method
+     * only reports observed git state and defers every decision to the rules file — so the
+     * tool works identically for any team's rule set. It mirrors how the reference GitHub
+     * commit-message generator behaves: rules-driven, context-fed, no baked-in policy.</p>
+     *
+     * <p>The default branch is resolved from (1) the optional Settings override
+     * {@code s.defaultBranchName} — useful when {@code origin/HEAD} is unset locally or
+     * points elsewhere — then (2) git auto-detection. When neither is available we simply
+     * omit the default-branch fact and let the rules file's own Step 0 (e.g.
+     * {@code git branch --show-current}) instruction stand, using the current branch we
+     * provide.</p>
+     */
+    @NotNull
+    static String buildGitFactsBlock(@NotNull Project project,
+                                     @NotNull CommitMessageSettings.State s,
+                                     @Nullable String currentBranch) {
+        boolean haveBranch = currentBranch != null && !currentBranch.isBlank()
+            && !currentBranch.equals("HEAD");
+        if (!haveBranch) return "";
+
+        String defaultBranch = resolveConfiguredOrDetectedDefaultBranch(project, s);
+
+        StringBuilder b = new StringBuilder();
+        b.append("=== Git context (facts for evaluating the rules above — do NOT run git yourself) ===\n");
+        b.append("- Current branch (`git branch --show-current`): ").append(currentBranch).append("\n");
+        if (defaultBranch != null) {
+            boolean isDefault = branchNamesMatch(currentBranch, defaultBranch);
+            b.append("- Repository default branch: ").append(defaultBranch).append("\n");
+            b.append("- Current branch is the default branch: ")
+             .append(isDefault ? "YES" : "NO").append("\n");
+        }
+        b.append("Use these facts to execute the rules file's decision tree exactly as written "
+               + "(branch gate first, then the remaining steps against the staged files listed "
+               + "in the user message). Let the rules file decide the final prefix.\n");
+        b.append("=== End of git context ===\n");
+        return b.toString();
+    }
+
+    /**
+     * Resolves the repository default branch from the optional Settings override first
+     * (authoritative when set), then falls back to git auto-detection. Returns {@code null}
+     * when neither is available.
+     */
+    @Nullable
+    static String resolveConfiguredOrDetectedDefaultBranch(@NotNull Project project,
+                                                           @NotNull CommitMessageSettings.State s) {
+        String configured = s.defaultBranchName == null ? "" : s.defaultBranchName.trim();
+        if (!configured.isBlank()) return configured;
+        return resolveDefaultBranchName(project);
+    }
+
+    /**
+     * Compares two branch names. Matching is case-insensitive and tolerant of a
+     * {@code refs/heads/} / {@code refs/remotes/} / {@code origin/} prefix on either side,
+     * since the current branch and the configured/detected default may be expressed
+     * differently.
+     */
+    static boolean branchNamesMatch(@Nullable String a, @Nullable String b) {
+        String na = normalizeBranchName(a);
+        String nb = normalizeBranchName(b);
+        return na != null && na.equalsIgnoreCase(nb);
+    }
+
+    @Nullable
+    private static String normalizeBranchName(@Nullable String name) {
+        if (name == null) return null;
+        String n = name.trim();
+        if (n.isEmpty()) return null;
+        if (n.startsWith("refs/heads/")) n = n.substring("refs/heads/".length());
+        else if (n.startsWith("refs/remotes/")) n = n.substring("refs/remotes/".length());
+        if (n.startsWith("origin/")) n = n.substring("origin/".length());
+        return n.isBlank() ? null : n;
+    }
+
+    /**
      * Resolves the repository's default branch name (e.g. {@code main}, {@code master},
      * or a team-specific default) so the branch gate can be evaluated deterministically
      * in code instead of being guessed by the AI. Resolution order:
      * <ol>
      *   <li>{@code git symbolic-ref --short refs/remotes/origin/HEAD} → strip {@code origin/}</li>
      *   <li>{@code git rev-parse --abbrev-ref origin/HEAD} → strip {@code origin/}</li>
+     *   <li>{@code git config --get init.defaultBranch}</li>
      * </ol>
-     * Returns {@code null} when it cannot be determined (in which case the AI is left to
-     * apply the decision tree using the branch name alone, preserving prior behaviour).
+     * Returns {@code null} when it cannot be determined (in which case the caller keeps
+     * the classification {@code UNKNOWN} and lets the AI run Step 0 itself).
      */
     @Nullable
     static String resolveDefaultBranchName(@NotNull Project project) {
@@ -373,7 +440,15 @@ final class CommitMessagePromptBuilder {
         if (stripped != null) return stripped;
 
         head = runGitInDir(basePath, "rev-parse", "--abbrev-ref", "origin/HEAD");
-        return stripOriginPrefix(head);
+        stripped = stripOriginPrefix(head);
+        if (stripped != null) return stripped;
+
+        String configured = runGitInDir(basePath, "config", "--get", "init.defaultBranch");
+        if (configured != null && !configured.isBlank()) {
+            String t = configured.trim();
+            if (!t.isEmpty()) return t;
+        }
+        return null;
     }
 
     @Nullable

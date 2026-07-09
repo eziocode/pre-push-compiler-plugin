@@ -6,6 +6,21 @@ import java.util.Collections;
 import java.util.List;
 
 public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
+
+    @Override
+    protected void tearDown() throws Exception {
+        // Remove any rules file written into the shared sandbox base path so it does
+        // not leak into subsequent tests (they auto-detect COMMIT_RULES.md).
+        try {
+            String base = getProject().getBasePath();
+            if (base != null) {
+                java.nio.file.Files.deleteIfExists(java.nio.file.Path.of(base, "COMMIT_RULES.md"));
+            }
+        } finally {
+            super.tearDown();
+        }
+    }
+
     public void testBuildForDiffDoesNotRequireRepositoryChanges() {
         CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(
             getProject(),
@@ -119,6 +134,94 @@ public class CommitMessagePromptBuilderTest extends BasePlatformTestCase {
 
         assertTrue("Resolved branch prefix must appear in system prompt",
             system.contains("[ZOHOTESTAUTOMATION_CRM_TB_DEFAULT_BRANCH]"));
+    }
+
+    // ── Git-facts block tests (rules-driven, no hardcoded policy) ─────────────
+
+    public void testBranchNamesMatchIgnoresPrefixesAndCase() {
+        assertTrue(CommitMessagePromptBuilder.branchNamesMatch("main", "MAIN"));
+        assertTrue(CommitMessagePromptBuilder.branchNamesMatch("origin/main", "main"));
+        assertTrue(CommitMessagePromptBuilder.branchNamesMatch("refs/heads/develop", "develop"));
+        assertFalse(CommitMessagePromptBuilder.branchNamesMatch("feature/x", "main"));
+        assertFalse(CommitMessagePromptBuilder.branchNamesMatch(null, "main"));
+    }
+
+    public void testConfiguredDefaultBranchIsAuthoritativeForFactsBlock() {
+        // The configured team default must win over git auto-detection so the facts
+        // block reports the correct default even when origin/HEAD is unset locally.
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.defaultBranchName = "release_main";
+
+        String detected = CommitMessagePromptBuilder
+            .resolveConfiguredOrDetectedDefaultBranch(getProject(), s);
+        assertEquals("release_main", detected);
+    }
+
+    public void testGitFactsBlockMarksCurrentBranchAsDefaultWhenItMatches() {
+        // The exact defect the user reported: on the real default branch the facts must
+        // say "Current branch is the default branch: YES" so the rules file applies
+        // ISSUEFIX:. No prefix is hardcoded — the rules file decides.
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.defaultBranchName = "release_main";
+        s.customRulesFilePath = writeSandboxRulesFile();
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(getProject(), s, "release_main");
+
+        assertTrue("Facts block must be present when rules file is loaded",
+            system.contains("Git context"));
+        assertTrue("Facts must report the repository default branch",
+            system.contains("Repository default branch: release_main"));
+        assertTrue("Facts must confirm current branch IS the default branch",
+            system.contains("Current branch is the default branch: YES"));
+    }
+
+    public void testGitFactsBlockMarksFeatureBranchAsNonDefault() {
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.defaultBranchName = "release_main";
+        s.customRulesFilePath = writeSandboxRulesFile();
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(getProject(), s, "FEATURE_abc");
+
+        assertTrue("Facts must report the current branch",
+            system.contains("Current branch") && system.contains("FEATURE_abc"));
+        assertTrue("Facts must confirm current branch is NOT the default branch",
+            system.contains("Current branch is the default branch: NO"));
+    }
+
+    public void testGitFactsBlockDoesNotHardcodeAnyPrefixOrBranchName() {
+        // Regression guard for the "no hardcoding" requirement: the facts block and
+        // enforcement must NOT bake in any specific prefix (e.g. ISSUEFIX/METHOD_ENTRY)
+        // or project branch name. Those live exclusively in the rules file.
+        CommitMessageSettings.State s = new CommitMessageSettings.State();
+        s.defaultBranchName = "release_main";
+        s.customRulesFilePath = writeSandboxRulesFile();
+
+        String system = CommitMessagePromptBuilder.buildSystemPrompt(getProject(), s, "FEATURE_abc");
+
+        // The rules file body we wrote does not mention these tokens, and the code must
+        // not inject them either.
+        assertFalse("Code must not hardcode ISSUEFIX: policy", system.contains("ISSUEFIX:"));
+        assertFalse("Code must not hardcode METHOD_ENTRY: policy", system.contains("METHOD_ENTRY:"));
+        assertFalse("Code must not hardcode TESTCASE: policy", system.contains("TESTCASE:"));
+    }
+
+    /**
+     * Writes a minimal decision-tree rules file into the sandbox project base and
+     * returns its project-relative path so the git-facts block is emitted.
+     */
+    private String writeSandboxRulesFile() {
+        try {
+            String base = getProject().getBasePath();
+            assertNotNull("Sandbox project must have a base path", base);
+            java.nio.file.Path file = java.nio.file.Path.of(base, "COMMIT_RULES.md");
+            java.nio.file.Files.createDirectories(file.getParent());
+            java.nio.file.Files.writeString(file,
+                "# Commit Message Convention\n\n## Decision Tree\n"
+                    + "### Step 0 — Branch gate\nRun: git branch --show-current\n");
+            return "COMMIT_RULES.md";
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     // ── Front-matter stripping tests ──────────────────────────────────────────
