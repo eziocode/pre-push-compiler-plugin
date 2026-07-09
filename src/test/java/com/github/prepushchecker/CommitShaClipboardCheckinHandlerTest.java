@@ -1,6 +1,9 @@
 package com.github.prepushchecker;
 
+import com.intellij.testFramework.LightVirtualFile;
 import junit.framework.TestCase;
+
+import java.util.List;
 
 /**
  * Regression tests for the "After Commit" clipboard SHA path. These cover the
@@ -31,5 +34,17 @@ public class CommitShaClipboardCheckinHandlerTest extends TestCase {
     public void testIsUnderRootPathHandlesTrailingSlashRoot() {
         assertTrue(CommitShaClipboardCheckinHandler.isUnderRootPath(
             "/repo/src/App.java", "/repo/"));
+    }
+
+    public void testSelectCommitRootsPrefersDeepestNestedRepo() {
+        LightVirtualFile parentRoot = new LightVirtualFile("/repo");
+        LightVirtualFile nestedRoot = new LightVirtualFile("/repo/submodule");
+        LightVirtualFile committedFile = new LightVirtualFile("/repo/submodule/src/App.java");
+
+        List<?> selected = CommitShaClipboardCheckinHandler.selectCommitRoots(
+            List.of(parentRoot, nestedRoot),
+            List.of(committedFile));
+
+        assertEquals(List.of(nestedRoot), selected);
     }
 }

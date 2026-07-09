@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.1</version>
+    <version>1.9.2</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,24 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.2 — Clipboard SHA nested-repo regression fix</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Wrong commit SHA copied in nested-repo layouts.</b> The clipboard path
+                could resolve a parent repository instead of the exact repository that owns the
+                committed or pushed files, so the copied SHA could come from the wrong Git
+                root. After Push now prefers the pushed tip directly from the push payload,
+                and both clipboard paths keep their repository lookup scoped to the exact
+                repository root before falling back to a raw path.</li>
+        </ul>
+
+        <h4>Tests</h4>
+        <ul>
+            <li>Added regression coverage for nested repository root selection in
+                <code>CommitShaClipboardCheckinHandlerTest</code>.</li>
+        </ul>
+
         <h3>1.9.1 — Branch prefix &amp; commit-SHA correctness via IntelliJ Git integration</h3>
 
         <h4>Fixed</h4>

@@ -51,22 +51,18 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 Collection<VirtualFile> committedFiles = panel.getVirtualFiles();
                 List<VirtualFile> commitRoots = selectCommitRoots(roots, committedFiles);
 
-                // Map the committed roots to their enclosing git repositories using
-                // IntelliJ's own Git integration. This ensures the SHA is read from the
-                // actual repository the user committed to (repository-agnostic, and
-                // correct in multi-root / submodule layouts) instead of trusting the raw
-                // panel-root path. Resolved on the EDT where the model is safe to read.
+                // Map the committed roots to their exact git repositories using IntelliJ's
+                // own Git integration. This ensures the SHA is read from the actual
+                // repository the user committed to (repository-agnostic, and correct in
+                // multi-root / submodule layouts) instead of trusting the raw panel-root
+                // path. Resolved on the EDT where the model is safe to read.
                 List<String> repoRoots = resolveRepositoryRoots(project, commitRoots);
 
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
                     // Primary: read the authoritative HEAD SHA with a direct
                     // `git rev-parse HEAD` subprocess against each resolved repository
                     // root. checkinSuccessful() fires AFTER the commit object is written,
-                    // so rev-parse returns the exact new commit id git created — the
-                    // copied SHA always matches the real Git commit. This avoids the
-                    // git4idea repo.update() + getCurrentRevision() path, whose refresh is
-                    // asynchronous and could return the pre-commit (parent) revision — the
-                    // root cause of the "copied SHA differs from the actual commit" report.
+                    // so rev-parse returns the exact new commit id git created.
                     String sha = null;
                     for (String root : repoRoots) {
                         sha = GitOperations.headSha(root);
@@ -96,7 +92,7 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
     }
 
     /**
-     * Maps each committed root {@link VirtualFile} to the canonical root of its enclosing
+     * Maps each committed root {@link VirtualFile} to the canonical root of its exact
      * git repository using IntelliJ's Git integration ({@link GitRepositoryManager}).
      *
      * <p>Reading HEAD from the repository the IDE actually tracks — rather than a raw
@@ -113,7 +109,6 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
         LinkedHashSet<String> resolved = new LinkedHashSet<>();
         for (VirtualFile root : commitRoots) {
             GitRepository repo = repoManager.getRepositoryForRootQuick(root);
-            if (repo == null) repo = repoManager.getRepositoryForFileQuick(root);
             resolved.add(repo != null ? repo.getRoot().getPath() : root.getPath());
         }
         return new ArrayList<>(resolved);

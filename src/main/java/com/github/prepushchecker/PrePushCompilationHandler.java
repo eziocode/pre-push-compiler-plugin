@@ -1117,27 +1117,32 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 != PrePushCheckerSettings.ShaTrigger.AFTER_PUSH) return;
 
         PrePushCheckerSettings.ShaFormat format = PrePushCheckerSettings.getCopyCommitShaFormat(project);
+        // Resolve the pushed tip directly from the push payload first. This is the
+        // authoritative SHA for the push and avoids relying on any repository-root
+        // mapping when the push spans nested repos or multiple repositories.
+        String pushedSha = pushedTipSha(pushDetails);
+
         // Resolve the git repository roots that own the pushed commits using IntelliJ's
         // own Git integration on the EDT/model thread BEFORE going to the pooled thread.
-        // Mapping each push root through GitRepositoryManager guarantees we read HEAD from
-        // the actual repository the user pushed — not a submodule directory that a raw
-        // commit.getRoot() might point at (the 1.8.7 mis-copy cause).
+        // Mapping each push root through GitRepositoryManager keeps the fallback rooted
+        // at the actual repository the user pushed, not an enclosing parent repo.
         List<String> pushRepoRoots = resolvePushRepositoryRoots(project, pushDetails);
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            // Primary: read the ACTUAL commit SHA on disk with `git rev-parse HEAD`
-            // against each repository root resolved via IntelliJ's Git integration. This
-            // is the only authoritative source of "the commit that was just created" —
-            // it returns the exact new commit id git wrote, so the copied SHA always
-            // matches the real Git commit. We intentionally do not fall back to
-            // VcsFullCommitDetails#getId() for the clipboard value because that model is
-            // backed by the VCS-log cache and can be stale after IDE restarts.
-            String sha = null;
-            for (String root : pushRepoRoots) {
-                sha = GitOperations.headSha(root);
-                if (sha != null) break;
+            // Primary: use the pushed tip reported by the VCS log. This is the exact
+            // commit id that git4idea says was pushed, so it stays correct even when
+            // multiple repos are involved or a repository-root lookup is ambiguous.
+            String sha = pushedSha;
+
+            // Fallback: read HEAD from the resolved repository roots only if the push
+            // payload could not be reduced to a valid commit id.
+            if (sha == null) {
+                for (String root : pushRepoRoots) {
+                    sha = GitOperations.headSha(root);
+                    if (sha != null) break;
+                }
             }
-            // Fallback 1: project base path (single-repo projects where the push root
-            // could not be resolved from the push details / repository model).
+            // Final fallback: project base path (single-repo projects where the push
+            // root could not be resolved from the push details / repository model).
             if (sha == null) {
                 String basePath = project.getBasePath();
                 if (basePath != null) sha = GitOperations.headSha(basePath);
@@ -1160,12 +1165,10 @@ public final class PrePushCompilationHandler implements PrePushHandler {
      *
      * <p>{@code commit.getRoot()} can point at a submodule directory (for submodule-update
      * commits), whose {@code HEAD} is the submodule tip — not the repository the user
-     * pushed. Mapping each candidate root through {@code getRepositoryForRoot}/
-     * {@code getRepositoryForFile} yields the enclosing repository's canonical root, so the
-     * subsequent {@code git rev-parse HEAD} reads the correct branch head. The result is an
-     * ordered, de-duplicated list preserving push order. Falls back to the raw
-     * {@code commit.getRoot()} path when the model cannot map it, keeping behaviour robust
-     * and repository-agnostic.</p>
+     * pushed. We therefore use the exact repository root when git4idea can map it,
+     * preserving push order and de-duplicating repeated roots. Falls back to the raw
+     * {@code commit.getRoot()} path when the model cannot map a root, keeping behaviour
+     * robust and repository-agnostic.</p>
      */
     @NotNull
     private static List<String> resolvePushRepositoryRoots(
@@ -1180,7 +1183,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 VirtualFile root = commit.getRoot();
                 if (root == null) continue;
                 git4idea.repo.GitRepository repo = repoManager.getRepositoryForRootQuick(root);
-                if (repo == null) repo = repoManager.getRepositoryForFileQuick(root);
                 if (repo != null) {
                     roots.add(repo.getRoot().getPath());
                 } else {

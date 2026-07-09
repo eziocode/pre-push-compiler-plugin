@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.2]
+
+### Fixed
+
+- **Wrong commit SHA copied in nested-repo layouts.**
+  The clipboard path could resolve a parent repository instead of the exact repository
+  that owns the committed or pushed files, so the copied SHA could come from the wrong
+  Git root.
+  Fix: After Push now prefers the pushed tip directly from the push payload, and both
+  clipboard paths keep their repository lookup scoped to the exact repository root before
+  falling back to a raw path.
+
+### Tests
+
+- Added regression coverage for nested repository root selection in
+  `CommitShaClipboardCheckinHandlerTest`.
+
+---
+
 ## [1.9.1]
 
 ### Fixed
