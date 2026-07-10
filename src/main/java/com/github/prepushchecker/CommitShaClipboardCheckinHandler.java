@@ -120,6 +120,21 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
         return new ArrayList<>(resolved);
     }
 
+    /**
+     * Builds the ordered list of {@link VirtualFile} locations to probe for a repository
+     * root, most-specific first:
+     * <ol>
+     *   <li>every committed file — these point at the exact working tree that owns the
+     *       commit, so they map to the correct repository even after a branch switch or
+     *       IDE restart when the panel root list can lag;</li>
+     *   <li>the fallback panel roots reduced by {@link #selectCommitRoots}, which keeps
+     *       only the deepest/most-nested root that actually owns each committed file (or
+     *       the single deepest root when nothing can be anchored).</li>
+     * </ol>
+     * Reducing the roots — rather than appending every panel root — prevents an enclosing
+     * parent repository from being probed for HEAD when a nested repository owns the
+     * commit. The result is de-duplicated while preserving order.
+     */
     static @NotNull List<VirtualFile> preferredRepositoryLookupLocations(
         @NotNull Collection<VirtualFile> committedFiles,
         @NotNull Collection<VirtualFile> fallbackRoots
@@ -128,6 +143,15 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
         ordered.addAll(committedFiles);
         ordered.addAll(selectCommitRoots(fallbackRoots, committedFiles));
         return new ArrayList<>(ordered);
+    }
+
+    /** Returns {@code roots} ordered by path length descending (deepest/most-nested first). */
+    private static @NotNull List<VirtualFile> sortRootsDeepestFirst(
+        @NotNull Collection<VirtualFile> roots
+    ) {
+        List<VirtualFile> sorted = new ArrayList<>(roots);
+        sorted.sort(Comparator.comparingInt((VirtualFile root) -> root.getPath().length()).reversed());
+        return sorted;
     }
 
     static @org.jetbrains.annotations.Nullable String resolveRepositoryRoot(
@@ -147,8 +171,7 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
     ) {
         if (roots.isEmpty()) return List.of();
 
-        List<VirtualFile> sortedRoots = new ArrayList<>(roots);
-        sortedRoots.sort(Comparator.comparingInt((VirtualFile root) -> root.getPath().length()).reversed());
+        List<VirtualFile> sortedRoots = sortRootsDeepestFirst(roots);
 
         LinkedHashSet<VirtualFile> selected = new LinkedHashSet<>();
         for (VirtualFile file : committedFiles) {
@@ -160,7 +183,11 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
             }
         }
 
-        if (selected.isEmpty()) selected.addAll(roots);
+        // No committed file could be mapped to a root (e.g. the panel exposed no
+        // committed files, or none live under any known root). Fall back to the
+        // single deepest/most-nested root rather than every root, so a nested
+        // repository is never shadowed by its enclosing parent when reading HEAD.
+        if (selected.isEmpty() && !sortedRoots.isEmpty()) selected.add(sortedRoots.get(0));
         return new ArrayList<>(selected);
     }
 

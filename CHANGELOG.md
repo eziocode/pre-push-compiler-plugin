@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.3]
+
+### Fixed
+
+- **Nested-repo clipboard SHA regression (parent repo shadowed the nested repo).**
+  The 1.9.2 root-lookup refactor appended *every* panel fallback root after the committed
+  files, so in a nested-repository layout the enclosing parent repository could still be
+  probed for `HEAD` and win over the nested repository that actually owns the commit —
+  reintroducing the wrong-SHA symptom the release set out to fix. Two regression tests
+  added alongside that refactor also encoded contradictory expectations and were failing
+  against the shipped code, so the build was red.
+  Fix: `preferredRepositoryLookupLocations` now reduces the fallback roots through
+  `selectCommitRoots` (which keeps only the deepest/most-nested root that owns each
+  committed file), and `selectCommitRoots` falls back to the *single deepest* root — never
+  the full root set — when no committed file can be anchored. This guarantees a nested
+  repository is never shadowed by its parent when the SHA is read.
+
+### Changed
+
+- **Code cleanup in `CommitShaClipboardCheckinHandler`.** Deepest-first root ordering is
+  now factored into a single shared `sortRootsDeepestFirst` helper (previously duplicated),
+  and the lookup-ordering documentation was consolidated into one accurate Javadoc block.
+
+### Tests
+
+- Reconciled the two `preferredRepositoryLookupLocations` regression tests in
+  `CommitShaClipboardCheckinHandlerTest` with the sound deepest-owning-repository
+  behaviour; the full suite is green again.
+
+---
+
 ## [1.9.2]
 
 ### Fixed

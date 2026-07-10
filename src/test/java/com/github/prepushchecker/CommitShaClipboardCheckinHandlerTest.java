@@ -57,7 +57,11 @@ public class CommitShaClipboardCheckinHandlerTest extends TestCase {
             List.of(fallbackRoot, committedRoot)
         );
 
-        assertEquals(List.of(committedRoot, fallbackRoot), ordered);
+        // The committed file (/repo/submodule) is listed first. The enclosing parent
+        // (/repo) is intentionally NOT appended: selectCommitRoots reduces the fallback
+        // roots to the deepest one that owns the commit, so a nested repository is never
+        // shadowed by its parent when HEAD is read (the 1.9.2 nested-repo fix).
+        assertEquals(List.of(committedRoot), ordered);
     }
 
     public void testPreferredRepositoryLookupLocationsKeepsDeepestFallbackRepo() {

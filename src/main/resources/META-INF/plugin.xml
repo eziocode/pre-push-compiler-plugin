@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.2</version>
+    <version>1.9.3</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,33 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.3 — Nested-repo clipboard SHA regression fix</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Parent repo shadowed the nested repo when copying the SHA.</b> The 1.9.2
+                root-lookup refactor appended <em>every</em> panel fallback root after the
+                committed files, so in a nested-repository layout the enclosing parent repository
+                could still be probed for <code>HEAD</code> and win over the nested repository that
+                owns the commit — reintroducing the wrong-SHA symptom. The fallback roots are now
+                reduced to the deepest/most-nested root that owns each committed file (never the
+                full root set), so a nested repository is never shadowed by its parent.</li>
+        </ul>
+
+        <h4>Changed</h4>
+        <ul>
+            <li>Cleaned up <code>CommitShaClipboardCheckinHandler</code>: deepest-first root
+                ordering factored into a single shared helper and the lookup-ordering Javadoc
+                consolidated.</li>
+        </ul>
+
+        <h4>Tests</h4>
+        <ul>
+            <li>Reconciled the two <code>preferredRepositoryLookupLocations</code> regression
+                tests in <code>CommitShaClipboardCheckinHandlerTest</code> with the sound
+                deepest-owning-repository behaviour; the full suite is green again.</li>
+        </ul>
+
         <h3>1.9.2 — Clipboard SHA nested-repo regression fix</h3>
 
         <h4>Fixed</h4>
