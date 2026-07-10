@@ -47,4 +47,36 @@ public class CommitShaClipboardCheckinHandlerTest extends TestCase {
 
         assertEquals(List.of(nestedRoot), selected);
     }
+
+    public void testPreferredRepositoryLookupLocationsUsesCommittedFilesFirst() {
+        LightVirtualFile committedRoot = new LightVirtualFile("/repo/submodule");
+        LightVirtualFile fallbackRoot = new LightVirtualFile("/repo");
+
+        List<?> ordered = CommitShaClipboardCheckinHandler.preferredRepositoryLookupLocations(
+            List.of(committedRoot),
+            List.of(fallbackRoot, committedRoot)
+        );
+
+        assertEquals(List.of(committedRoot, fallbackRoot), ordered);
+    }
+
+    public void testPreferredRepositoryLookupLocationsKeepsDeepestFallbackRepo() {
+        LightVirtualFile parentRoot = new LightVirtualFile("/repo");
+        LightVirtualFile nestedRoot = new LightVirtualFile("/repo/submodule");
+        LightVirtualFile committedFile = new LightVirtualFile("/repo/submodule/src/App.java");
+
+        List<?> ordered = CommitShaClipboardCheckinHandler.preferredRepositoryLookupLocations(
+            List.of(),
+            List.of(parentRoot, nestedRoot)
+        );
+
+        assertEquals(List.of(nestedRoot), ordered);
+
+        List<?> withCommittedFile = CommitShaClipboardCheckinHandler.preferredRepositoryLookupLocations(
+            List.of(committedFile),
+            List.of(parentRoot, nestedRoot)
+        );
+
+        assertEquals(List.of(committedFile, nestedRoot), withCommittedFile);
+    }
 }

@@ -1183,8 +1183,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 VirtualFile root = commit.getRoot();
                 if (root == null) continue;
                 String repoRoot = CommitShaClipboardCheckinHandler.resolveRepositoryRoot(repoManager, root);
-                // Model could not map it — fall back to the raw commit root.
-                roots.add(repoRoot != null ? repoRoot : root.getPath());
+                if (repoRoot != null) {
+                    roots.add(repoRoot);
+                }
             }
         }
         return new ArrayList<>(roots);

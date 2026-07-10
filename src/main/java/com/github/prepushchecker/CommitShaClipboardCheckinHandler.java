@@ -106,21 +106,9 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
     ) {
         GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
         LinkedHashSet<String> resolved = new LinkedHashSet<>();
-        for (VirtualFile file : committedFiles) {
-            String repoRoot = resolveRepositoryRoot(repoManager, file);
+        for (VirtualFile location : preferredRepositoryLookupLocations(committedFiles, fallbackRoots)) {
+            String repoRoot = resolveRepositoryRoot(repoManager, location);
             if (repoRoot != null) resolved.add(repoRoot);
-        }
-
-        if (resolved.isEmpty()) {
-            List<VirtualFile> commitRoots = selectCommitRoots(fallbackRoots, committedFiles);
-            for (VirtualFile root : commitRoots) {
-                String repoRoot = resolveRepositoryRoot(repoManager, root);
-                if (repoRoot != null) {
-                    resolved.add(repoRoot);
-                } else {
-                    resolved.add(root.getPath());
-                }
-            }
         }
 
         if (resolved.isEmpty()) {
@@ -130,6 +118,16 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
             }
         }
         return new ArrayList<>(resolved);
+    }
+
+    static @NotNull List<VirtualFile> preferredRepositoryLookupLocations(
+        @NotNull Collection<VirtualFile> committedFiles,
+        @NotNull Collection<VirtualFile> fallbackRoots
+    ) {
+        LinkedHashSet<VirtualFile> ordered = new LinkedHashSet<>();
+        ordered.addAll(committedFiles);
+        ordered.addAll(selectCommitRoots(fallbackRoots, committedFiles));
+        return new ArrayList<>(ordered);
     }
 
     static @org.jetbrains.annotations.Nullable String resolveRepositoryRoot(
