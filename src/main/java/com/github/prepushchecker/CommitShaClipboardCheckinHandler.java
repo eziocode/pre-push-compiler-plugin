@@ -49,14 +49,12 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 // getRoots()/getVirtualFiles() must not be called from a background thread.
                 Collection<VirtualFile> roots = panel.getRoots();
                 Collection<VirtualFile> committedFiles = panel.getVirtualFiles();
-                List<VirtualFile> commitRoots = selectCommitRoots(roots, committedFiles);
 
-                // Map the committed roots to their exact git repositories using IntelliJ's
-                // own Git integration. This ensures the SHA is read from the actual
-                // repository the user committed to (repository-agnostic, and correct in
-                // multi-root / submodule layouts) instead of trusting the raw panel-root
-                // path. Resolved on the EDT where the model is safe to read.
-                List<String> repoRoots = resolveRepositoryRoots(project, commitRoots);
+                // Prefer the committed files themselves when mapping to repositories.
+                // After branch switches or IDE restarts, the panel root list can lag the
+                // currently checked-out repository, while the selected files still point
+                // at the exact working tree that owns the commit.
+                List<String> repoRoots = resolveRepositoryRoots(project, committedFiles, roots);
 
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
                     // Primary: read the authoritative HEAD SHA with a direct
@@ -103,15 +101,46 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
      */
     static @NotNull List<String> resolveRepositoryRoots(
         @NotNull Project project,
-        @NotNull List<VirtualFile> commitRoots
+        @NotNull Collection<VirtualFile> committedFiles,
+        @NotNull Collection<VirtualFile> fallbackRoots
     ) {
         GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
         LinkedHashSet<String> resolved = new LinkedHashSet<>();
-        for (VirtualFile root : commitRoots) {
-            GitRepository repo = repoManager.getRepositoryForRootQuick(root);
-            resolved.add(repo != null ? repo.getRoot().getPath() : root.getPath());
+        for (VirtualFile file : committedFiles) {
+            String repoRoot = resolveRepositoryRoot(repoManager, file);
+            if (repoRoot != null) resolved.add(repoRoot);
+        }
+
+        if (resolved.isEmpty()) {
+            List<VirtualFile> commitRoots = selectCommitRoots(fallbackRoots, committedFiles);
+            for (VirtualFile root : commitRoots) {
+                String repoRoot = resolveRepositoryRoot(repoManager, root);
+                if (repoRoot != null) {
+                    resolved.add(repoRoot);
+                } else {
+                    resolved.add(root.getPath());
+                }
+            }
+        }
+
+        if (resolved.isEmpty()) {
+            String basePath = project.getBasePath();
+            if (basePath != null && !basePath.isBlank()) {
+                resolved.add(basePath);
+            }
         }
         return new ArrayList<>(resolved);
+    }
+
+    static @org.jetbrains.annotations.Nullable String resolveRepositoryRoot(
+        @NotNull GitRepositoryManager repoManager,
+        @NotNull VirtualFile location
+    ) {
+        GitRepository repo = repoManager.getRepositoryForFileQuick(location);
+        if (repo == null) {
+            repo = repoManager.getRepositoryForRootQuick(location);
+        }
+        return repo != null ? repo.getRoot().getPath() : null;
     }
 
     static @NotNull List<VirtualFile> selectCommitRoots(

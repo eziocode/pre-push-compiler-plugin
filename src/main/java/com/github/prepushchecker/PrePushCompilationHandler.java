@@ -1182,13 +1182,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             for (VcsFullCommitDetails commit : info.getCommits()) {
                 VirtualFile root = commit.getRoot();
                 if (root == null) continue;
-                git4idea.repo.GitRepository repo = repoManager.getRepositoryForRootQuick(root);
-                if (repo != null) {
-                    roots.add(repo.getRoot().getPath());
-                } else {
-                    // Model could not map it — fall back to the raw commit root.
-                    roots.add(root.getPath());
-                }
+                String repoRoot = CommitShaClipboardCheckinHandler.resolveRepositoryRoot(repoManager, root);
+                // Model could not map it — fall back to the raw commit root.
+                roots.add(repoRoot != null ? repoRoot : root.getPath());
             }
         }
         return new ArrayList<>(roots);
