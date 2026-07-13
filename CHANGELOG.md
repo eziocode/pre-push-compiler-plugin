@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
-## [1.9.6]
+## [1.9.7]
 
 ### Fixed
 
@@ -14,10 +14,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   and recopies every new stable revision, ensuring final rebased/amended SHA reaches clipboard.
 - **Stale SHA watcher overwriting newer commit.** A newer successful commit cancels the previous
   watcher and invalidates its pending clipboard updates.
+- **False push blocks from stale IntelliJ problem cache.** Pre-push validation now recompiles
+  files flagged by IntelliJ's problem cache and blocks only when the current compiler reports
+  errors. Stale missing-package warnings are ignored after a clean compile.
 
 ### Tests
 
 - Added regression coverage for transient, rebased, final, invalid, and duplicate SHA reads.
+- Full Gradle test suite passes with stale problem-cache validation enabled.
 
 ## [1.9.5]
 

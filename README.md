@@ -193,4 +193,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.9.4**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.9.7**.

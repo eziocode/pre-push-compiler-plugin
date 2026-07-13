@@ -98,38 +98,32 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             String prePushKey = changeSet.cacheKey();
 
             List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
-            if (!problemFiles.isEmpty()) {
-                errorService.setErrors(problemFiles);
-                DialogOutcome outcome = showDialog(
-                    project,
-                    indicator.getModalityState(),
-                    "Push Blocked - IDE Problems Found",
-                    "IntelliJ already reports problems in files included in this push. Fix them before pushing:",
-                    problemFiles,
-                    _ind -> collectKnownProblemFiles(project, changeSet.getSourceFiles()),
-                    abortCommitAction
-                );
-                if (outcome == DialogOutcome.PUSH_ANYWAY) {
-                    PrePushCheckerSettings.setForcePushBypass(project);
-                    return okWithClipboard(project, pushDetails);
-                }
-                if (outcome != DialogOutcome.RESOLVED) return Result.ABORT;
-            }
-
-            // Reuse a recent compile verdict when nothing has moved on disk since it ran.
-            // This skips a redundant full rebuild when e.g. the user just ran the manual
-            // "Run Compilation Check" and is now pushing without edits.
-            List<String> cached = errorService.tryReusePrePushResult(prePushKey);
-            if (cached == null && !changeSet.requiresProjectBuild() && !requiresStrictSnapshotCheck(project, changeSet)) {
-                cached = errorService.tryReuse(changeSet.getSourceFiles());
-            }
             List<String> errors;
-            if (cached != null) {
-                LOG.info("Reusing cached compilation result (" + cached.size() + " error(s)).");
-                errors = cached;
+            if (!problemFiles.isEmpty()) {
+                // WolfTheProblemSolver can retain stale diagnostics after a package or
+                // dependency change. Revalidate with the compiler before blocking; a
+                // clean compile means the problem-cache entry is no longer actionable.
+                LOG.info("IDE problem cache flagged " + problemFiles.size()
+                    + " pushed file(s); running fresh compiler validation.");
+                indicator.setText("Revalidating IDE problem cache");
+                errors = changeSet.requiresProjectBuild()
+                    ? compileProject(project, indicator)
+                    : compileFiles(project, changeSet.getSourceFiles(), indicator);
             } else {
-                scheduleBackgroundPrePushCheck(project, changeSet, prePushKey, pushDetails);
-                return Result.ABORT;
+                // Reuse a recent compile verdict when nothing has moved on disk since it ran.
+                // This skips a redundant full rebuild when e.g. the user just ran the manual
+                // "Run Compilation Check" and is now pushing without edits.
+                List<String> cached = errorService.tryReusePrePushResult(prePushKey);
+                if (cached == null && !changeSet.requiresProjectBuild() && !requiresStrictSnapshotCheck(project, changeSet)) {
+                    cached = errorService.tryReuse(changeSet.getSourceFiles());
+                }
+                if (cached != null) {
+                    LOG.info("Reusing cached compilation result (" + cached.size() + " error(s)).");
+                    errors = cached;
+                } else {
+                    scheduleBackgroundPrePushCheck(project, changeSet, prePushKey, pushDetails);
+                    return Result.ABORT;
+                }
             }
 
             if (!errors.isEmpty()) {
@@ -1088,8 +1082,10 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         indicator.setText("Checking IDE problem cache");
         List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
         if (!problemFiles.isEmpty()) {
-            CompilationErrorService.getInstance(project).setErrors(problemFiles);
-            return problemFiles;
+            // Problem-file flags may be stale after package/dependency changes. Do not
+            // expose them as compiler errors; the fresh compile below is authoritative.
+            LOG.info("IDE problem cache flagged " + problemFiles.size()
+                + " pushed file(s); revalidating with compiler.");
         }
 
         indicator.setText(changeSet.requiresProjectBuild()
