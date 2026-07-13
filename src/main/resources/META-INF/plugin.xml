@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.5</version>
+    <version>1.9.6</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,15 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.6 — Post-rebase SHA refresh</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>SHA copied before rebase completed.</b> After Commit now keeps watching
+                <code>HEAD</code> for up to 10 seconds and recopies each new stable revision,
+                so the final rebased commit SHA reaches the clipboard.</li>
+        </ul>
+
         <h3>1.9.5 — Stable post-commit SHA capture</h3>
 
         <h4>Fixed</h4>

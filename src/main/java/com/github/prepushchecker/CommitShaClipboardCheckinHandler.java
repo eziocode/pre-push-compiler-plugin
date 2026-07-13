@@ -21,6 +21,10 @@ import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Future;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Copies the HEAD commit SHA to the system clipboard immediately after a
@@ -31,6 +35,9 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
     private static final int STABLE_READS_REQUIRED = 3;
     private static final int MAX_SHA_READS = 30;
     private static final long SHA_READ_DELAY_MILLIS = 100L;
+    private static final long SHA_WATCH_DURATION_MILLIS = 10_000L;
+    private static final ConcurrentHashMap<Project, Long> WATCH_GENERATIONS = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Project, Future<?>> WATCHERS = new ConcurrentHashMap<>();
 
     @Override
     public @NotNull CheckinHandler createHandler(
@@ -60,22 +67,30 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 // at the exact working tree that owns the commit.
                 List<String> repoRoots = resolveRepositoryRoots(project, committedFiles, roots);
 
-                ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                    // Git/IDE can advance HEAD through several transient revisions after
-                    // checkinSuccessful(). Require three consecutive identical reads so we
-                    // copy final post-commit HEAD, never the first stale/intermediate tip.
-                    String sha = readStableHeadSha(repoRoots);
-                    // Fallback: project base path (single-repo projects where
-                    // panel.getRoots() could not be mapped to a repository).
-                    if (sha == null) {
-                        String basePath = project.getBasePath();
-                        if (basePath != null) sha = readStableHeadSha(List.of(basePath));
-                    }
-                    if (sha == null) return;
-                    final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
+                startShaWatcher(project, repoRoots, format);
+            }
+        };
+    }
+
+    private static void startShaWatcher(
+        @NotNull Project project,
+        @NotNull List<String> repoRoots,
+        @NotNull PrePushCheckerSettings.ShaFormat format
+    ) {
+        long generation = WATCH_GENERATIONS.merge(project, 1L, Long::sum);
+        Future<?> previous = WATCHERS.remove(project);
+        if (previous != null) previous.cancel(true);
+
+        Future<?> watcher = ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            try {
+                watchHeadSha(repoRoots, SHA_WATCH_DURATION_MILLIS, sha -> {
+                    if (project.isDisposed()
+                        || !Long.valueOf(generation).equals(WATCH_GENERATIONS.get(project))) return;
+                    String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
                         ? sha.substring(0, 7) : sha;
                     ApplicationManager.getApplication().invokeLater(() -> {
-                        if (project.isDisposed()) return;
+                        if (project.isDisposed()
+                            || !Long.valueOf(generation).equals(WATCH_GENERATIONS.get(project))) return;
                         CopyPasteManager.getInstance().setContents(new StringSelection(displaySha));
                         NotificationGroupManager.getInstance()
                             .getNotificationGroup("Pre-Push Compilation Checker")
@@ -84,8 +99,13 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                             .notify(project);
                     });
                 });
+            } finally {
+                if (Long.valueOf(generation).equals(WATCH_GENERATIONS.get(project))) {
+                    WATCHERS.remove(project);
+                }
             }
-        };
+        });
+        WATCHERS.put(project, watcher);
     }
 
     private static boolean isCommitSha(String value) {
@@ -95,23 +115,57 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
     }
 
     static String readStableHeadSha(@NotNull List<String> repoRoots) {
+        final String[] current = {null};
+        watchStableSha(() -> readCurrentHeadSha(repoRoots), MAX_SHA_READS,
+            SHA_READ_DELAY_MILLIS, () -> current[0] = null,
+            sha -> current[0] = sha);
+        return current[0];
+    }
+
+    /**
+     * Watches HEAD for the duration of the post-commit settling window. Every
+     * distinct SHA accepted after three consecutive reads is emitted, including
+     * the first stable SHA. This matters because rebase/amend workflows can move
+     * HEAD after the first stable post-commit read.
+     */
+    static void watchHeadSha(
+        @NotNull List<String> repoRoots,
+        long durationMillis,
+        @NotNull Consumer<String> onSha
+    ) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(durationMillis);
+        watchStableSha(() -> readCurrentHeadSha(repoRoots), Integer.MAX_VALUE,
+            SHA_READ_DELAY_MILLIS, () -> {
+            if (System.nanoTime() >= deadline) throw new WatchComplete();
+        }, onSha);
+    }
+
+    static void watchStableSha(
+        @NotNull Supplier<String> headReader,
+        int maxReads,
+        long delayMillis,
+        @NotNull Runnable beforeRead,
+        @NotNull Consumer<String> onSha
+    ) {
         String previous = null;
         int stableReads = 0;
-        for (int read = 0; read < MAX_SHA_READS; read++) {
-            if (read > 0) {
+        String emitted = null;
+        for (int read = 0; read < maxReads; read++) {
+            try {
+                beforeRead.run();
+            } catch (WatchComplete complete) {
+                return;
+            }
+            if (read > 0 && delayMillis > 0) {
                 try {
-                    TimeUnit.MILLISECONDS.sleep(SHA_READ_DELAY_MILLIS);
+                    TimeUnit.MILLISECONDS.sleep(delayMillis);
                 } catch (InterruptedException interrupted) {
                     Thread.currentThread().interrupt();
-                    return null;
+                    return;
                 }
             }
 
-            String current = null;
-            for (String root : repoRoots) {
-                current = GitOperations.headSha(root);
-                if (current != null) break;
-            }
+            String current = headReader.get();
             if (!isCommitSha(current)) {
                 previous = null;
                 stableReads = 0;
@@ -120,9 +174,24 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
             if (current.equals(previous)) stableReads++;
             else stableReads = 1;
             previous = current;
-            if (stableReads >= STABLE_READS_REQUIRED) return current;
+            if (stableReads >= STABLE_READS_REQUIRED && !current.equals(emitted)) {
+                emitted = current;
+                onSha.accept(current);
+            }
+        }
+    }
+
+    private static String readCurrentHeadSha(@NotNull List<String> repoRoots) {
+        for (String root : repoRoots) {
+            String current = GitOperations.headSha(root);
+            if (current != null) return current;
         }
         return null;
+    }
+
+    private static final class WatchComplete extends RuntimeException {
+        private WatchComplete() {
+        }
     }
 
     /**

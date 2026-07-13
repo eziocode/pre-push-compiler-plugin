@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.6]
+
+### Fixed
+
+- **SHA copied before rebase completed.** After Commit now watches `HEAD` for up to 10 seconds
+  and recopies every new stable revision, ensuring final rebased/amended SHA reaches clipboard.
+- **Stale SHA watcher overwriting newer commit.** A newer successful commit cancels the previous
+  watcher and invalidates its pending clipboard updates.
+
+### Tests
+
+- Added regression coverage for transient, rebased, final, invalid, and duplicate SHA reads.
+
 ## [1.9.5]
 
 ### Fixed

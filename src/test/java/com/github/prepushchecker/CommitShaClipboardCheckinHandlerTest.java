@@ -3,7 +3,9 @@ package com.github.prepushchecker;
 import com.intellij.testFramework.LightVirtualFile;
 import junit.framework.TestCase;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Regression tests for the "After Commit" clipboard SHA path. These cover the
@@ -82,5 +84,43 @@ public class CommitShaClipboardCheckinHandlerTest extends TestCase {
         );
 
         assertEquals(List.of(committedFile, nestedRoot), withCommittedFile);
+    }
+
+    public void testWatchStableShaEmitsInitialAndLaterRebasedSha() {
+        String first = "1111111111111111111111111111111111111111";
+        String rebased = "2222222222222222222222222222222222222222";
+        String finalSha = "3333333333333333333333333333333333333333";
+        List<String> reads = List.of(
+            first, first, first,
+            first,
+            rebased, rebased, rebased,
+            rebased,
+            finalSha, finalSha, finalSha
+        );
+        AtomicInteger index = new AtomicInteger();
+        List<String> emitted = new ArrayList<>();
+
+        CommitShaClipboardCheckinHandler.watchStableSha(
+            () -> reads.get(index.getAndIncrement()), reads.size(), 0,
+            () -> {}, emitted::add);
+
+        assertEquals(List.of(first, rebased, finalSha), emitted);
+    }
+
+    public void testWatchStableShaIgnoresInvalidReadsAndDuplicateStableSha() {
+        String sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        List<String> reads = List.of(
+            "not-a-sha", "not-a-sha",
+            sha, sha, sha,
+            sha, sha
+        );
+        AtomicInteger index = new AtomicInteger();
+        List<String> emitted = new ArrayList<>();
+
+        CommitShaClipboardCheckinHandler.watchStableSha(
+            () -> reads.get(index.getAndIncrement()), reads.size(), 0,
+            () -> {}, emitted::add);
+
+        assertEquals(List.of(sha), emitted);
     }
 }
