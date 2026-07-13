@@ -9,6 +9,7 @@ import com.intellij.openapi.vcs.CheckinProjectPanel;
 import com.intellij.openapi.vcs.changes.CommitContext;
 import com.intellij.openapi.vcs.checkin.CheckinHandler;
 import com.intellij.openapi.vcs.checkin.CheckinHandlerFactory;
+import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import git4idea.repo.GitRepository;
 import git4idea.repo.GitRepositoryManager;
@@ -56,15 +57,31 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 // at the exact working tree that owns the commit.
                 List<String> repoRoots = resolveRepositoryRoots(project, committedFiles, roots);
 
+                // Capture the revision before returning to the event loop. Reading HEAD
+                // later in a pooled task races with branch switches and can copy the next
+                // branch's tip instead of the commit that just succeeded.
+                GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
+                List<String> committedShas = new ArrayList<>();
+                for (String root : repoRoots) {
+                    VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
+                    if (rootFile == null) continue;
+                    GitRepository repository = repoManager.getRepositoryForRootQuick(rootFile);
+                    if (repository != null) {
+                        repository.update();
+                        String revision = repository.getCurrentRevision();
+                        if (isCommitSha(revision)) committedShas.add(revision);
+                    }
+                }
+
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                    // Primary: read the authoritative HEAD SHA with a direct
-                    // `git rev-parse HEAD` subprocess against each resolved repository
-                    // root. checkinSuccessful() fires AFTER the commit object is written,
-                    // so rev-parse returns the exact new commit id git created.
-                    String sha = null;
-                    for (String root : repoRoots) {
-                        sha = GitOperations.headSha(root);
-                        if (sha != null) break;
+                    String sha = committedShas.isEmpty() ? null : committedShas.get(0);
+                    // Fallback only when IntelliJ could not expose a repository revision.
+                    // This path is best-effort; the captured revision above is authoritative.
+                    if (sha == null) {
+                        for (String root : repoRoots) {
+                            sha = GitOperations.headSha(root);
+                            if (sha != null) break;
+                        }
                     }
                     // Fallback: project base path (single-repo projects where
                     // panel.getRoots() could not be mapped to a repository).
@@ -87,6 +104,12 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 });
             }
         };
+    }
+
+    private static boolean isCommitSha(String value) {
+        return value != null && value.length() == 40
+            && value.chars().allMatch(c -> (c >= '0' && c <= '9')
+            || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
     }
 
     /**

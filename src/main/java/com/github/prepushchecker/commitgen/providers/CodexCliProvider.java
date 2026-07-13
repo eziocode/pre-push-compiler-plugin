@@ -105,7 +105,13 @@ public final class CodexCliProvider implements CommitMessageProvider {
             throw new RuntimeException(
                 "OpenAI API error " + response.statusCode() + ": " + response.body());
         }
-        String content = JsonUtil.extractString(response.body(), "content");
+        // This endpoint is the OpenAI Chat Completions API, whose response shape is
+        // {"choices":[{"message":{"content":"..."}}]}. Extract via the explicit path
+        // rather than a recursive first-"content" search — response bodies also carry
+        // "content" keys under prompt_filter_results / content_filter_results, which a
+        // recursive search can match first and return the wrong (or a null) value.
+        String content = JsonUtil.extractStringAtPath(
+            response.body(), "choices", 0, "message", "content");
         if (content == null) {
             throw new RuntimeException("Unexpected response: " + response.body());
         }

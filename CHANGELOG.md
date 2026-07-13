@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.4]
+
+### Fixed
+
+- **Wrong commit SHA after branch switches or delayed IDE processing.** The After Commit
+  clipboard flow read `HEAD` from a pooled task, so a branch switch before that task ran
+  could copy the new branch tip instead of the commit that had just succeeded. The handler
+  now refreshes IntelliJ's exact Git repository and captures its post-commit revision before
+  returning to the event loop; subprocess lookup remains only as a fallback.
+
+### Changed
+
+- **AI generation progress icon.** The commit-message generator now shows a stop icon and
+  disables duplicate clicks while generation is in progress, restoring the generator icon
+  when the request finishes or fails.
+
+### Tests
+
+- Full Gradle test suite passes.
+
 ## [1.9.3]
 
 ### Fixed

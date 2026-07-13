@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.3</version>
+    <version>1.9.4</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,23 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.4 — Clipboard SHA race and AI generation UI fix</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Wrong commit SHA after a branch switch.</b> After Commit clipboard
+                processing now captures the exact post-commit repository revision before
+                background work starts, preventing a delayed task from reading the next
+                branch's <code>HEAD</code>.</li>
+        </ul>
+
+        <h4>Changed</h4>
+        <ul>
+            <li><b>AI generation progress state.</b> The generator action shows a stop icon
+                and prevents duplicate clicks while an AI request is running, then restores
+                the generator icon when complete.</li>
+        </ul>
+
         <h3>1.9.3 — Nested-repo clipboard SHA regression fix</h3>
 
         <h4>Fixed</h4>

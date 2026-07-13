@@ -17,10 +17,12 @@ import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.vcs.commit.CommitWorkflowUi;
 import com.intellij.openapi.vcs.VcsDataKeys;
+import com.intellij.openapi.util.Key;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Action that generates a commit message for the current git diff using the
@@ -30,6 +32,7 @@ import java.util.List;
  * {@code Vcs.MessageActionGroup} group so it appears in the commit dialog.
  */
 public final class GenerateCommitMessageAction extends AnAction {
+    private static final Key<AtomicBoolean> GENERATING_KEY = Key.create("prepushchecker.ai.generating");
 
     public GenerateCommitMessageAction() {
         super("Generate Commit Message (Pre-Push Checker)",
@@ -49,11 +52,15 @@ public final class GenerateCommitMessageAction extends AnAction {
             e.getPresentation().setEnabled(false);
             return;
         }
+        boolean generating = isGenerating(project);
         // Disable (grey out) when there are no staged or local changes — same
         // visual behaviour as the Copilot commit-message button.
         boolean hasChanges = !ChangeListManager.getInstance(project).getAllChanges().isEmpty();
-        e.getPresentation().setEnabled(hasChanges);
-        e.getPresentation().setDescription(hasChanges
+        e.getPresentation().setIcon(generating ? AllIcons.Actions.Suspend : AllIcons.Actions.Lightning);
+        e.getPresentation().setEnabled(hasChanges && !generating);
+        e.getPresentation().setDescription(generating
+            ? "Pre-Push Checker: AI commit message generation in progress"
+            : hasChanges
             ? "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider"
             : "Pre-Push Checker: No changes detected — make or stage some changes first");
     }
@@ -62,6 +69,12 @@ public final class GenerateCommitMessageAction extends AnAction {
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
         if (project == null) return;
+        AtomicBoolean generating = project.getUserData(GENERATING_KEY);
+        if (generating != null && generating.get()) return;
+        AtomicBoolean generationState = new AtomicBoolean(true);
+        project.putUserData(GENERATING_KEY, generationState);
+        e.getPresentation().setIcon(AllIcons.Actions.Suspend);
+        e.getPresentation().setEnabled(false);
 
         // Capture the commit workflow UI from the action context (commit dialog)
         CommitWorkflowUi commitWorkflowUi = getCommitWorkflowUi(e);
@@ -111,6 +124,13 @@ public final class GenerateCommitMessageAction extends AnAction {
                                     NotificationType.WARNING)
                                 .notify(project);
                         }, ModalityState.any());
+                    } finally {
+                        generationState.set(false);
+                        ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!project.isDisposed()) {
+                                project.putUserData(GENERATING_KEY, null);
+                            }
+                        });
                     }
                 }
             });
@@ -122,5 +142,10 @@ public final class GenerateCommitMessageAction extends AnAction {
             if (workflowUi != null) return workflowUi;
         } catch (Exception ignored) {}
         return null;
+    }
+
+    private static boolean isGenerating(@NotNull Project project) {
+        AtomicBoolean state = project.getUserData(GENERATING_KEY);
+        return state != null && state.get();
     }
 }
