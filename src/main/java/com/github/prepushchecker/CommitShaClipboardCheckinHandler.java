@@ -9,7 +9,6 @@ import com.intellij.openapi.vcs.CheckinProjectPanel;
 import com.intellij.openapi.vcs.changes.CommitContext;
 import com.intellij.openapi.vcs.checkin.CheckinHandler;
 import com.intellij.openapi.vcs.checkin.CheckinHandlerFactory;
-import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import git4idea.repo.GitRepository;
 import git4idea.repo.GitRepositoryManager;
@@ -21,6 +20,7 @@ import java.util.Collection;
 import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Copies the HEAD commit SHA to the system clipboard immediately after a
@@ -28,6 +28,9 @@ import java.util.List;
  * in the Compilation Checker settings.
  */
 public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactory {
+    private static final int STABLE_READS_REQUIRED = 3;
+    private static final int MAX_SHA_READS = 30;
+    private static final long SHA_READ_DELAY_MILLIS = 100L;
 
     @Override
     public @NotNull CheckinHandler createHandler(
@@ -57,37 +60,16 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
                 // at the exact working tree that owns the commit.
                 List<String> repoRoots = resolveRepositoryRoots(project, committedFiles, roots);
 
-                // Capture the revision before returning to the event loop. Reading HEAD
-                // later in a pooled task races with branch switches and can copy the next
-                // branch's tip instead of the commit that just succeeded.
-                GitRepositoryManager repoManager = GitRepositoryManager.getInstance(project);
-                List<String> committedShas = new ArrayList<>();
-                for (String root : repoRoots) {
-                    VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
-                    if (rootFile == null) continue;
-                    GitRepository repository = repoManager.getRepositoryForRootQuick(rootFile);
-                    if (repository != null) {
-                        repository.update();
-                        String revision = repository.getCurrentRevision();
-                        if (isCommitSha(revision)) committedShas.add(revision);
-                    }
-                }
-
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                    String sha = committedShas.isEmpty() ? null : committedShas.get(0);
-                    // Fallback only when IntelliJ could not expose a repository revision.
-                    // This path is best-effort; the captured revision above is authoritative.
-                    if (sha == null) {
-                        for (String root : repoRoots) {
-                            sha = GitOperations.headSha(root);
-                            if (sha != null) break;
-                        }
-                    }
+                    // Git/IDE can advance HEAD through several transient revisions after
+                    // checkinSuccessful(). Require three consecutive identical reads so we
+                    // copy final post-commit HEAD, never the first stale/intermediate tip.
+                    String sha = readStableHeadSha(repoRoots);
                     // Fallback: project base path (single-repo projects where
                     // panel.getRoots() could not be mapped to a repository).
                     if (sha == null) {
                         String basePath = project.getBasePath();
-                        if (basePath != null) sha = GitOperations.headSha(basePath);
+                        if (basePath != null) sha = readStableHeadSha(List.of(basePath));
                     }
                     if (sha == null) return;
                     final String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
@@ -110,6 +92,37 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
         return value != null && value.length() == 40
             && value.chars().allMatch(c -> (c >= '0' && c <= '9')
             || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+    }
+
+    static String readStableHeadSha(@NotNull List<String> repoRoots) {
+        String previous = null;
+        int stableReads = 0;
+        for (int read = 0; read < MAX_SHA_READS; read++) {
+            if (read > 0) {
+                try {
+                    TimeUnit.MILLISECONDS.sleep(SHA_READ_DELAY_MILLIS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+
+            String current = null;
+            for (String root : repoRoots) {
+                current = GitOperations.headSha(root);
+                if (current != null) break;
+            }
+            if (!isCommitSha(current)) {
+                previous = null;
+                stableReads = 0;
+                continue;
+            }
+            if (current.equals(previous)) stableReads++;
+            else stableReads = 1;
+            previous = current;
+            if (stableReads >= STABLE_READS_REQUIRED) return current;
+        }
+        return null;
     }
 
     /**

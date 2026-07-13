@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.4</version>
+    <version>1.9.5</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -69,6 +69,15 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>1.9.5 — Stable post-commit SHA capture</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Wrong SHA copied during multi-step Git updates.</b> After Commit now waits
+                for three consecutive identical <code>HEAD</code> reads before copying, so
+                transient parent or intermediate revisions are ignored.</li>
+        </ul>
+
         <h3>1.9.4 — Clipboard SHA race and AI generation UI fix</h3>
 
         <h4>Fixed</h4>

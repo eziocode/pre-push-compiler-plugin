@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.5]
+
+### Fixed
+
+- **Wrong commit SHA during multi-step Git updates.** After Commit could copy the first
+  transient `HEAD` revision while Git/IntelliJ advanced the repository through two or more
+  post-commit updates. The handler now polls `HEAD` in the background and copies only after
+  three consecutive identical SHA reads, with a bounded timeout and project-base fallback.
+
+### Tests
+
+- Full Gradle test suite and plugin packaging completed for the 1.9.5 release.
+
 ## [1.9.4]
 
 ### Fixed
