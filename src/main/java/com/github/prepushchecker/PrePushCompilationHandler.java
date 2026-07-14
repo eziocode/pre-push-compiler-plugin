@@ -250,11 +250,12 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             (Computable<CompileScope>) () -> buildPushScope(project, sourceFiles, compilerManager)
         );
         Map<String, Long> stamps = CompilationErrorService.snapshotStamps(sourceFiles);
-        return runCompilation(
+        return runCompilationWithRecovery(
             project,
             indicator,
             false,
             stamps,
+            compilerManager,
             notification -> compilerManager.make(scope, notification)
         );
     }
@@ -319,41 +320,77 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     private static List<String> compileProject(Project project, ProgressIndicator indicator) {
         CompilerManager compilerManager = CompilerManager.getInstance(project);
         CompileScope scope = compilerManager.createProjectCompileScope(project);
-        return runCompilation(
+        return runCompilationWithRecovery(
             project,
             indicator,
             true,
             Collections.emptyMap(),
+            compilerManager,
             notification -> compilerManager.make(scope, notification)
         );
     }
 
-    private static List<String> runCompilation(
+    /**
+     * A make can retain a stale JPS classpath/output after dependency or package changes.
+     * If it reports errors, run one forced project recompile before treating them as real.
+     */
+    private static List<String> runCompilationWithRecovery(
         Project project,
         ProgressIndicator indicator,
         boolean projectScope,
         Map<String, Long> stamps,
+        CompilerManager compilerManager,
+        CompilationStarter compilationStarter
+    ) {
+        CompilationRun initial = runCompilation(project, indicator, compilationStarter);
+        CompilationRun finalRun = initial;
+        boolean finalProjectScope = projectScope;
+        Map<String, Long> finalStamps = stamps;
+        if (shouldForceProjectRecompile(initial.aborted, initial.errorCount, false)) {
+            LOG.info("Pre-push incremental compile reported " + initial.errorCount
+                + " error(s); forcing one project recompile before blocking push.");
+            indicator.setText("Recompiling project to verify compiler errors");
+            finalRun = runCompilation(
+                project,
+                indicator,
+                notification -> compilerManager.compile(
+                    compilerManager.createProjectCompileScope(project), notification)
+            );
+            finalProjectScope = true;
+            finalStamps = Collections.emptyMap();
+        }
+
+        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
+        if (finalRun.aborted) {
+            errorService.setErrors(finalRun.errors);
+        } else {
+            errorService.recordCompletion(finalProjectScope, finalStamps, finalRun.errors);
+        }
+        return finalRun.errors;
+    }
+
+    static boolean shouldForceProjectRecompile(boolean aborted, int errorCount, boolean forceAlreadyAttempted) {
+        return !aborted && errorCount > 0 && !forceAlreadyAttempted;
+    }
+
+    private static CompilationRun runCompilation(
+        Project project,
+        ProgressIndicator indicator,
         CompilationStarter compilationStarter
     ) {
         CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<List<String>> errors = new AtomicReference<>(Collections.emptyList());
+        AtomicReference<CompilationRun> result = new AtomicReference<>(CompilationRun.clean());
 
         Runnable startCompilation = () -> compilationStarter.start((aborted, errorCount, warnings, compileContext) -> {
-            List<String> result;
+            List<String> errors;
             if (aborted) {
-                result = Collections.singletonList("Compilation was aborted.");
+                errors = Collections.singletonList("Compilation was aborted.");
             } else if (errorCount > 0) {
-                result = formatCompilerMessages(project, compileContext.getMessages(CompilerMessageCategory.ERROR));
+                errors = formatCompilerMessages(project, compileContext.getMessages(CompilerMessageCategory.ERROR));
             } else {
-                result = Collections.emptyList();
+                errors = Collections.emptyList();
             }
-            errors.set(result);
-            CompilationErrorService errorService = CompilationErrorService.getInstance(project);
-            if (aborted) {
-                errorService.setErrors(result);
-            } else {
-                errorService.recordCompletion(projectScope, stamps, result);
-            }
+            result.set(new CompilationRun(errors, aborted, errorCount));
             latch.countDown();
         });
 
@@ -372,10 +409,27 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             while (!latch.await(WAIT_SLICE_MILLIS, TimeUnit.MILLISECONDS)) {
                 indicator.checkCanceled();
             }
-            return errors.get();
+            return result.get();
         } catch (InterruptedException interruptedException) {
             Thread.currentThread().interrupt();
-            return Collections.singletonList("Compilation check was interrupted.");
+            return new CompilationRun(
+                Collections.singletonList("Compilation check was interrupted."), true, 0);
+        }
+    }
+
+    private static final class CompilationRun {
+        private final List<String> errors;
+        private final boolean aborted;
+        private final int errorCount;
+
+        private CompilationRun(List<String> errors, boolean aborted, int errorCount) {
+            this.errors = errors;
+            this.aborted = aborted;
+            this.errorCount = errorCount;
+        }
+
+        private static CompilationRun clean() {
+            return new CompilationRun(Collections.emptyList(), false, 0);
         }
     }
 

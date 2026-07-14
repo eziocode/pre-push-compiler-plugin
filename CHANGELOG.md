@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.8]
+
+### Fixed
+
+- **Stale JPS classpath/output errors blocking pushes.** A failed incremental IDE compile now
+  triggers one forced full-project recompile before the plugin reports errors. This clears stale
+  missing-package, missing-symbol, and dependency-classpath diagnostics when the project itself
+  recompiles cleanly. The recovery applies to IDE, terminal, and GUI Git-client push paths.
+
+### Tests
+
+- Added recovery-policy coverage for failed, clean, aborted, and already-retried compilations.
+
 ## [1.9.7]
 
 ### Fixed

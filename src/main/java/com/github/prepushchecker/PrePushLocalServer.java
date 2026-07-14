@@ -290,6 +290,7 @@ public final class PrePushLocalServer implements Disposable {
                 final List<VirtualFile> recordedFiles = files;
                 class RetryingCompileCallback implements CompileStatusNotification {
                     private boolean projectScope;
+                    private boolean forcedProjectRecompile;
 
                     private RetryingCompileCallback(boolean projectScope) {
                         this.projectScope = projectScope;
@@ -297,12 +298,14 @@ public final class PrePushLocalServer implements Disposable {
 
                     @Override
                     public void finished(boolean aborted, int errorCount, int warningCount, CompileContext ctx) {
-                        boolean retryingAsProject = false;
+                        boolean retryingForcedProject = false;
                         try {
-                            if (shouldRetryProjectScopeAfterScopedFailure(projectScope, aborted, errorCount)) {
-                                retryingAsProject = true;
+                            if (PrePushCompilationHandler.shouldForceProjectRecompile(
+                                    aborted, errorCount, forcedProjectRecompile)) {
+                                retryingForcedProject = true;
+                                forcedProjectRecompile = true;
                                 projectScope = true;
-                                LOG.info("External pre-push scoped compile reported errors; retrying project compile before reporting them.");
+                                LOG.info("External pre-push incremental compile reported errors; forcing one project recompile before reporting them.");
                                 ApplicationManager.getApplication().invokeLater(() -> {
                                     try {
                                         if (project.isDisposed()) {
@@ -310,9 +313,9 @@ public final class PrePushLocalServer implements Disposable {
                                             latch.countDown();
                                             return;
                                         }
-                                        cm.make(cm.createProjectCompileScope(project), this);
+                                        cm.compile(cm.createProjectCompileScope(project), this);
                                     } catch (Throwable t) {
-                                        LOG.warn("CompilerManager project retry failed", t);
+                                        LOG.warn("CompilerManager forced project recompile failed", t);
                                         fatal.set(true);
                                         latch.countDown();
                                     }
@@ -339,7 +342,7 @@ public final class PrePushLocalServer implements Disposable {
                                     result);
                             }
                         } finally {
-                            if (!retryingAsProject) {
+                            if (!retryingForcedProject) {
                                 latch.countDown();
                             }
                         }
@@ -370,10 +373,6 @@ public final class PrePushLocalServer implements Disposable {
             return null;
         }
         return fatal.get() ? null : errorsRef.get();
-    }
-
-    static boolean shouldRetryProjectScopeAfterScopedFailure(boolean projectScope, boolean aborted, int errorCount) {
-        return !projectScope && !aborted && errorCount > 0;
     }
 
     private static List<VirtualFile> resolveFiles(List<String> paths) {
