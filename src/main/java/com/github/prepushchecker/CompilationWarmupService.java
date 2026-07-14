@@ -3,6 +3,7 @@ package com.github.prepushchecker;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.compiler.CompileContext;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.components.Service;
@@ -21,6 +22,7 @@ import org.jetbrains.annotations.NotNull;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -162,25 +164,83 @@ public final class CompilationWarmupService implements Disposable {
             VirtualFile[] arr = live.toArray(VirtualFile.EMPTY_ARRAY);
             com.intellij.openapi.compiler.CompileScope scope = cm.createFilesCompileScope(arr);
             cm.make(scope, (aborted, errorCount, warnings, ctx) -> {
-                try {
-                    if (aborted) return;
-                    List<String> result = errorCount > 0
-                        ? PrePushCompilationHandler.formatCompilerMessages(
-                            project, ctx.getMessages(CompilerMessageCategory.ERROR))
-                        : Collections.emptyList();
-                    CompilationErrorService.getInstance(project).recordCompletion(
-                        false,
-                        CompilationErrorService.snapshotStamps(java.util.Arrays.asList(arr)),
-                        result
-                    );
-                } finally {
-                    finish();
-                }
+                completeWarmupCompilation(
+                    cm,
+                    aborted,
+                    errorCount,
+                    ctx,
+                    false,
+                    CompilationErrorService.snapshotStamps(java.util.Arrays.asList(arr)),
+                    "File warmup"
+                );
             });
         } catch (Throwable t) {
             LOG.debug("Warmup compile failed", t);
             finish();
         }
+    }
+
+    /**
+     * A warmup is also allowed to encounter stale JPS output or classpath state. Never cache
+     * that first failure: retry it once as a full project recompile, then cache only its final
+     * result. Otherwise a later push could reuse a transient error and be blocked incorrectly.
+     */
+    private void completeWarmupCompilation(
+        CompilerManager compilerManager,
+        boolean aborted,
+        int errorCount,
+        CompileContext context,
+        boolean projectScope,
+        Map<String, Long> stamps,
+        String warmupKind
+    ) {
+        if (PrePushCompilationHandler.shouldForceProjectRecompile(aborted, errorCount, false)) {
+            try {
+                LOG.info(warmupKind + " reported " + errorCount
+                    + " error(s); forcing one project recompile before caching result.");
+                compilerManager.compile(
+                    compilerManager.createProjectCompileScope(project),
+                    (retryAborted, retryErrorCount, retryWarnings, retryContext) -> {
+                        try {
+                            recordWarmupCompletion(
+                                retryAborted,
+                                retryErrorCount,
+                                retryContext,
+                                true,
+                                Collections.emptyMap()
+                            );
+                        } finally {
+                            finish();
+                        }
+                    }
+                );
+                return;
+            } catch (Throwable t) {
+                // Preserve initial diagnostics if JPS cannot start the recovery compile.
+                LOG.debug(warmupKind + " recovery compile failed", t);
+            }
+        }
+
+        try {
+            recordWarmupCompletion(aborted, errorCount, context, projectScope, stamps);
+        } finally {
+            finish();
+        }
+    }
+
+    private void recordWarmupCompletion(
+        boolean aborted,
+        int errorCount,
+        CompileContext context,
+        boolean projectScope,
+        Map<String, Long> stamps
+    ) {
+        if (aborted) return;
+        List<String> result = errorCount > 0
+            ? PrePushCompilationHandler.formatCompilerMessages(
+                project, context.getMessages(CompilerMessageCategory.ERROR))
+            : Collections.emptyList();
+        CompilationErrorService.getInstance(project).recordCompletion(projectScope, stamps, result);
     }
 
     private void finish() {
@@ -259,17 +319,15 @@ public final class CompilationWarmupService implements Disposable {
             try {
                 if (project.isDisposed()) { finish(); return; }
                 CompilerManager.getInstance(project).make((aborted, errorCount, warnings, ctx) -> {
-                    try {
-                        if (aborted) return;
-                        List<String> result = errorCount > 0
-                            ? PrePushCompilationHandler.formatCompilerMessages(
-                                project, ctx.getMessages(CompilerMessageCategory.ERROR))
-                            : Collections.emptyList();
-                        CompilationErrorService.getInstance(project).recordCompletion(
-                            true, Collections.emptyMap(), result);
-                    } finally {
-                        finish();
-                    }
+                    completeWarmupCompilation(
+                        CompilerManager.getInstance(project),
+                        aborted,
+                        errorCount,
+                        ctx,
+                        true,
+                        Collections.emptyMap(),
+                        "Project warmup"
+                    );
                 });
             } catch (Throwable t) {
                 LOG.debug("Project warmup compile failed", t);
@@ -296,17 +354,15 @@ public final class CompilationWarmupService implements Disposable {
                     if (project.isDisposed()) { finish(); return; }
                     LOG.info("Pre-Push Checker: running first-time warmup compile for '" + project.getName() + "'");
                     CompilerManager.getInstance(project).make((aborted, errorCount, warnings, ctx) -> {
-                        try {
-                            if (aborted) return;
-                            List<String> result = errorCount > 0
-                                ? PrePushCompilationHandler.formatCompilerMessages(
-                                    project, ctx.getMessages(CompilerMessageCategory.ERROR))
-                                : Collections.emptyList();
-                            CompilationErrorService.getInstance(project).recordCompletion(
-                                true, Collections.emptyMap(), result);
-                        } finally {
-                            finish();
-                        }
+                        completeWarmupCompilation(
+                            CompilerManager.getInstance(project),
+                            aborted,
+                            errorCount,
+                            ctx,
+                            true,
+                            Collections.emptyMap(),
+                            "Initial project warmup"
+                        );
                     });
                 } catch (Throwable t) {
                     LOG.debug("First-time warmup compile failed", t);
