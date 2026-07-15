@@ -30,10 +30,12 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -69,6 +71,8 @@ public final class PrePushLocalServer implements Disposable {
 
     private final Project project;
     private final ExecutorService clientExecutor;
+    /** IntelliJ's project compiler is single-flight; serialize callers so followers reuse cache. */
+    private final Semaphore compileGate = new Semaphore(1, true);
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile ServerSocket server;
     private volatile Thread acceptThread;
@@ -238,6 +242,23 @@ public final class PrePushLocalServer implements Disposable {
     }
 
     private List<String> runCompile(List<String> requestedPaths) {
+        boolean acquired = false;
+        try {
+            acquired = compileGate.tryAcquire(COMPILE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (!acquired) {
+                LOG.warn("Timed out waiting for another pre-push compilation to finish.");
+                return null;
+            }
+            return runCompileSingleFlight(requestedPaths);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return null;
+        } finally {
+            if (acquired) compileGate.release();
+        }
+    }
+
+    private List<String> runCompileSingleFlight(List<String> requestedPaths) {
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
             PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, null);
         if (strictSnapshot.wasChecked()) {
@@ -274,7 +295,7 @@ public final class PrePushLocalServer implements Disposable {
                 // Reuse a recent successful compile verdict when nothing has moved on disk. Lets
                 // external pushes piggyback on a just-completed manual check or an
                 // earlier push check without re-running javac. Cached failures are deliberately
-                // rechecked: IntelliJ's problem cache and narrow warmup compiles can hold stale
+                // rechecked: IntelliJ's problem cache and narrow targeted compiles can hold stale
                 // generated-symbol errors (Lombok getters/setters/builders) until a real compile
                 // clears them.
                 CompilationErrorService svc = CompilationErrorService.getInstance(project);
@@ -378,10 +399,13 @@ public final class PrePushLocalServer implements Disposable {
     private static List<VirtualFile> resolveFiles(List<String> paths) {
         if (paths.isEmpty()) return Collections.emptyList();
         LocalFileSystem lfs = LocalFileSystem.getInstance();
-        List<VirtualFile> out = new ArrayList<>(paths.size());
+        LinkedHashSet<String> uniquePaths = new LinkedHashSet<>(paths.size());
         for (String p : paths) {
             if (p == null || p.isBlank()) continue;
-            String normalized = p.replace('\\', '/');
+            uniquePaths.add(p.replace('\\', '/'));
+        }
+        List<VirtualFile> out = new ArrayList<>(uniquePaths.size());
+        for (String normalized : uniquePaths) {
             VirtualFile vf = lfs.findFileByPath(normalized);
             if (vf == null) vf = lfs.refreshAndFindFileByPath(normalized);
             if (vf != null && !vf.isDirectory()) {

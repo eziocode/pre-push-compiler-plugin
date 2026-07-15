@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [1.9.9]
+
+### Fixed
+
+- **Unexpected builds after edits.** Removed background IntelliJ compiler warmups triggered by
+  source saves, Git repository changes, and project startup. Compilation now runs only when the
+  user explicitly builds or when the plugin validates a push, preventing duplicate build runs and
+  transient JPS missing-package/classpath diagnostics during editing.
+
+### Changed
+
+- Removed the obsolete warmup registry setting and IntelliJ service/listener registrations.
+
+### Performance
+
+- External push requests now enter one fair per-project compile gate. Concurrent clients wait for
+  active validation, then reuse its fresh cache result instead of starting competing JPS builds.
+- Git subprocess stdout and stderr now drain concurrently on dedicated daemon I/O threads. This
+  prevents large command output from stalling checks and avoids occupying the JVM common pool.
+- Duplicate source paths from multi-commit pushes are normalized and resolved only once.
+
+### Tests
+
+- Added concurrent subprocess-output regression coverage; clean Gradle test suite passes.
+
 ## [1.9.8]
 
 ### Fixed

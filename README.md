@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-1.9.4-blue)
+![Version](https://img.shields.io/badge/version-1.9.9-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -19,7 +19,8 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **IDE Push Guard** — hooks into IntelliJ's native push dialog (`prePushHandler` extension point)
 - **Smart compile scope** — compiles modules containing changed files plus dependent modules; automatically falls back to a full project build when build files (`build.gradle`, `pom.xml`, etc.) or file deletions are involved
 - **IDE problem check** — stale IntelliJ diagnostics are revalidated; failed incremental checks get one forced project recompile before a push is blocked
-- **Zero-cost warmup** — debounced background compiles keep the IDE compiler cache hot so most pushes reuse a fresh verdict
+- **Push-only compilation** — edits, Git changes, and project startup never trigger a build; compilation runs only for explicit builds and pre-push validation
+- **Single-flight push checks** — concurrent external push requests share one per-project compiler flow and reuse its fresh result instead of launching duplicate JPS builds
 - **Symbolic A/B detection** — parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans HEAD content of pushed files for word-boundary references; blocks the push instantly when the pushed commit references a symbol defined only in an unpushed local edit (no compile required)
 - **Auto-retry on success** — when the background pre-push check passes, the plugin runs `git push` automatically per repository root with non-interactive credential settings and a 120s timeout
 - **Failure-choice dialog** — when errors are found, presents Reset Commit / Push Anyway / Leave Commit / Cancel options so you can recover without leaving the IDE
@@ -132,7 +133,7 @@ When you push from a terminal or an external git client:
 
 1. The hook filters out non-code pushes (tags, empty pushes, deletion-only pushes).
 2. It honors the `PRE_PUSH_CHECKER_COMMAND` environment variable if set, letting you plug in any custom check command.
-3. If IntelliJ is open, the hook asks the plugin's local loopback server to reuse the IDE's incremental compiler and cached warmup verdicts (which now also runs the symbolic A/B check).
+3. If IntelliJ is open, the hook asks the plugin's local loopback server to reuse the IDE's incremental compiler and a matching cached manual or pre-push verdict (which now also runs the symbolic A/B check).
 4. If IntelliJ is unavailable or busy, the hook stashes the working tree (`git stash push --include-untracked`) so the build sees only HEAD content, runs `./gradlew classes testClasses` (or the Maven `test-compile` equivalent), then pops the stash on completion or interrupt (`trap ... EXIT INT TERM HUP`). This closes the A/B coverage gap when the IDE is closed.
 5. The full compiler output is written to `.idea/pre-push-checker/last-run.log`. When IntelliJ is open:
    - It **parses the log**, extracts the error locations, and shows them in the **Compilation Checker** tool window so you can double-click to jump to the offending line.
@@ -193,4 +194,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.9.8**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **1.9.9**.

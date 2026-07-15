@@ -9,12 +9,23 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ProcessExecution {
     private static final Duration OUTPUT_DRAIN_TIMEOUT = Duration.ofSeconds(2);
+    private static final AtomicInteger IO_THREAD_COUNTER = new AtomicInteger(1);
+    private static final ExecutorService IO_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+        Thread thread = new Thread(
+            runnable,
+            "PrePushChecker-ProcessIO-" + IO_THREAD_COUNTER.getAndIncrement());
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private ProcessExecution() {
     }
@@ -87,7 +98,7 @@ public final class ProcessExecution {
             } catch (IOException e) {
                 throw new CompletionException(e);
             }
-        });
+        }, IO_EXECUTOR);
     }
 
     private static String awaitDrain(CompletableFuture<String> output)

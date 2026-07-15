@@ -14,4 +14,18 @@ public class ProcessExecutionTest extends TestCase {
         assertEquals("out", result.stdout());
         assertEquals("err", result.stderr());
     }
+
+    public void testStdoutAndStderrAreDrainedConcurrently() throws Exception {
+        ProcessBuilder pb = new ProcessBuilder(
+            "sh", "-c",
+            "i=0; while [ $i -lt 20000 ]; do printf 'out-%s\\n' \"$i\"; "
+                + "printf 'err-%s\\n' \"$i\" >&2; i=$((i+1)); done"
+        );
+
+        ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(10));
+
+        assertTrue(result.isSuccess());
+        assertTrue(result.stdout().contains("out-19999"));
+        assertTrue(result.stderr().contains("err-19999"));
+    }
 }

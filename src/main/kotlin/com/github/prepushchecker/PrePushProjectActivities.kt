@@ -32,9 +32,4 @@ class PrePushProjectActivities {
         }
     }
 
-    class CompilationWarmupServiceActivity : ProjectActivity {
-        override suspend fun execute(project: Project) {
-            CompilationWarmupService.runStartup(project)
-        }
-    }
 }

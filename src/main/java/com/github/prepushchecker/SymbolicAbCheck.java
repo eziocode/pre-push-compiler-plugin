@@ -5,10 +5,8 @@ import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -159,24 +157,12 @@ final class SymbolicAbCheck {
 
     private static @NotNull List<String> runGit(@NotNull Path directory, @NotNull List<String> command) {
         try {
-            Process process = new ProcessBuilder(command)
-                .directory(directory.toFile())
-                .redirectErrorStream(false)
-                .start();
-            List<String> out = new ArrayList<>();
-            try (BufferedReader reader = new BufferedReader(
-                new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    out.add(line);
-                }
-            }
-            if (!process.waitFor(GIT_TIMEOUT_MILLIS, TimeUnit.MILLISECONDS)) {
-                process.destroyForcibly();
-                return List.of();
-            }
-            if (process.exitValue() != 0) return List.of();
-            return out;
+            ProcessExecution.Result result = ProcessExecution.run(
+                new ProcessBuilder(command).directory(directory.toFile()),
+                Duration.ofMillis(GIT_TIMEOUT_MILLIS)
+            );
+            if (!result.isSuccess() || result.stdout().isBlank()) return List.of();
+            return result.stdout().lines().toList();
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
