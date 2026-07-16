@@ -14,6 +14,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   source saves, Git repository changes, and project startup. Compilation now runs only when the
   user explicitly builds or when the plugin validates a push, preventing duplicate build runs and
   transient JPS missing-package/classpath diagnostics during editing.
+- **Heavy stale-error recovery.** Failed scoped checks now retry once using IntelliJ's incremental
+  **Build Project** operation instead of forcing compilation of the full project scope. Final
+  errors still block IDE, terminal, and GUI Git-client pushes; clean retries clear false errors.
 
 ### Changed
 
@@ -36,7 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 ### Fixed
 
 - **Stale JPS classpath/output errors blocking pushes.** A failed incremental IDE compile now
-  triggers one forced full-project recompile before the plugin reports errors. This clears stale
+  triggers one project-wide recovery build before the plugin reports errors. This clears stale
   missing-package, missing-symbol, and dependency-classpath diagnostics when the project itself
   recompiles cleanly. The recovery applies to IDE, terminal, and GUI Git-client push paths.
 

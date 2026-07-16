@@ -331,8 +331,9 @@ public final class PrePushCompilationHandler implements PrePushHandler {
     }
 
     /**
-     * A make can retain a stale JPS classpath/output after dependency or package changes.
-     * If it reports errors, run one forced project recompile before treating them as real.
+     * A scoped make can retain a stale JPS classpath/output after dependency or package changes.
+     * If it reports errors, retry once with the same project-wide incremental make used by
+     * IntelliJ's Build Project action before treating them as real.
      */
     private static List<String> runCompilationWithRecovery(
         Project project,
@@ -346,14 +347,14 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         CompilationRun finalRun = initial;
         boolean finalProjectScope = projectScope;
         Map<String, Long> finalStamps = stamps;
-        if (shouldForceProjectRecompile(initial.aborted, initial.errorCount, false)) {
+        if (shouldRetryWithProjectBuild(initial.aborted, initial.errorCount, false)) {
             LOG.info("Pre-push incremental compile reported " + initial.errorCount
-                + " error(s); forcing one project recompile before blocking push.");
-            indicator.setText("Recompiling project to verify compiler errors");
+                + " error(s); retrying once with Build Project before blocking push.");
+            indicator.setText("Running Build Project to verify compiler errors");
             finalRun = runCompilation(
                 project,
                 indicator,
-                notification -> compilerManager.compile(
+                notification -> compilerManager.make(
                     compilerManager.createProjectCompileScope(project), notification)
             );
             finalProjectScope = true;
@@ -369,8 +370,8 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return finalRun.errors;
     }
 
-    static boolean shouldForceProjectRecompile(boolean aborted, int errorCount, boolean forceAlreadyAttempted) {
-        return !aborted && errorCount > 0 && !forceAlreadyAttempted;
+    static boolean shouldRetryWithProjectBuild(boolean aborted, int errorCount, boolean retryAlreadyAttempted) {
+        return !aborted && errorCount > 0 && !retryAlreadyAttempted;
     }
 
     private static CompilationRun runCompilation(

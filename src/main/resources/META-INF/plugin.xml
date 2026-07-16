@@ -35,7 +35,7 @@
         <h3>Features</h3>
         <ul>
             <li>Smart compile scope — changed modules plus dependent modules by default, project-level when necessary</li>
-            <li>IDE problem check — revalidates stale diagnostics and forces one recovery recompile when needed</li>
+            <li>IDE problem check — revalidates stale diagnostics with one incremental Build Project retry when needed</li>
             <li>Navigable error dialog — double-click any error to jump to the source file</li>
             <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
             <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
@@ -76,6 +76,9 @@
                 compiler runs on source saves, Git repository changes, or project startup.
                 Compilation now runs only for an explicit build or a pre-push validation, avoiding
                 duplicate builds and transient JPS classpath diagnostics while editing.</li>
+            <li><b>Lighter stale-error recovery.</b> Failed scoped checks now retry once with
+                IntelliJ's incremental <b>Build Project</b> operation instead of forcing a full
+                project-scope compilation. Only the retry's final result can block the push.</li>
         </ul>
 
         <h4>Performance</h4>
@@ -90,12 +93,12 @@
                 once per external request.</li>
         </ul>
 
-        <h3>1.9.8 — Forced stale-compiler recovery</h3>
+        <h3>1.9.8 — Stale-compiler recovery</h3>
 
         <h4>Fixed</h4>
         <ul>
             <li><b>Stale JPS classpath/output errors blocking pushes.</b> A failed incremental
-                compile now triggers one forced full-project recompile before the error dialog
+                compile now triggers one project-wide recovery build before the error dialog
                 appears. Clean recovery clears stale missing-package, missing-symbol, and
                 dependency-classpath diagnostics across IDE and external Git pushes.</li>
         </ul>
