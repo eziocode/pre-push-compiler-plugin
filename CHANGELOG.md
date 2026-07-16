@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.0]
+
+### Changed
+
+- **Lighter stale-error recovery.** Failed scoped checks now retry once with IntelliJ's
+  incremental **Build Project** (`CompilerManager.make`) operation instead of a forced
+  full-project recompile (`CompilerManager.compile`). The retry runs the same incremental
+  pass that the IDE's own *Build Project* action uses, so it is faster and avoids
+  unnecessary recompilation of unchanged modules. Only the retry's final result can block
+  the push; the initial scoped-check errors are not surfaced on their own.
+- Updated the recovery guard method from `shouldForceProjectRecompile` to
+  `shouldRetryWithProjectBuild` and renamed the tracking flag in both
+  `PrePushCompilationHandler` and `PrePushLocalServer` to reflect the lighter strategy.
+- Updated IDE feature description in `plugin.xml` to describe the incremental Build
+  Project retry instead of the former forced recompile.
+
+---
+
 ## [1.9.9]
 
 ### Fixed
