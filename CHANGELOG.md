@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [2.0.0]
 
+### Fixed
+
+- **IntelliJ 2026.2 read-access assertion during project startup.** Kotlin
+  `ProjectActivity` callbacks now dispatch blocking hook installation, log loading, and local
+  server startup work to `Dispatchers.IO`. Reading the project SDK for the external-hook settings
+  file now runs inside an explicit IntelliJ read action, preventing background coroutine workers
+  from touching project model state without read access.
+
 ### Changed
 
 - **Lighter stale-error recovery.** Failed scoped checks now retry once with IntelliJ's

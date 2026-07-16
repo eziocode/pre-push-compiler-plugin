@@ -1,9 +1,11 @@
 package com.github.prepushchecker;
 
 import com.intellij.ide.util.PropertiesComponent;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.projectRoots.Sdk;
 import com.intellij.openapi.roots.ProjectRootManager;
+import com.intellij.openapi.util.Computable;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -191,9 +193,13 @@ final class PrePushCheckerSettings {
     }
 
     private static String resolveProjectJavaHome(@NotNull Project project) {
-        Sdk sdk = ProjectRootManager.getInstance(project).getProjectSdk();
-        if (sdk == null) return null;
-        String homePath = sdk.getHomePath();
+        // Project SDK belongs to the IntelliJ project model. ProjectActivity executes on a
+        // background coroutine in current IDEs, so this lookup needs explicit read access.
+        String homePath = ApplicationManager.getApplication().runReadAction(
+            (Computable<String>) () -> {
+                Sdk sdk = ProjectRootManager.getInstance(project).getProjectSdk();
+                return sdk == null ? null : sdk.getHomePath();
+            });
         if (homePath == null || homePath.isBlank()) return null;
         Path javaBin = Path.of(homePath, "bin", "java");
         if (!Files.isExecutable(javaBin)) return null;

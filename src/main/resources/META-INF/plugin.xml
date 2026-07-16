@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>1.9.9</version>
+    <version>2.0.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -68,6 +68,24 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.0.0 — Thread-safe startup and lighter recovery</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>IntelliJ 2026.2 read-access assertion during project startup.</b>
+                Blocking hook installation, external-log loading, and local-server startup now
+                run on the coroutine I/O dispatcher. Project SDK lookup is protected by an
+                explicit IntelliJ read action, so startup no longer accesses project model state
+                from a background worker without read access.</li>
+        </ul>
+
+        <h4>Changed</h4>
+        <ul>
+            <li><b>Lighter stale-error recovery.</b> Failed scoped checks retry once with
+                IntelliJ's incremental <b>Build Project</b> operation instead of forcing a full
+                project compilation. Only the retry's final result can block the push.</li>
+        </ul>
+
         <h3>1.9.9 — Push-only compilation</h3>
 
         <h4>Fixed</h4>

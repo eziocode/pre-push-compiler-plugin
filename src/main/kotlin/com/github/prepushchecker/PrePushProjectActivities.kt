@@ -2,6 +2,8 @@ package com.github.prepushchecker
 
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Kotlin [ProjectActivity] bridges that delegate to the existing Java startup logic.
@@ -16,19 +18,25 @@ class PrePushProjectActivities {
 
     class GitHookInstallerActivity : ProjectActivity {
         override suspend fun execute(project: Project) {
-            GitHookInstaller.runStartup(project)
+            withContext(Dispatchers.IO) {
+                GitHookInstaller.runStartup(project)
+            }
         }
     }
 
     class ExternalPushErrorLoaderActivity : ProjectActivity {
         override suspend fun execute(project: Project) {
-            ExternalPushErrorLoader.runStartup(project)
+            withContext(Dispatchers.IO) {
+                ExternalPushErrorLoader.runStartup(project)
+            }
         }
     }
 
     class PrePushLocalServerActivity : ProjectActivity {
         override suspend fun execute(project: Project) {
-            PrePushLocalServer.runStartup(project)
+            withContext(Dispatchers.IO) {
+                PrePushLocalServer.runStartup(project)
+            }
         }
     }
 
