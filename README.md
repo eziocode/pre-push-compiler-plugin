@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.0.0-blue)
+![Version](https://img.shields.io/badge/version-2.0.1-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -127,7 +127,7 @@ A starter template is included at `.github/commit-instructions.md` in this repos
 
 ### Terminal / External Git Push (Sublime Merge, SourceTree, GitHub Desktop, …)
 
-On project open the plugin installs a managed `pre-push` hook in your repo's effective hooks directory. Repositories that set `core.hooksPath` are handled explicitly, so the hook is installed where terminal and external Git clients will actually execute it.
+On project open—or immediately when the plugin is installed/reinstalled into an already-open IDE—the plugin installs a managed `pre-push` hook in your repo's effective hooks directory. Repositories that set `core.hooksPath` are handled explicitly, so the hook is installed where terminal and external Git clients will actually execute it.
 
 When you push from a terminal or an external git client:
 
@@ -141,7 +141,7 @@ When you push from a terminal or an external git client:
 
 If another plugin or a manual edit overwrites the hook, the plugin rechecks it on startup and the tool window can repair it on demand. Repair recreates the managed hook, restores one canonical plugin snippet, removes duplicate or partial plugin snippets, and preserves unrelated custom hook logic.
 
-> The hook is written idempotently — it only overwrites plugin-managed content, chains non-destructively when a custom `pre-push` hook already exists, and cleans stale plugin-managed hooks from legacy `.git/hooks` when `core.hooksPath` is active.
+> The hook is written idempotently — plugin-owned lines live inside an explicit `BEGIN`/`END` block, custom `pre-push` logic outside that block is preserved, and stale plugin-managed hooks are cleaned from legacy `.git/hooks` when `core.hooksPath` is active.
 
 ### Disable / Uninstall Cleanup
 
@@ -194,4 +194,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.0**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.1**.

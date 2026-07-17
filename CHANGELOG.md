@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.1]
+
+### Fixed
+
+- **Immediate hook installation after install/reinstall.** Dynamic plugin loading now repairs Git
+  hooks for projects already open in the IDE. Fresh installs and reinstalls no longer require a
+  project reopen or manual **Repair Hooks** action.
+- **Ownership-safe uninstall and disable cleanup.** The shared `pre-push` hook now stores plugin
+  logic inside an explicit `BEGIN`/`END` block. Cleanup removes only that owned block and the
+  dedicated `pre-push-prepushchecker` hook, preserving logic written by users or other tools.
+- **Legacy hook migration.** Repair and cleanup recognize older unversioned snippets, normalize
+  duplicates to one canonical block, and preserve unrelated hook content.
+- **Safe orphan self-cleanup.** Generated managed hooks use the same block-aware cleanup rules when
+  they detect that the plugin is no longer installed.
+
+### Tests
+
+- Added regression coverage for dynamic installation into open projects, legacy migration,
+  modified shared hooks, uninstall cleanup, generated shell syntax, and executable self-cleanup.
+
+---
+
 ## [2.0.0]
 
 ### Fixed

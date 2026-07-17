@@ -2,6 +2,7 @@ package com.github.prepushchecker;
 
 import com.intellij.ide.plugins.DynamicPluginListener;
 import com.intellij.ide.plugins.IdeaPluginDescriptor;
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
@@ -20,12 +21,20 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
     private static final String OUR_PLUGIN_ID = "com.github.prepushchecker";
 
     @Override
+    public void pluginLoaded(@NotNull IdeaPluginDescriptor descriptor) {
+        if (!isOurPlugin(descriptor)) return;
+
+        // A ProjectActivity runs when a project opens, but is not reliably replayed when a
+        // plugin is installed dynamically into an already-open IDE. Mark the plugin installed
+        // immediately, then repair every open project off the UI/write-action thread.
+        GitHookInstaller.touchGlobalMarker();
+        ApplicationManager.getApplication().executeOnPooledThread(this::installHooksForOpenProjects);
+    }
+
+    @Override
     public void beforePluginUnload(@NotNull IdeaPluginDescriptor descriptor, boolean isUpdate) {
         if (isUpdate) return;
-        if (descriptor.getPluginId() == null
-                || !OUR_PLUGIN_ID.equals(descriptor.getPluginId().getIdString())) {
-            return;
-        }
+        if (!isOurPlugin(descriptor)) return;
 
         // Remove the global marker and proactively clean previously managed repos,
         // including those that are not currently open in this IDE session.
@@ -43,5 +52,21 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
                 }
             }
         }
+    }
+
+    void installHooksForOpenProjects() {
+        for (Project project : ProjectManager.getInstance().getOpenProjects()) {
+            if (project.isDisposed()) continue;
+            try {
+                GitHookInstaller.runStartup(project);
+            } catch (Throwable t) {
+                LOG.warn("Hook installation failed for project " + project.getName(), t);
+            }
+        }
+    }
+
+    private static boolean isOurPlugin(IdeaPluginDescriptor descriptor) {
+        return descriptor.getPluginId() != null
+            && OUR_PLUGIN_ID.equals(descriptor.getPluginId().getIdString());
     }
 }

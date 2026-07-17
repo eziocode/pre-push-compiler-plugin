@@ -24,6 +24,8 @@ import java.util.concurrent.TimeUnit;
 public final class GitHookInstaller {
     private static final Logger LOG = Logger.getInstance(GitHookInstaller.class);
     static final String HOOK_MARKER = "pre-push-compilation-checker-plugin";
+    static final String HOOK_BLOCK_BEGIN = "# BEGIN " + HOOK_MARKER;
+    static final String HOOK_BLOCK_END = "# END " + HOOK_MARKER;
     static final String MANAGED_HOOK_NAME = "pre-push-prepushchecker";
     static final String EXTERNAL_LOG_RELATIVE_PATH = ".idea/pre-push-checker/last-run.log";
     private static final Path GLOBAL_STATE_DIR = Path.of(System.getProperty("user.home"), ".prepush-checker");
@@ -417,23 +419,75 @@ public final class GitHookInstaller {
         }
     }
 
-    private static String stripDelegatingLines(String content) {
+    /**
+     * Removes only content explicitly owned by this plugin from the shared pre-push hook.
+     *
+     * <p>Current snippets use a BEGIN/END block, allowing other hook managers to freely add
+     * content before or after our block. The legacy three-line snippet is also recognized so
+     * upgrades and uninstalls clean hooks written by older plugin versions. An unterminated
+     * current block is preserved: deleting everything after a damaged BEGIN marker could erase
+     * another tool's hook logic.
+     */
+    static String stripManagedHookSections(String content) {
         StringBuilder out = new StringBuilder(content.length());
         String[] lines = normalizeLineEndings(content).split("\n", -1);
         for (int i = 0; i < lines.length; i++) {
             String line = lines[i];
-            if (line.trim().equals("# " + HOOK_MARKER)) {
-                // Skip marker line plus the two snippet lines that follow, if they match.
-                int skip = 1;
-                if (i + 1 < lines.length && lines[i + 1].contains("SCRIPT_DIR=")) skip++;
-                if (i + skip < lines.length && lines[i + skip].contains(MANAGED_HOOK_NAME)) skip++;
-                i += skip - 1;
+
+            if (line.trim().equals(HOOK_BLOCK_BEGIN)) {
+                int end = findBlockEnd(lines, i + 1);
+                if (end >= 0) {
+                    i = end;
+                    continue;
+                }
+                // Damaged/unclosed block: preserve it and everything after it verbatim.
+                appendRemainingLines(out, lines, i);
+                return out.toString();
+            }
+
+            if (line.trim().equals(HOOK_BLOCK_END)) {
+                // Stray owned END marker is safe to remove without touching nearby content.
                 continue;
             }
+
+            if (line.trim().equals("# " + HOOK_MARKER)) {
+                // Legacy format had no END marker. Remove only the exact known lines that
+                // immediately followed its marker; never consume arbitrary neighboring logic.
+                int next = i + 1;
+                if (next < lines.length && isOwnedScriptDirectoryLine(lines[next])) next++;
+                if (next < lines.length && isOwnedManagedHookInvocation(lines[next])) next++;
+                i = next - 1;
+                continue;
+            }
+
             out.append(line);
             if (i < lines.length - 1) out.append('\n');
         }
         return out.toString();
+    }
+
+    private static int findBlockEnd(String[] lines, int fromIndex) {
+        for (int i = fromIndex; i < lines.length; i++) {
+            if (lines[i].trim().equals(HOOK_BLOCK_END)) return i;
+        }
+        return -1;
+    }
+
+    private static void appendRemainingLines(StringBuilder out, String[] lines, int fromIndex) {
+        for (int i = fromIndex; i < lines.length; i++) {
+            out.append(lines[i]);
+            if (i < lines.length - 1) out.append('\n');
+        }
+    }
+
+    private static boolean isOwnedScriptDirectoryLine(String line) {
+        return line.trim().equals("SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"");
+    }
+
+    private static boolean isOwnedManagedHookInvocation(String line) {
+        String trimmed = line.trim();
+        return trimmed.equals("\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\"")
+            || trimmed.equals("\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\" || exit $?");
     }
 
     private static String buildRepairedMainHookContent(String existingContent) {
@@ -441,9 +495,9 @@ public final class GitHookInstaller {
             return buildWrapperHookScript();
         }
 
-        String cleaned = stripDelegatingLines(existingContent)
+        String cleaned = stripManagedHookSections(existingContent)
             .replaceAll("\\n{3,}", "\n\n");
-        if (cleaned.isBlank()) {
+        if (!hasSubstantiveHookContent(cleaned)) {
             return buildWrapperHookScript();
         }
         return stripTrailingLineBreaks(cleaned) + buildDelegatingSnippet();
@@ -477,9 +531,9 @@ public final class GitHookInstaller {
             }
             if (!content.contains(HOOK_MARKER)) return;
 
-            String cleaned = stripDelegatingLines(content)
+            String cleaned = stripManagedHookSections(content)
                 .replaceAll("\\n{3,}", "\n\n");
-            if (cleaned.isBlank()) {
+            if (!hasSubstantiveHookContent(cleaned)) {
                 Files.deleteIfExists(mainHook);
             } else {
                 Files.writeString(mainHook, stripTrailingLineBreaks(cleaned) + '\n', StandardCharsets.UTF_8);
@@ -503,14 +557,23 @@ public final class GitHookInstaller {
     }
 
     static int countMarkerOccurrences(String content) {
-        String marker = "# " + HOOK_MARKER;
         int count = 0;
-        int index = 0;
-        while ((index = content.indexOf(marker, index)) >= 0) {
-            count++;
-            index += marker.length();
+        for (String line : normalizeLineEndings(content).split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.equals(HOOK_BLOCK_BEGIN) || trimmed.equals("# " + HOOK_MARKER)) {
+                count++;
+            }
         }
         return count;
+    }
+
+    private static boolean hasSubstantiveHookContent(String content) {
+        for (String line : normalizeLineEndings(content).split("\n", -1)) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#!")) continue;
+            return true;
+        }
+        return false;
     }
 
     private static boolean containsCanonicalDelegatingSnippet(String content) {
@@ -845,11 +908,20 @@ public final class GitHookInstaller {
             "    [ -z \"$_hooks_dir\" ] && _hooks_dir=\"$(git rev-parse --git-dir 2>/dev/null)/hooks\"",
             "    if [ -n \"$_hooks_dir\" ] && [ -d \"$_hooks_dir\" ]; then",
             "      rm -f \"$_hooks_dir/" + MANAGED_HOOK_NAME + "\" 2>/dev/null",
-            "      # If pre-push is our plain wrapper, remove it; otherwise strip our snippet.",
+            "      # Remove only our delimited block (plus the legacy three-line snippet).",
             "      if [ -f \"$_hooks_dir/pre-push\" ]; then",
             "        if grep -qF '" + HOOK_MARKER + "' \"$_hooks_dir/pre-push\" 2>/dev/null; then",
-            "          _other_content=\"$(grep -vF '" + HOOK_MARKER + "' \"$_hooks_dir/pre-push\" | grep -v '" + MANAGED_HOOK_NAME + "' | grep -v 'SCRIPT_DIR=.*CDPATH' | sed '/^$/N;/^\\n$/d')\"",
-            "          if [ -z \"$(printf '%s' \"$_other_content\" | tr -d '[:space:]')\" ]; then",
+            "          _other_content=\"$(awk '",
+            "            $0 == \"" + HOOK_BLOCK_BEGIN + "\" { in_owned=1; block=$0; next }",
+            "            in_owned { block=block ORS $0; if ($0 == \"" + HOOK_BLOCK_END + "\") { in_owned=0; block=\"\" }; next }",
+            "            $0 == \"# " + HOOK_MARKER + "\" { legacy=1; next }",
+            "            legacy && $0 ~ /^SCRIPT_DIR=.*CDPATH=/ { next }",
+            "            legacy && index($0, \"" + MANAGED_HOOK_NAME + "\") > 0 { legacy=0; next }",
+            "            { legacy=0; print }",
+            "            END { if (in_owned) print block }",
+            "          ' \"$_hooks_dir/pre-push\")\"",
+            "          _other_logic=\"$(printf '%s\\n' \"$_other_content\" | sed '/^[[:space:]]*$/d; /^#!/d')\"",
+            "          if [ -z \"$_other_logic\" ]; then",
             "            rm -f \"$_hooks_dir/pre-push\" 2>/dev/null",
             "          else",
             "            printf '%s\\n' \"$_other_content\" > \"$_hooks_dir/pre-push\" 2>/dev/null",
@@ -1477,9 +1549,10 @@ public final class GitHookInstaller {
     static String buildWrapperHookScript() {
         return String.join("\n",
             "#!/usr/bin/env sh",
-            "# " + HOOK_MARKER,
+            HOOK_BLOCK_BEGIN,
             "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
             "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\"",
+            HOOK_BLOCK_END,
             ""
         );
     }
@@ -1487,9 +1560,10 @@ public final class GitHookInstaller {
     static String buildDelegatingSnippet() {
         return String.join("\n",
             "",
-            "# " + HOOK_MARKER,
+            HOOK_BLOCK_BEGIN,
             "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
             "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\" || exit $?",
+            HOOK_BLOCK_END,
             ""
         );
     }

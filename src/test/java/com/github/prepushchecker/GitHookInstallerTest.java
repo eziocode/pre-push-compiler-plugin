@@ -72,6 +72,69 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             script.contains("git rev-parse --git-path hooks"));
     }
 
+    public void testManagedHookScriptHasValidShellSyntax() throws Exception {
+        Path script = Files.createTempFile("prepushchecker-managed-hook-", ".sh");
+        script.toFile().deleteOnExit();
+        Files.writeString(script, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+
+        Process process = new ProcessBuilder("sh", "-n", script.toString())
+            .redirectErrorStream(true)
+            .start();
+        assertTrue(process.waitFor(10, TimeUnit.SECONDS));
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(output, 0, process.exitValue());
+    }
+
+    public void testManagedHookSelfCleanupPreservesForeignSharedHookLogic() throws Exception {
+        File repo = createTempDir("prepushchecker-self-cleanup-shared");
+        runGit(repo, "init");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        Files.writeString(mainHook,
+            "#!/usr/bin/env sh\n"
+                + "echo foreign-before\n"
+                + GitHookInstaller.HOOK_BLOCK_BEGIN + "\n"
+                + "echo modified-owned-content\n"
+                + GitHookInstaller.HOOK_BLOCK_END + "\n"
+                + "echo foreign-after\n",
+            StandardCharsets.UTF_8);
+
+        Path managedHook = hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Files.writeString(managedHook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+        assertTrue(managedHook.toFile().setExecutable(true, false));
+
+        Path fakeHome = repoPath.resolve("fake-home");
+        Path fakeBin = repoPath.resolve("fake-bin");
+        Files.createDirectories(fakeHome);
+        Files.createDirectories(fakeBin);
+        Path fakePgrep = fakeBin.resolve("pgrep");
+        Files.writeString(fakePgrep, "#!/usr/bin/env sh\nexit 1\n", StandardCharsets.UTF_8);
+        assertTrue(fakePgrep.toFile().setExecutable(true, false));
+
+        ProcessBuilder processBuilder = new ProcessBuilder(managedHook.toString())
+            .directory(repo)
+            .redirectErrorStream(true);
+        processBuilder.environment().put("HOME", fakeHome.toString());
+        processBuilder.environment().put("PATH",
+            fakeBin + File.pathSeparator + System.getenv().getOrDefault("PATH", "/usr/bin:/bin"));
+        Process process = processBuilder.start();
+        process.getOutputStream().close();
+        assertTrue(process.waitFor(10, TimeUnit.SECONDS));
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(output, 0, process.exitValue());
+
+        assertFalse(Files.exists(managedHook));
+        assertTrue(Files.exists(mainHook));
+        String cleaned = Files.readString(mainHook, StandardCharsets.UTF_8);
+        assertTrue(cleaned.contains("echo foreign-before"));
+        assertTrue(cleaned.contains("echo foreign-after"));
+        assertFalse(cleaned.contains("modified-owned-content"));
+        assertFalse(cleaned.contains(GitHookInstaller.HOOK_MARKER));
+    }
+
     public void testManagedHookContainsBypassTokenCheck() {
         String script = GitHookInstaller.buildManagedHookScript();
 
@@ -85,7 +148,36 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         String snippet = GitHookInstaller.buildDelegatingSnippet();
 
         assertTrue(snippet.contains(GitHookInstaller.MANAGED_HOOK_NAME));
-        assertTrue(snippet.contains(GitHookInstaller.HOOK_MARKER));
+        assertTrue(snippet.contains(GitHookInstaller.HOOK_BLOCK_BEGIN));
+        assertTrue(snippet.contains(GitHookInstaller.HOOK_BLOCK_END));
+        assertEquals(1, GitHookInstaller.countMarkerOccurrences(snippet));
+    }
+
+    public void testStripManagedHookSectionsPreservesForeignContentAroundModifiedOwnedBlock() {
+        String content = "#!/usr/bin/env sh\n"
+            + "echo before\n"
+            + GitHookInstaller.HOOK_BLOCK_BEGIN + "\n"
+            + "echo modified-by-another-tool-inside-owned-block\n"
+            + "\"$SCRIPT_DIR/" + GitHookInstaller.MANAGED_HOOK_NAME + "\" \"$@\"\n"
+            + GitHookInstaller.HOOK_BLOCK_END + "\n"
+            + "echo after\n";
+
+        String stripped = GitHookInstaller.stripManagedHookSections(content);
+
+        assertTrue(stripped.contains("echo before"));
+        assertTrue(stripped.contains("echo after"));
+        assertFalse(stripped.contains("modified-by-another-tool-inside-owned-block"));
+        assertFalse(stripped.contains(GitHookInstaller.HOOK_MARKER));
+        assertFalse(stripped.contains(GitHookInstaller.MANAGED_HOOK_NAME));
+    }
+
+    public void testStripManagedHookSectionsPreservesUnterminatedBlockConservatively() {
+        String content = "#!/usr/bin/env sh\n"
+            + "echo before\n"
+            + GitHookInstaller.HOOK_BLOCK_BEGIN + "\n"
+            + "echo possibly-foreign\n";
+
+        assertEquals(content, GitHookInstaller.stripManagedHookSections(content));
     }
 
     public void testRepairRestoresOverwrittenHookWhileKeepingUserLogic() throws Exception {
@@ -137,6 +229,35 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             assertEquals(1, GitHookInstaller.countMarkerOccurrences(repaired));
             assertEquals(GitHookInstaller.buildManagedHookScript(),
                 Files.readString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), StandardCharsets.UTF_8));
+        } finally {
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
+    }
+
+    public void testRepairMigratesLegacySnippetAndPreservesUserHook() throws Exception {
+        File repo = createTempDir("prepushchecker-repair-legacy");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        String legacySnippet = "\n# " + GitHookInstaller.HOOK_MARKER + "\n"
+            + "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"\n"
+            + "\"$SCRIPT_DIR/" + GitHookInstaller.MANAGED_HOOK_NAME + "\" \"$@\" || exit $?\n";
+        Files.writeString(mainHook,
+            "#!/usr/bin/env sh\necho legacy-user-hook\n" + legacySnippet + "echo tail\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(repo.getAbsolutePath());
+        try {
+            assertTrue(result.statusText(), result.isSuccess());
+            String repaired = Files.readString(mainHook, StandardCharsets.UTF_8);
+            assertTrue(repaired.contains("echo legacy-user-hook"));
+            assertTrue(repaired.contains("echo tail"));
+            assertTrue(repaired.contains(GitHookInstaller.HOOK_BLOCK_BEGIN));
+            assertTrue(repaired.contains(GitHookInstaller.HOOK_BLOCK_END));
+            assertEquals(1, GitHookInstaller.countMarkerOccurrences(repaired));
+            assertFalse(repaired.contains("\n# " + GitHookInstaller.HOOK_MARKER + "\n"));
         } finally {
             GitHookInstaller.uninstall(repo.getAbsolutePath());
         }
@@ -229,6 +350,52 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(updated.contains("echo \"tail\""));
         assertFalse(updated.contains(GitHookInstaller.HOOK_MARKER));
         assertFalse(updated.contains(GitHookInstaller.MANAGED_HOOK_NAME));
+    }
+
+    public void testUninstallRemovesModifiedOwnedBlockAndKeepsForeignHookLogic() throws Exception {
+        File repo = createTempDir("prepushchecker-uninstall-modified-block");
+        Path repoPath = repo.toPath();
+        Path hooksDir = repoPath.resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        Path mainHook = hooksDir.resolve("pre-push");
+        String sharedHook = "#!/usr/bin/env sh\n"
+            + "echo foreign-before\n"
+            + GitHookInstaller.HOOK_BLOCK_BEGIN + "\n"
+            + "echo edited-owned-content\n"
+            + GitHookInstaller.HOOK_BLOCK_END + "\n"
+            + "echo foreign-after\n";
+        Files.writeString(mainHook, sharedHook, StandardCharsets.UTF_8);
+        Files.writeString(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME), "edited\n",
+            StandardCharsets.UTF_8);
+
+        GitHookInstaller.uninstall(repo.getAbsolutePath());
+
+        assertTrue(Files.exists(mainHook));
+        String updated = Files.readString(mainHook, StandardCharsets.UTF_8);
+        assertTrue(updated.contains("echo foreign-before"));
+        assertTrue(updated.contains("echo foreign-after"));
+        assertFalse(updated.contains("edited-owned-content"));
+        assertFalse(updated.contains(GitHookInstaller.HOOK_MARKER));
+        assertFalse(Files.exists(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+    }
+
+    public void testInstallOpenProjectsRepairsAlreadyOpenProject() throws Exception {
+        File projectDir = new File(getProject().getBasePath());
+        Path hooksDir = projectDir.toPath().resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        try {
+            new PluginLifecycleListener().installHooksForOpenProjects();
+
+            assertTrue(Files.exists(hooksDir.resolve("pre-push")));
+            assertTrue(Files.exists(hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+            String mainHook = Files.readString(hooksDir.resolve("pre-push"), StandardCharsets.UTF_8);
+            assertTrue(mainHook.contains(GitHookInstaller.HOOK_BLOCK_BEGIN));
+            assertTrue(mainHook.contains(GitHookInstaller.HOOK_BLOCK_END));
+        } finally {
+            GitHookInstaller.uninstall(projectDir.getAbsolutePath());
+        }
     }
 
     public void testManagedHookBlocksMixedGeneratedAndRealErrors() throws Exception {
