@@ -10,6 +10,7 @@ import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -32,14 +33,14 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
-import java.util.concurrent.Semaphore;
-import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
-import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,14 +66,11 @@ public final class PrePushLocalServer implements Disposable {
     private static final Logger LOG = Logger.getInstance(PrePushLocalServer.class);
     private static final long COMPILE_TIMEOUT_SECONDS = 300L;
     private static final int BACKLOG = 4;
-    private static final int MAX_CLIENT_THREADS = 4;
     private static final int MAX_REQUESTED_PATHS = 2_048;
-    private static final int CLIENT_SO_TIMEOUT_MS = 5 * 60 * 1000;
+    private static final int CLIENT_SO_TIMEOUT_MS = 305 * 1000;
 
     private final Project project;
     private final ExecutorService clientExecutor;
-    /** IntelliJ's project compiler is single-flight; serialize callers so followers reuse cache. */
-    private final Semaphore compileGate = new Semaphore(1, true);
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile ServerSocket server;
     private volatile Thread acceptThread;
@@ -80,14 +78,7 @@ public final class PrePushLocalServer implements Disposable {
 
     public PrePushLocalServer(@NotNull Project project) {
         this.project = project;
-        this.clientExecutor = new ThreadPoolExecutor(
-            0,
-            MAX_CLIENT_THREADS,
-            30L,
-            TimeUnit.SECONDS,
-            new SynchronousQueue<>(),
-            clientThreadFactory(project.getName()),
-            new ThreadPoolExecutor.AbortPolicy());
+        this.clientExecutor = Executors.newCachedThreadPool(clientThreadFactory(project.getName()));
     }
 
     /**
@@ -154,8 +145,8 @@ public final class PrePushLocalServer implements Disposable {
                 try {
                     clientExecutor.execute(() -> handleClient(socket));
                 } catch (RejectedExecutionException rejected) {
-                    LOG.warn("Pre-push client rejected because all workers are busy.", rejected);
-                    writeServerBusy(socket);
+                    LOG.warn("Pre-push client rejected because the server is stopping.", rejected);
+                    writeServerUnavailable(socket);
                 }
             } catch (IOException e) {
                 if (s.isClosed()) return;
@@ -177,13 +168,13 @@ public final class PrePushLocalServer implements Disposable {
         };
     }
 
-    private void writeServerBusy(Socket socket) {
+    private void writeServerUnavailable(Socket socket) {
         try (Socket c = socket;
              BufferedWriter out = new BufferedWriter(new OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8))) {
-            out.write("ERR server-busy\n");
+            out.write("FAIL infrastructure server-stopping\n");
             out.flush();
         } catch (IOException e) {
-            LOG.debug("Could not notify pre-push client that the server is busy", e);
+            LOG.debug("Could not notify pre-push client that the server is stopping", e);
         }
     }
 
@@ -222,14 +213,18 @@ public final class PrePushLocalServer implements Disposable {
                 return;
             }
 
-            List<String> errors = runCompile(pathLimitExceeded ? Collections.emptyList() : requestedPaths);
-            if (errors == null) {
-                out.write("ERR compile-timeout\n");
-            } else if (errors.isEmpty()) {
+            PrePushValidationCoordinator.Outcome outcome =
+                runCompile(pathLimitExceeded ? Collections.emptyList() : requestedPaths);
+            if (outcome.status() == PrePushValidationCoordinator.Status.TIMEOUT) {
+                out.write("TIMEOUT validation-timeout\n");
+            } else if (outcome.status() != PrePushValidationCoordinator.Status.COMPLETED) {
+                out.write("FAIL infrastructure "
+                    + outcome.message().replace('\r', ' ').replace('\n', ' ') + "\n");
+            } else if (outcome.errors().isEmpty()) {
                 out.write("OK\n");
             } else {
-                out.write("ERRORS " + errors.size() + "\n");
-                for (String e : errors) {
+                out.write("ERRORS " + outcome.errors().size() + "\n");
+                for (String e : outcome.errors()) {
                     out.write(e.replace('\r', ' ').replace('\n', ' '));
                     out.write('\n');
                 }
@@ -241,24 +236,63 @@ public final class PrePushLocalServer implements Disposable {
         }
     }
 
-    private List<String> runCompile(List<String> requestedPaths) {
-        boolean acquired = false;
-        try {
-            acquired = compileGate.tryAcquire(COMPILE_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-            if (!acquired) {
-                LOG.warn("Timed out waiting for another pre-push compilation to finish.");
-                return null;
-            }
-            return runCompileSingleFlight(requestedPaths);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            return null;
-        } finally {
-            if (acquired) compileGate.release();
-        }
+    private PrePushValidationCoordinator.Outcome runCompile(List<String> requestedPaths) {
+        List<String> normalizedPaths = normalizeRequestedPaths(requestedPaths);
+        boolean projectScope = normalizedPaths.isEmpty()
+            || normalizedPaths.stream().anyMatch(PushValidationPaths::isBuildFile);
+        List<String> compilePaths = projectScope ? Collections.emptyList() : normalizedPaths;
+        String requestKey = buildRequestKey(normalizedPaths, projectScope);
+        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
+        List<VirtualFile> requestedFiles = resolveExistingFiles(normalizedPaths);
+
+        return PrePushValidationCoordinator.getInstance(project).request(
+            requestKey,
+            () -> {
+                List<String> cached = errorService.tryReusePrePushResult(requestKey);
+                return cached != null ? cached : errorService.tryReuse(requestedFiles);
+            },
+            () -> {
+                List<String> result = runCompileSingleFlight(compilePaths);
+                errorService.recordPrePushResult(requestKey, result);
+                return result;
+            },
+            null,
+            COMPILE_TIMEOUT_SECONDS,
+            TimeUnit.SECONDS);
     }
 
-    private List<String> runCompileSingleFlight(List<String> requestedPaths) {
+    private String buildRequestKey(List<String> normalizedPaths, boolean projectScope) {
+        String basePath = project.getBasePath();
+        String head = basePath == null ? null : GitOperations.headSha(basePath);
+        StringBuilder key = new StringBuilder("external\n");
+        key.append("scope=").append(projectScope ? "project" : "files").append('\n');
+        key.append("head=").append(head == null ? "" : head).append('\n');
+        for (String path : normalizedPaths) {
+            key.append("path=").append(path);
+            try {
+                key.append('@').append(Files.getLastModifiedTime(Path.of(path)).toMillis());
+            } catch (IOException | RuntimeException ignored) {
+                key.append("@missing");
+            }
+            key.append('\n');
+        }
+        return key.toString();
+    }
+
+    private static List<String> normalizeRequestedPaths(List<String> requestedPaths) {
+        TreeSet<String> normalized = new TreeSet<>();
+        for (String path : requestedPaths) {
+            if (path == null || path.isBlank()) continue;
+            try {
+                normalized.add(Path.of(path).toAbsolutePath().normalize().toString().replace('\\', '/'));
+            } catch (RuntimeException ignored) {
+                normalized.add(path.replace('\\', '/'));
+            }
+        }
+        return List.copyOf(normalized);
+    }
+
+    private List<String> runCompileSingleFlight(List<String> requestedPaths) throws TimeoutException {
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
             PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, null);
         if (strictSnapshot.wasChecked()) {
@@ -388,12 +422,17 @@ public final class PrePushLocalServer implements Disposable {
         }, ModalityState.defaultModalityState());
 
         try {
-            if (!latch.await(COMPILE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) return null;
+            if (!latch.await(COMPILE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                throw new TimeoutException("IDE compiler validation timed out");
+            }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-            return null;
+            throw new ProcessCanceledException();
         }
-        return fatal.get() ? null : errorsRef.get();
+        if (fatal.get()) {
+            throw new IllegalStateException("IDE compiler became unavailable");
+        }
+        return errorsRef.get();
     }
 
     private static List<VirtualFile> resolveFiles(List<String> paths) {
@@ -416,6 +455,18 @@ public final class PrePushLocalServer implements Disposable {
                     out.add(vf);
                 }
             }
+        }
+        return out;
+    }
+
+    private static List<VirtualFile> resolveExistingFiles(List<String> paths) {
+        if (paths.isEmpty()) return Collections.emptyList();
+        LocalFileSystem lfs = LocalFileSystem.getInstance();
+        List<VirtualFile> out = new ArrayList<>(paths.size());
+        for (String path : paths) {
+            VirtualFile file = lfs.findFileByPath(path);
+            if (file == null) file = lfs.refreshAndFindFileByPath(path);
+            if (file != null && !file.isDirectory()) out.add(file);
         }
         return out;
     }

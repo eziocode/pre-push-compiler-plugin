@@ -19,6 +19,7 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.progress.EmptyProgressIndicator;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
 import com.intellij.openapi.ui.DialogWrapper;
@@ -97,34 +98,60 @@ public final class PrePushCompilationHandler implements PrePushHandler {
             Runnable abortCommitAction = buildAbortCommitAction(project, pushDetails);
             String prePushKey = changeSet.cacheKey();
 
-            List<String> problemFiles = collectKnownProblemFiles(project, changeSet.getSourceFiles());
-            List<String> errors;
-            if (!problemFiles.isEmpty()) {
-                // WolfTheProblemSolver can retain stale diagnostics after a package or
-                // dependency change. Revalidate with the compiler before blocking; a
-                // clean compile means the problem-cache entry is no longer actionable.
-                LOG.info("IDE problem cache flagged " + problemFiles.size()
-                    + " pushed file(s); running fresh compiler validation.");
-                indicator.setText("Revalidating IDE problem cache");
-                errors = changeSet.requiresProjectBuild()
-                    ? compileProject(project, indicator)
-                    : compileFiles(project, changeSet.getSourceFiles(), indicator);
-            } else {
-                // Reuse a recent compile verdict when nothing has moved on disk since it ran.
-                // This skips a redundant full rebuild when e.g. the user just ran the manual
-                // "Run Compilation Check" and is now pushing without edits.
-                List<String> cached = errorService.tryReusePrePushResult(prePushKey);
-                if (cached == null && !changeSet.requiresProjectBuild() && !requiresStrictSnapshotCheck(project, changeSet)) {
-                    cached = errorService.tryReuse(changeSet.getSourceFiles());
-                }
-                if (cached != null) {
-                    LOG.info("Reusing cached compilation result (" + cached.size() + " error(s)).");
-                    errors = cached;
-                } else {
-                    scheduleBackgroundPrePushCheck(project, changeSet, prePushKey, pushDetails);
-                    return Result.ABORT;
-                }
+            boolean forceFresh = !collectKnownProblemFiles(
+                project, changeSet.getSourceFiles()).isEmpty();
+            if (forceFresh) {
+                LOG.info("IDE problem cache flagged pushed file(s); running fresh compiler validation.");
             }
+
+            indicator.setText("Waiting for pre-push compilation validation");
+            PrePushValidationCoordinator.Outcome validation =
+                PrePushValidationCoordinator.getInstance(project).request(
+                    prePushKey,
+                    () -> {
+                        if (forceFresh) return null;
+                        List<String> cached = errorService.tryReusePrePushResult(prePushKey);
+                        if (cached == null
+                                && !changeSet.requiresProjectBuild()
+                                && !requiresStrictSnapshotCheck(project, changeSet)) {
+                            cached = errorService.tryReuse(changeSet.getSourceFiles());
+                        }
+                        if (cached != null) {
+                            LOG.info("Reusing cached compilation result ("
+                                + cached.size() + " error(s)).");
+                        }
+                        return cached;
+                    },
+                    () -> {
+                        Map<String, String> preCompileSnapshots =
+                            captureCleanRootSnapshots(pushDetails);
+                        CompilationErrorService.CompileScopeKind scope =
+                            changeSet.requiresProjectBuild()
+                                ? CompilationErrorService.CompileScopeKind.PROJECT
+                                : CompilationErrorService.CompileScopeKind.FILE_SCOPE;
+                        List<String> result = runFullPrePushCheck(
+                            project, changeSet, new EmptyProgressIndicator());
+                        errorService.recordPrePushResult(prePushKey, result);
+                        if (result.isEmpty()) {
+                            recordCleanCommitsIfStillValid(
+                                project, preCompileSnapshots, scope);
+                        }
+                        return result;
+                    },
+                    indicator);
+
+            if (validation.status() != PrePushValidationCoordinator.Status.COMPLETED) {
+                if (validation.status() != PrePushValidationCoordinator.Status.CANCELED) {
+                    notify(
+                        project,
+                        "Pre-push compilation unavailable",
+                        validation.message(),
+                        com.intellij.notification.NotificationType.ERROR
+                    );
+                }
+                return Result.ABORT;
+            }
+            List<String> errors = validation.errors();
 
             if (!errors.isEmpty()) {
                 errorService.setErrors(errors);
@@ -432,34 +459,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         private static CompilationRun clean() {
             return new CompilationRun(Collections.emptyList(), false, 0);
         }
-    }
-
-    private static void handleBackgroundCompletion(
-        Project project,
-        List<String> errors,
-        List<PushInfo> pushDetails,
-        Map<String, String> preCompileSnapshots,
-        CompilationErrorService.CompileScopeKind scope
-    ) {
-        if (errors.isEmpty()) {
-            recordCleanCommitsIfStillValid(project, preCompileSnapshots, scope);
-            notify(
-                project,
-                "Pre-push compilation finished",
-                "Background compilation passed. Auto-retrying the push...",
-                com.intellij.notification.NotificationType.INFORMATION
-            );
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (project.isDisposed()) return;
-                executeAutoPush(project, pushDetails);
-            });
-            return;
-        }
-
-        ApplicationManager.getApplication().invokeLater(() -> {
-            if (project.isDisposed()) return;
-            showFailureChoiceDialog(project, errors, pushDetails);
-        });
     }
 
     /**
@@ -1050,79 +1049,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return PrePushSnapshotGuard
             .analyzeSnapshotRisk(project, changeSet.getRelevantPaths())
             .shouldValidateSnapshot();
-    }
-
-    private static void scheduleBackgroundPrePushCheck(Project project, PushChangeSet changeSet, String key, List<PushInfo> pushDetails) {
-        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
-        if (!errorService.markPrePushCheckRunning(key)) {
-            if (errorService.isPrePushCheckRunning(key)) {
-                notify(
-                    project,
-                    "Pre-push compilation already running",
-                    "The current push was stopped while the background check finishes. Retry push after the notification appears.",
-                    com.intellij.notification.NotificationType.INFORMATION
-                );
-            }
-            return;
-        }
-
-        ProgressManager.getInstance().run(
-            new Task.Backgroundable(
-                project,
-                "Pre-Push Compilation Checker",
-                true
-            ) {
-                private List<String> result = Collections.emptyList();
-                private Map<String, String> preCompileSnapshots = Collections.emptyMap();
-                private CompilationErrorService.CompileScopeKind scopeKind =
-                    CompilationErrorService.CompileScopeKind.FILE_SCOPE;
-
-                @Override
-                public void run(@NotNull ProgressIndicator indicator) {
-                    // Capture pre-compile per-root snapshot so we can decide later
-                    // whether the clean ledger may be updated. Only roots with a
-                    // clean WT at this moment are eligible.
-                    preCompileSnapshots = captureCleanRootSnapshots(pushDetails);
-                    scopeKind = changeSet.requiresProjectBuild()
-                        ? CompilationErrorService.CompileScopeKind.PROJECT
-                        : CompilationErrorService.CompileScopeKind.FILE_SCOPE;
-                    try {
-                        result = runFullPrePushCheck(project, changeSet, indicator);
-                        errorService.recordPrePushResult(key, result);
-                    } catch (ProcessCanceledException canceled) {
-                        errorService.finishPrePushCheck(key);
-                        throw canceled;
-                    } catch (Throwable t) {
-                        LOG.warn("Background pre-push compilation check failed", t);
-                        result = Collections.singletonList("Pre-push compilation check failed: " + t.getMessage());
-                        errorService.recordPrePushResult(key, result);
-                    }
-                }
-
-                @Override
-                public void onSuccess() {
-                    handleBackgroundCompletion(project, result, pushDetails,
-                        preCompileSnapshots, scopeKind);
-                }
-
-                @Override
-                public void onCancel() {
-                    errorService.finishPrePushCheck(key);
-                    PrePushCompilationHandler.notify(
-                        project,
-                        "Pre-push compilation canceled",
-                        "The background pre-push compilation check was canceled. Retry push to start it again.",
-                        com.intellij.notification.NotificationType.WARNING
-                    );
-                }
-            }
-        );
-        notify(
-            project,
-            "Pre-push compilation started",
-            "The current push was stopped so compilation can run in the IDE background instead of blocking the editor. Retry push after it finishes.",
-            com.intellij.notification.NotificationType.INFORMATION
-        );
     }
 
     private static List<String> runFullPrePushCheck(Project project, PushChangeSet changeSet, ProgressIndicator indicator) {

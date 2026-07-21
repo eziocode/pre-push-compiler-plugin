@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class GitHookInstallerTest extends BasePlatformTestCase {
@@ -32,8 +33,11 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
         assertTrue(script.contains("IntelliJ incremental compile unavailable"));
         assertTrue(script.contains("Fallback reported likely cache/generated-symbol false positives; retrying IntelliJ incremental compile once before aborting"));
-        assertTrue(script.contains("LAST_FALLBACK_OK_HEAD_FILE"));
-        assertTrue(script.contains("Reusing previous fallback compile result for unchanged HEAD"));
+        assertTrue(script.contains("FALLBACK_LOCK_DIR"));
+        assertTrue(script.contains("FALLBACK_WAIT_SECONDS=300"));
+        assertTrue(script.contains("publish_fallback_result"));
+        assertTrue(script.contains("Reusing previous fallback result for unchanged HEAD"));
+        assertTrue(script.contains("IntelliJ validation timed out"));
         assertTrue(script.contains("extract_error_records"));
         assertTrue(script.contains("suppression_hard_gate_allows"));
         assertTrue(script.contains("all_error_records_safe_generated_symbols"));
@@ -453,6 +457,78 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
                 + "\nOutput:\n" + output,
             run.exitValue() != 0);
         assertTrue(output.contains("Compilation failed"));
+    }
+
+    public void testConcurrentFallbackHooksShareOneBuildResult() throws Exception {
+        File repo = createTempDir("prepushchecker-concurrent-fallback");
+        runGit(repo, "init");
+        runGit(repo, "config", "user.email", "test@example.com");
+        runGit(repo, "config", "user.name", "Test User");
+        Path repoPath = repo.toPath();
+        Path source = repoPath.resolve("src/main/java/App.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class App {}\n", StandardCharsets.UTF_8);
+        Files.writeString(repoPath.resolve(".gitignore"), ".idea/\nbuild-count\n",
+            StandardCharsets.UTF_8);
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "init");
+        Files.writeString(source, "class App { int value; }\n", StandardCharsets.UTF_8);
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "change");
+
+        Path hook = repoPath.resolve(".git/hooks").resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Files.writeString(hook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+        assertTrue(hook.toFile().setExecutable(true, false));
+
+        Path fakeHome = repoPath.resolve("fake-home");
+        Path fakeBin = repoPath.resolve("fake-bin");
+        Files.createDirectories(fakeHome.resolve(".prepush-checker"));
+        Files.createDirectories(fakeBin);
+        Files.writeString(fakeHome.resolve(".prepush-checker/installed"), "1\n", StandardCharsets.UTF_8);
+        Path fakePgrep = fakeBin.resolve("pgrep");
+        Files.writeString(fakePgrep, "#!/usr/bin/env sh\nexit 1\n", StandardCharsets.UTF_8);
+        assertTrue(fakePgrep.toFile().setExecutable(true, false));
+
+        Path count = repoPath.resolve("build-count");
+        Path fakeBuild = repoPath.resolve("fake-build.sh");
+        Files.writeString(fakeBuild,
+            "#!/usr/bin/env sh\nprintf 'build\\n' >> \"" + count + "\"\nsleep 2\nexit 0\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeBuild.toFile().setExecutable(true, false));
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "add test harness");
+        String headSha = runGitOutput(repo, "rev-parse", "HEAD").trim();
+
+        String input = "refs/heads/main " + headSha + " refs/heads/main "
+            + "0000000000000000000000000000000000000000\n";
+        ProcessBuilder firstBuilder = new ProcessBuilder(hook.toString())
+            .directory(repo).redirectErrorStream(true);
+        ProcessBuilder secondBuilder = new ProcessBuilder(hook.toString())
+            .directory(repo).redirectErrorStream(true);
+        for (ProcessBuilder builder : List.of(firstBuilder, secondBuilder)) {
+            builder.environment().put("HOME", fakeHome.toString());
+            builder.environment().put("PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString());
+            builder.environment().put("PATH",
+                fakeBin + File.pathSeparator + System.getenv().getOrDefault("PATH", "/usr/bin:/bin"));
+        }
+
+        Process first = firstBuilder.start();
+        Process second = secondBuilder.start();
+        first.getOutputStream().write(input.getBytes(StandardCharsets.UTF_8));
+        first.getOutputStream().close();
+        second.getOutputStream().write(input.getBytes(StandardCharsets.UTF_8));
+        second.getOutputStream().close();
+
+        assertTrue(first.waitFor(20, TimeUnit.SECONDS));
+        assertTrue(second.waitFor(20, TimeUnit.SECONDS));
+        String firstOutput = new String(first.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        String secondOutput = new String(second.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertEquals(firstOutput, 0, first.exitValue());
+        assertEquals(secondOutput, 0, second.exitValue());
+        assertTrue("Fallback command did not run.\nFirst:\n" + firstOutput
+            + "\nSecond:\n" + secondOutput, Files.exists(count));
+        assertEquals("First:\n" + firstOutput + "\nSecond:\n" + secondOutput,
+            List.of("build"), Files.readAllLines(count, StandardCharsets.UTF_8));
     }
 
     private static File createTempDir(String prefix) {

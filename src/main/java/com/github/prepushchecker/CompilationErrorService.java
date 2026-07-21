@@ -15,9 +15,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Project-level service that holds the most recent compilation error list produced
@@ -46,7 +44,6 @@ public final class CompilationErrorService {
     private Map<String, Long> lastFileStamps = Collections.emptyMap();
     private String lastPrePushKey = "";
     private List<String> lastPrePushErrors = Collections.emptyList();
-    private final Set<String> runningPrePushKeys = ConcurrentHashMap.newKeySet();
 
     // Clean-commit ledger: (repoRoot, headSha) -> scope under which that snapshot was
     // verified clean. Bounded LRU. We only ever store *clean* results — a missing entry
@@ -135,7 +132,6 @@ public final class CompilationErrorService {
         this.lastFileStamps = Collections.emptyMap();
         this.lastPrePushKey = "";
         this.lastPrePushErrors = Collections.emptyList();
-        this.runningPrePushKeys.clear();
         this.cleanLedger.clear();
     }
 
@@ -172,26 +168,13 @@ public final class CompilationErrorService {
         return !key.isBlank() && key.equals(lastPrePushKey) ? lastPrePushErrors : null;
     }
 
-    public boolean markPrePushCheckRunning(@NotNull String key) {
-        return !key.isBlank() && runningPrePushKeys.add(key);
-    }
-
-    public boolean isPrePushCheckRunning(@NotNull String key) {
-        return runningPrePushKeys.contains(key);
-    }
-
     public void recordPrePushResult(@NotNull String key, @NotNull List<String> newErrors) {
         List<String> snapshot = compactErrors(newErrors);
         synchronized (this) {
             this.lastPrePushKey = key;
             this.lastPrePushErrors = snapshot;
         }
-        runningPrePushKeys.remove(key);
         setErrors(snapshot);
-    }
-
-    public void finishPrePushCheck(@NotNull String key) {
-        runningPrePushKeys.remove(key);
     }
 
     /**

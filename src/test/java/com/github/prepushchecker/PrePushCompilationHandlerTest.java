@@ -14,18 +14,6 @@ public class PrePushCompilationHandlerTest extends BasePlatformTestCase {
         assertNull(service.tryReusePrePushResult("commit=b\npath=src/main/java/App.java\n"));
     }
 
-    public void testPrePushRunningKeyIsSingleFlight() {
-        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
-
-        assertTrue(service.markPrePushCheckRunning("key"));
-        assertFalse(service.markPrePushCheckRunning("key"));
-        assertTrue(service.isPrePushCheckRunning("key"));
-
-        service.finishPrePushCheck("key");
-
-        assertFalse(service.isPrePushCheckRunning("key"));
-    }
-
     public void testStaleCompilerRecoveryRetriesAnyIncrementalFailureWithProjectBuildOnce() {
         assertTrue(PrePushCompilationHandler.shouldRetryWithProjectBuild(false, 1, false));
 

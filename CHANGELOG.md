@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.2]
+
+### Fixed
+
+- **Duplicate builds from concurrent pushes.** IntelliJ, terminal, and GUI Git-client pushes now
+  share one snapshot-aware validation. Matching pushes wait for the active build and receive the
+  same result instead of launching another compiler run.
+- **Retry-only IntelliJ push flow.** An IntelliJ push that starts validation now waits for it and
+  continues or aborts the original push attempt automatically; users no longer need to retry after
+  a background-build notification.
+- **Concurrent build-tool fallback.** When the IDE compiler is unavailable, generated hooks use a
+  process-safe repository lock and atomically published result so concurrent Maven or Gradle
+  fallback checks run only once.
+
+### Changed
+
+- Requests for a different snapshot wait for the current validation, reuse it only when its scope
+  and freshness cover the new push, and otherwise start exactly one subsequent validation.
+- Validation waits are bounded to 300 seconds and surface timeout, cancellation, and infrastructure
+  failures without approving the push or starting a competing build.
+
+### Tests
+
+- Added concurrency coverage for shared results, different snapshots, canceled waiters, timeouts,
+  and concurrent generated-hook fallback execution.
+
+---
+
 ## [2.0.1]
 
 ### Fixed

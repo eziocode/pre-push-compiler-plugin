@@ -68,6 +68,29 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.0.2 — Single-flight push validation</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>No duplicate builds from concurrent pushes.</b> IntelliJ, terminal, and GUI
+                Git-client pushes now share one snapshot-aware validation. Matching pushes wait
+                for the active build and receive the same result.</li>
+            <li><b>No manual IntelliJ push retry.</b> The original IntelliJ push now waits for
+                validation and continues or aborts automatically instead of stopping for a
+                background build and requiring another push.</li>
+            <li><b>Single-flight Maven and Gradle fallback.</b> Generated hooks coordinate through
+                a process-safe repository lock and atomically published result when the IDE
+                compiler is unavailable.</li>
+        </ul>
+
+        <h4>Changed</h4>
+        <ul>
+            <li>Different snapshots wait for the active validation, reuse it only when the result
+                safely covers the new push, and otherwise start one necessary follow-up check.</li>
+            <li>Validation waits are capped at 300 seconds and fail safely on timeout,
+                cancellation, or compiler infrastructure errors.</li>
+        </ul>
+
         <h3>2.0.1 — Reliable Git hook lifecycle</h3>
 
         <h4>Fixed</h4>
