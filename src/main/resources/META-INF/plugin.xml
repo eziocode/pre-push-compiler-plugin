@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.0.1</version>
+    <version>2.0.3</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -35,7 +35,7 @@
         <h3>Features</h3>
         <ul>
             <li>Smart compile scope — changed modules plus dependent modules by default, project-level when necessary</li>
-            <li>IDE problem check — revalidates stale diagnostics with one incremental Build Project retry when needed</li>
+            <li>IDE problem check — revalidates stale diagnostics with one forced project compile when needed</li>
             <li>Navigable error dialog — double-click any error to jump to the source file</li>
             <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
             <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
@@ -68,6 +68,16 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.0.3 — Automatic stale-error recovery</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>No manual recompilation for false errors.</b> A failed incremental IDE check now
+                triggers one forced project compile before the push is blocked. IntelliJ, terminal,
+                and GUI Git-client pushes report and cache only the forced compile's final result,
+                while clean incremental checks remain fast and single-flight validation is preserved.</li>
+        </ul>
+
         <h3>2.0.2 — Single-flight push validation</h3>
 
         <h4>Fixed</h4>

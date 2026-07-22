@@ -14,12 +14,12 @@ public class PrePushCompilationHandlerTest extends BasePlatformTestCase {
         assertNull(service.tryReusePrePushResult("commit=b\npath=src/main/java/App.java\n"));
     }
 
-    public void testStaleCompilerRecoveryRetriesAnyIncrementalFailureWithProjectBuildOnce() {
-        assertTrue(PrePushCompilationHandler.shouldRetryWithProjectBuild(false, 1, false));
+    public void testStaleCompilerRecoveryForcesProjectCompileOnceAfterIncrementalFailure() {
+        assertTrue(PrePushCompilationHandler.shouldForceProjectCompile(false, 1, false));
 
-        assertFalse(PrePushCompilationHandler.shouldRetryWithProjectBuild(true, 1, false));
-        assertFalse(PrePushCompilationHandler.shouldRetryWithProjectBuild(false, 0, false));
-        assertFalse(PrePushCompilationHandler.shouldRetryWithProjectBuild(false, 1, true));
+        assertFalse(PrePushCompilationHandler.shouldForceProjectCompile(true, 1, false));
+        assertFalse(PrePushCompilationHandler.shouldForceProjectCompile(false, 0, false));
+        assertFalse(PrePushCompilationHandler.shouldForceProjectCompile(false, 1, true));
     }
 
     public void testExternalServerIsProjectServiceForStartupDeduplication() {

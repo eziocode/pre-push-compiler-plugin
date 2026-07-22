@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.3]
+
+### Fixed
+
+- **False compilation errors after incremental recovery.** Failed incremental IDE checks now run
+  one forced project compile before blocking a push. This restores automatic stale JPS
+  classpath/output recovery for IntelliJ, terminal, and GUI Git-client pushes while preserving
+  single-flight validation. Only the forced compile's final result is reported and cached.
+
+---
+
 ## [2.0.2]
 
 ### Fixed

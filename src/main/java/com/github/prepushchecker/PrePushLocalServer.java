@@ -343,24 +343,24 @@ public final class PrePushLocalServer implements Disposable {
                 }
 
                 final List<VirtualFile> recordedFiles = files;
-                class RetryingCompileCallback implements CompileStatusNotification {
+                class RecoveringCompileCallback implements CompileStatusNotification {
                     private boolean projectScope;
-                    private boolean projectBuildRetried;
+                    private boolean projectCompileForced;
 
-                    private RetryingCompileCallback(boolean projectScope) {
+                    private RecoveringCompileCallback(boolean projectScope) {
                         this.projectScope = projectScope;
                     }
 
                     @Override
                     public void finished(boolean aborted, int errorCount, int warningCount, CompileContext ctx) {
-                        boolean retryingProjectBuild = false;
+                        boolean forcingProjectCompile = false;
                         try {
-                            if (PrePushCompilationHandler.shouldRetryWithProjectBuild(
-                                    aborted, errorCount, projectBuildRetried)) {
-                                retryingProjectBuild = true;
-                                projectBuildRetried = true;
+                            if (PrePushCompilationHandler.shouldForceProjectCompile(
+                                    aborted, errorCount, projectCompileForced)) {
+                                forcingProjectCompile = true;
+                                projectCompileForced = true;
                                 projectScope = true;
-                                LOG.info("External pre-push incremental compile reported errors; retrying once with Build Project before reporting them.");
+                                LOG.info("External pre-push incremental compile reported errors; forcing one project compile before reporting them.");
                                 ApplicationManager.getApplication().invokeLater(() -> {
                                     try {
                                         if (project.isDisposed()) {
@@ -368,9 +368,9 @@ public final class PrePushLocalServer implements Disposable {
                                             latch.countDown();
                                             return;
                                         }
-                                        cm.make(cm.createProjectCompileScope(project), this);
+                                        cm.compile(cm.createProjectCompileScope(project), this);
                                     } catch (Throwable t) {
-                                        LOG.warn("CompilerManager Build Project retry failed", t);
+                                        LOG.warn("CompilerManager forced project compile failed", t);
                                         fatal.set(true);
                                         latch.countDown();
                                     }
@@ -397,14 +397,14 @@ public final class PrePushLocalServer implements Disposable {
                                     result);
                             }
                         } finally {
-                            if (!retryingProjectBuild) {
+                            if (!forcingProjectCompile) {
                                 latch.countDown();
                             }
                         }
                     }
                 }
 
-                CompileStatusNotification callback = new RetryingCompileCallback(files.isEmpty());
+                CompileStatusNotification callback = new RecoveringCompileCallback(files.isEmpty());
 
                 if (!files.isEmpty()) {
                     // Same adaptive scope as the in-IDE push path: include dependent modules so

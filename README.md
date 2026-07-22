@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.0.2-blue)
+![Version](https://img.shields.io/badge/version-2.0.3-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -18,7 +18,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 
 - **IDE Push Guard** — hooks into IntelliJ's native push dialog (`prePushHandler` extension point)
 - **Smart compile scope** — compiles modules containing changed files plus dependent modules; automatically falls back to a full project build when build files (`build.gradle`, `pom.xml`, etc.) or file deletions are involved
-- **IDE problem check** — stale IntelliJ diagnostics are revalidated; failed incremental checks get one incremental **Build Project** retry before a push is blocked
+- **IDE problem check** — stale IntelliJ diagnostics are revalidated; failed incremental checks get one forced project compile before a push is blocked
 - **Push-only compilation** — edits, Git changes, and project startup never trigger a build; compilation runs only for explicit builds and pre-push validation
 - **Single-flight push checks** — concurrent external push requests share one per-project compiler flow and reuse its fresh result instead of launching duplicate JPS builds
 - **Symbolic A/B detection** — parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans HEAD content of pushed files for word-boundary references; blocks the push instantly when the pushed commit references a symbol defined only in an unpushed local edit (no compile required)
@@ -119,7 +119,7 @@ A starter template is included at `.github/commit-instructions.md` in this repos
 
 1. You click **Push** in the Git Push dialog.
 2. The plugin inspects every commit being pushed and collects the changed source files.
-3. It consults IntelliJ's problem solver, then validates flagged files with the compiler. Any failed incremental check gets one project-wide incremental **Build Project** retry, so stale JPS classpath/output errors do not block a clean push without recompiling every source file.
+3. It consults IntelliJ's problem solver, then validates flagged files with the compiler. Any failed incremental check gets one forced project compile, so stale JPS classpath/output errors are cleared automatically before a clean push is blocked.
 4. If the strict A/B guard is enabled, a symbolic check parses `git diff HEAD` of unpushed local files and scans pushed files at HEAD for references to declarations that exist only in those unpushed edits. Matches block the push with a message naming each pushed file and the symbol it references.
 5. Otherwise it compiles the affected modules plus dependent modules (or the full project for build-file / deletion changes).
 6. If compilation fails, a modal dialog presents **Reset Commit** (soft-reset the pushed commits, keep changes in the working tree), **Push Anyway** (run `git push` despite errors), **Leave Commit** (no-op), or **Cancel**.
@@ -194,4 +194,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.2**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.3**.

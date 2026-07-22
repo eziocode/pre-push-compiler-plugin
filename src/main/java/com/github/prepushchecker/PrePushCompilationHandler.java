@@ -359,8 +359,7 @@ public final class PrePushCompilationHandler implements PrePushHandler {
 
     /**
      * A scoped make can retain a stale JPS classpath/output after dependency or package changes.
-     * If it reports errors, retry once with the same project-wide incremental make used by
-     * IntelliJ's Build Project action before treating them as real.
+     * If it reports errors, force one project-wide compile before treating them as real.
      */
     private static List<String> runCompilationWithRecovery(
         Project project,
@@ -374,14 +373,14 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         CompilationRun finalRun = initial;
         boolean finalProjectScope = projectScope;
         Map<String, Long> finalStamps = stamps;
-        if (shouldRetryWithProjectBuild(initial.aborted, initial.errorCount, false)) {
+        if (shouldForceProjectCompile(initial.aborted, initial.errorCount, false)) {
             LOG.info("Pre-push incremental compile reported " + initial.errorCount
-                + " error(s); retrying once with Build Project before blocking push.");
-            indicator.setText("Running Build Project to verify compiler errors");
+                + " error(s); forcing one project compile before blocking push.");
+            indicator.setText("Recompiling project to verify compiler errors");
             finalRun = runCompilation(
                 project,
                 indicator,
-                notification -> compilerManager.make(
+                notification -> compilerManager.compile(
                     compilerManager.createProjectCompileScope(project), notification)
             );
             finalProjectScope = true;
@@ -397,8 +396,8 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         return finalRun.errors;
     }
 
-    static boolean shouldRetryWithProjectBuild(boolean aborted, int errorCount, boolean retryAlreadyAttempted) {
-        return !aborted && errorCount > 0 && !retryAlreadyAttempted;
+    static boolean shouldForceProjectCompile(boolean aborted, int errorCount, boolean recoveryAlreadyAttempted) {
+        return !aborted && errorCount > 0 && !recoveryAlreadyAttempted;
     }
 
     private static CompilationRun runCompilation(
