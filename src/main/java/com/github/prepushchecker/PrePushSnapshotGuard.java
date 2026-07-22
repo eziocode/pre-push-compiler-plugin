@@ -351,23 +351,56 @@ final class PrePushSnapshotGuard {
         @NotNull Path outputRoot
     ) throws IOException, InterruptedException {
         String override = System.getenv("PRE_PUSH_CHECKER_COMMAND");
-        List<String> command;
+        BuildCommandPlan commandPlan;
         if (override != null && !override.isBlank()) {
-            command = List.of("/bin/sh", "-c", override);
+            commandPlan = new BuildCommandPlan(
+                List.of("/bin/sh", "-c", override),
+                List.of());
         } else {
             GitHookInstaller.BuildTool buildTool = GitHookInstaller.detectBuildTool(worktree.toString());
-            command = resolveBuildCommand(worktree, buildCommand(buildTool, pushedPaths));
-            if (command.isEmpty()) {
+            commandPlan = buildCommandPlan(buildTool, pushedPaths);
+            if (commandPlan.primary().isEmpty()) {
                 return CommandResult.skippedResult();
             }
         }
 
-        return runCommand(
+        List<String> primary = resolveBuildCommand(worktree, commandPlan.primary());
+        if (primary.isEmpty()) {
+            return CommandResult.skippedResult();
+        }
+        long deadlineNanos = System.nanoTime()
+            + TimeUnit.MILLISECONDS.toNanos(SNAPSHOT_BUILD_TIMEOUT_MILLIS);
+        CommandResult result = runCommand(
             worktree,
-            command,
-            SNAPSHOT_BUILD_TIMEOUT_MILLIS,
+            primary,
+            remainingTimeoutMillis(deadlineNanos),
             indicator,
             outputRoot.resolve("snapshot-build.log")
+        );
+        if (result.succeeded()
+                || result.timedOut()
+                || commandPlan.recovery().isEmpty()) {
+            return result;
+        }
+
+        CompilationFailureClassifier.RecoveryDecision decision =
+            CompilationFailureClassifier.classify(result.outputLines());
+        if (!decision.shouldRecover()) {
+            return result;
+        }
+
+        List<String> recovery = resolveBuildCommand(worktree, commandPlan.recovery());
+        if (recovery.isEmpty()) {
+            return result;
+        }
+        LOG.info("Snapshot Maven build reported likely stale/parallel compiler state ("
+            + decision.reason() + "); retrying once sequentially from a clean output state.");
+        return runCommand(
+            worktree,
+            recovery,
+            remainingTimeoutMillis(deadlineNanos),
+            indicator,
+            outputRoot.resolve("snapshot-build-recovery.log")
         );
     }
 
@@ -560,6 +593,20 @@ final class PrePushSnapshotGuard {
         @NotNull GitHookInstaller.BuildTool buildTool,
         @NotNull Collection<String> pushedPaths
     ) {
+        return buildCommandPlan(buildTool, pushedPaths).primary();
+    }
+
+    static @NotNull List<String> buildRecoveryCommand(
+        @NotNull GitHookInstaller.BuildTool buildTool,
+        @NotNull Collection<String> pushedPaths
+    ) {
+        return buildCommandPlan(buildTool, pushedPaths).recovery();
+    }
+
+    private static @NotNull BuildCommandPlan buildCommandPlan(
+        @NotNull GitHookInstaller.BuildTool buildTool,
+        @NotNull Collection<String> pushedPaths
+    ) {
         boolean fullCompile = pushedPaths.isEmpty();
         boolean testChanged = false;
         for (String path : pushedPaths) {
@@ -573,11 +620,13 @@ final class PrePushSnapshotGuard {
         }
 
         return switch (buildTool) {
-            case GRADLE_WRAPPER -> gradleCommand("./gradlew", fullCompile, testChanged);
-            case GRADLE -> gradleCommand("gradle", fullCompile, testChanged);
-            case MAVEN_WRAPPER -> mavenCommand("./mvnw", fullCompile || testChanged);
-            case MAVEN -> mavenCommand("mvn", fullCompile || testChanged);
-            case UNKNOWN -> List.of();
+            case GRADLE_WRAPPER -> new BuildCommandPlan(
+                gradleCommand("./gradlew", fullCompile, testChanged), List.of());
+            case GRADLE -> new BuildCommandPlan(
+                gradleCommand("gradle", fullCompile, testChanged), List.of());
+            case MAVEN_WRAPPER -> mavenCommandPlan("./mvnw", fullCompile || testChanged);
+            case MAVEN -> mavenCommandPlan("mvn", fullCompile || testChanged);
+            case UNKNOWN -> new BuildCommandPlan(List.of(), List.of());
         };
     }
 
@@ -597,18 +646,32 @@ final class PrePushSnapshotGuard {
         return command;
     }
 
-    private static @NotNull List<String> mavenCommand(@NotNull String executable, boolean includeTests) {
-        // -Dmaven.compiler.useIncrementalCompilation=false avoids a class of false
-        // "cannot find symbol" errors on Lombok-annotated code where the consumer is
-        // recompiled against a stale target/classes copy of the @Getter/@Setter source.
-        return List.of(
-            executable,
-            "-q",
-            "-T1C",
-            "-Dmaven.javadoc.skip=true",
-            "-Dmaven.compiler.useIncrementalCompilation=false",
-            includeTests ? "test-compile" : "compile"
+    private static @NotNull BuildCommandPlan mavenCommandPlan(
+        @NotNull String executable,
+        boolean includeTests
+    ) {
+        String goal = includeTests ? "test-compile" : "compile";
+        return new BuildCommandPlan(
+            List.of(
+                executable,
+                "-q",
+                "-T1C",
+                "-Dmaven.javadoc.skip=true",
+                goal
+            ),
+            List.of(
+                executable,
+                "-q",
+                "-Dmaven.javadoc.skip=true",
+                "clean",
+                goal
+            )
         );
+    }
+
+    private static long remainingTimeoutMillis(long deadlineNanos) {
+        long remainingNanos = deadlineNanos - System.nanoTime();
+        return Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
     }
 
     private static boolean isTestPath(@NotNull String path) {
@@ -1035,6 +1098,16 @@ final class PrePushSnapshotGuard {
     ) {
         private static @NotNull CommandResult skippedResult() {
             return new CommandResult(false, -1, false, true, List.of());
+        }
+    }
+
+    private record BuildCommandPlan(
+        @NotNull List<String> primary,
+        @NotNull List<String> recovery
+    ) {
+        private BuildCommandPlan {
+            primary = List.copyOf(primary);
+            recovery = List.copyOf(recovery);
         }
     }
 }

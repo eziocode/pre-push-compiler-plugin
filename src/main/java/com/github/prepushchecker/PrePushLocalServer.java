@@ -3,13 +3,11 @@ package com.github.prepushchecker;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
-import com.intellij.openapi.compiler.CompileContext;
 import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
-import com.intellij.openapi.compiler.CompilerMessageCategory;
-import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.progress.EmptyProgressIndicator;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -33,8 +31,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.TreeSet;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -249,7 +247,10 @@ public final class PrePushLocalServer implements Disposable {
             requestKey,
             () -> {
                 List<String> cached = errorService.tryReusePrePushResult(requestKey);
-                return cached != null ? cached : errorService.tryReuse(requestedFiles);
+                if (cached != null) {
+                    return cached;
+                }
+                return projectScope ? null : errorService.tryReuse(requestedFiles);
             },
             () -> {
                 List<String> result = runCompileSingleFlight(compilePaths);
@@ -305,134 +306,52 @@ public final class PrePushLocalServer implements Disposable {
             return snapshotErrors;
         }
 
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<List<String>> errorsRef = new AtomicReference<>(Collections.emptyList());
-        AtomicBoolean fatal = new AtomicBoolean(false);
-
-        ApplicationManager.getApplication().invokeLater(() -> {
+        AtomicReference<List<VirtualFile>> filesRef =
+            new AtomicReference<>(Collections.emptyList());
+        AtomicReference<CompileScope> scopeRef = new AtomicReference<>();
+        AtomicReference<CompilerManager> compilerRef = new AtomicReference<>();
+        ApplicationManager.getApplication().invokeAndWait(() -> {
             if (project.isDisposed()) {
-                fatal.set(true);
-                latch.countDown();
-                return;
+                throw new IllegalStateException("project disposed");
             }
-            try {
-                // Narrow, targeted refresh: only the files the hook is actually asking about.
-                // Avoids the (potentially slow) project-wide VirtualFileManager.syncRefresh().
-                FileDocumentManager.getInstance().saveAllDocuments();
-
-                CompilerManager cm = CompilerManager.getInstance(project);
-                List<VirtualFile> files = resolveFiles(requestedPaths);
-                if (!files.isEmpty()) {
-                    LocalFileSystem.getInstance().refreshFiles(files);
-                }
-
-                // Reuse a recent successful compile verdict when nothing has moved on disk. Lets
-                // external pushes piggyback on a just-completed manual check or an
-                // earlier push check without re-running javac. Cached failures are deliberately
-                // rechecked: IntelliJ's problem cache and narrow targeted compiles can hold stale
-                // generated-symbol errors (Lombok getters/setters/builders) until a real compile
-                // clears them.
-                CompilationErrorService svc = CompilationErrorService.getInstance(project);
-                if (!files.isEmpty()) {
-                    List<String> cached = svc.tryReuse(files);
-                    if (cached != null && cached.isEmpty()) {
-                        errorsRef.set(cached);
-                        latch.countDown();
-                        return;
-                    }
-                }
-
-                final List<VirtualFile> recordedFiles = files;
-                class RecoveringCompileCallback implements CompileStatusNotification {
-                    private boolean projectScope;
-                    private boolean projectCompileForced;
-
-                    private RecoveringCompileCallback(boolean projectScope) {
-                        this.projectScope = projectScope;
-                    }
-
-                    @Override
-                    public void finished(boolean aborted, int errorCount, int warningCount, CompileContext ctx) {
-                        boolean forcingProjectCompile = false;
-                        try {
-                            if (PrePushCompilationHandler.shouldForceProjectCompile(
-                                    aborted, errorCount, projectCompileForced)) {
-                                forcingProjectCompile = true;
-                                projectCompileForced = true;
-                                projectScope = true;
-                                LOG.info("External pre-push incremental compile reported errors; forcing one project compile before reporting them.");
-                                ApplicationManager.getApplication().invokeLater(() -> {
-                                    try {
-                                        if (project.isDisposed()) {
-                                            fatal.set(true);
-                                            latch.countDown();
-                                            return;
-                                        }
-                                        cm.compile(cm.createProjectCompileScope(project), this);
-                                    } catch (Throwable t) {
-                                        LOG.warn("CompilerManager forced project compile failed", t);
-                                        fatal.set(true);
-                                        latch.countDown();
-                                    }
-                                }, ModalityState.defaultModalityState());
-                                return;
-                            }
-
-                            List<String> result;
-                            if (aborted) {
-                                result = Collections.singletonList("Compilation was aborted.");
-                            } else if (errorCount > 0) {
-                                result = PrePushCompilationHandler.formatCompilerMessages(
-                                    project, ctx.getMessages(CompilerMessageCategory.ERROR));
-                            } else {
-                                result = Collections.emptyList();
-                            }
-                            errorsRef.set(result);
-                            if (!aborted) {
-                                svc.recordCompletion(
-                                    projectScope,
-                                    projectScope
-                                        ? Collections.emptyMap()
-                                        : CompilationErrorService.snapshotStamps(recordedFiles),
-                                    result);
-                            }
-                        } finally {
-                            if (!forcingProjectCompile) {
-                                latch.countDown();
-                            }
-                        }
-                    }
-                }
-
-                CompileStatusNotification callback = new RecoveringCompileCallback(files.isEmpty());
-
-                if (!files.isEmpty()) {
-                    // Same adaptive scope as the in-IDE push path: include dependent modules so
-                    // JPS cannot miss A-depends-on-B breakage, but keep it incremental.
-                    CompileScope scope = PrePushCompilationHandler.buildPushScopeForExternal(project, files, cm);
-                    cm.make(scope, callback);
-                } else {
-                    cm.make(cm.createProjectCompileScope(project), callback);
-                }
-            } catch (Throwable t) {
-                LOG.warn("CompilerManager compile/make failed", t);
-                fatal.set(true);
-                latch.countDown();
+            FileDocumentManager.getInstance().saveAllDocuments();
+            CompilerManager compiler = CompilerManager.getInstance(project);
+            List<VirtualFile> files = resolveFiles(requestedPaths);
+            if (!files.isEmpty()) {
+                LocalFileSystem.getInstance().refreshFiles(files);
             }
+            CompileScope scope = files.isEmpty()
+                ? compiler.createProjectCompileScope(project)
+                : PrePushCompilationHandler.buildPushScopeForExternal(project, files, compiler);
+            compilerRef.set(compiler);
+            filesRef.set(List.copyOf(files));
+            scopeRef.set(scope);
         }, ModalityState.defaultModalityState());
 
-        try {
-            if (!latch.await(COMPILE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-                throw new TimeoutException("IDE compiler validation timed out");
+        List<VirtualFile> files = filesRef.get();
+        CompilationErrorService service = CompilationErrorService.getInstance(project);
+        if (!files.isEmpty()) {
+            List<String> cached = service.tryReuse(files);
+            if (cached != null && cached.isEmpty()) {
+                return cached;
             }
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new ProcessCanceledException();
         }
-        if (fatal.get()) {
-            throw new IllegalStateException("IDE compiler became unavailable");
-        }
-        return errorsRef.get();
+
+        boolean projectScope = files.isEmpty();
+        Map<String, Long> stamps = projectScope
+            ? Collections.emptyMap()
+            : CompilationErrorService.snapshotStamps(files);
+        CompilerManager compiler = compilerRef.get();
+        CompileScope scope = scopeRef.get();
+        return IdeCompilationRunner.runWithRecovery(
+            project,
+            new EmptyProgressIndicator(),
+            projectScope,
+            stamps,
+            compiler,
+            notification -> compiler.make(scope, notification),
+            COMPILE_TIMEOUT_SECONDS,
+            TimeUnit.SECONDS);
     }
 
     private static List<VirtualFile> resolveFiles(List<String> paths) {

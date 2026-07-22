@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.4]
+
+### Fixed
+
+- **Failed compilation results no longer become stale cache entries.** IntelliJ and generated-hook
+  failures are shared only with callers waiting for the same active validation. A later push always
+  gets a fresh check, while exact clean results may be reused for 60 seconds.
+- **Bounded JPS stale-cache recovery.** IDE validation now runs the incremental scope once and
+  performs at most one clean project rebuild only for conservative classpath/output diagnostics such
+  as missing annotation class files, unknown enum constants, or widespread package failures.
+- **External fallback no longer inherits old build output.** Terminal and GUI Git-client fallback
+  checks run in a temporary detached `HEAD` worktree instead of stashing and compiling inside the
+  user's working tree.
+- **Stuck IDE compiler callbacks cannot block all future checks.** The shared validation worker has
+  a hard 300-second compilation deadline and invalidates cached freshness on timeout or abort.
+
+### Performance
+
+- Maven keeps the parallel `-T1C` fast path and retries once sequentially with `clean` only when the
+  first output matches a likely stale classpath or reactor race.
+- Removed the unsafe `maven.compiler.useIncrementalCompilation=false` override and the stacked
+  generated-symbol/output/IDE rescue attempts.
+
+### Tests
+
+- Added regression coverage for stale Spring/JPA diagnostics, exact build counts, failed-result
+  retries, clean-result expiry, concurrent fallback sharing, detached-worktree isolation, adaptive
+  Maven retry, legacy cache migration, and compiler callback timeouts.
+
+---
+
 ## [2.0.3]
 
 ### Fixed

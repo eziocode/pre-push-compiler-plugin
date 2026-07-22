@@ -2,11 +2,9 @@ package com.github.prepushchecker;
 
 import com.intellij.dvcs.push.PrePushHandler;
 import com.intellij.dvcs.push.PushInfo;
-import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompileScope;
-import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessage;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
@@ -43,15 +41,12 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.TreeSet;
 
 public final class PrePushCompilationHandler implements PrePushHandler {
     private static final Logger LOG = Logger.getInstance(PrePushCompilationHandler.class);
-    private static final long WAIT_SLICE_MILLIS = 250L;
 
     @Override
     public @NotNull String getPresentableName() {
@@ -357,107 +352,21 @@ public final class PrePushCompilationHandler implements PrePushHandler {
         );
     }
 
-    /**
-     * A scoped make can retain a stale JPS classpath/output after dependency or package changes.
-     * If it reports errors, force one project-wide compile before treating them as real.
-     */
     private static List<String> runCompilationWithRecovery(
         Project project,
         ProgressIndicator indicator,
         boolean projectScope,
         Map<String, Long> stamps,
         CompilerManager compilerManager,
-        CompilationStarter compilationStarter
+        IdeCompilationRunner.CompilationStarter compilationStarter
     ) {
-        CompilationRun initial = runCompilation(project, indicator, compilationStarter);
-        CompilationRun finalRun = initial;
-        boolean finalProjectScope = projectScope;
-        Map<String, Long> finalStamps = stamps;
-        if (shouldForceProjectCompile(initial.aborted, initial.errorCount, false)) {
-            LOG.info("Pre-push incremental compile reported " + initial.errorCount
-                + " error(s); forcing one project compile before blocking push.");
-            indicator.setText("Recompiling project to verify compiler errors");
-            finalRun = runCompilation(
-                project,
-                indicator,
-                notification -> compilerManager.compile(
-                    compilerManager.createProjectCompileScope(project), notification)
-            );
-            finalProjectScope = true;
-            finalStamps = Collections.emptyMap();
-        }
-
-        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
-        if (finalRun.aborted) {
-            errorService.setErrors(finalRun.errors);
-        } else {
-            errorService.recordCompletion(finalProjectScope, finalStamps, finalRun.errors);
-        }
-        return finalRun.errors;
-    }
-
-    static boolean shouldForceProjectCompile(boolean aborted, int errorCount, boolean recoveryAlreadyAttempted) {
-        return !aborted && errorCount > 0 && !recoveryAlreadyAttempted;
-    }
-
-    private static CompilationRun runCompilation(
-        Project project,
-        ProgressIndicator indicator,
-        CompilationStarter compilationStarter
-    ) {
-        CountDownLatch latch = new CountDownLatch(1);
-        AtomicReference<CompilationRun> result = new AtomicReference<>(CompilationRun.clean());
-
-        Runnable startCompilation = () -> compilationStarter.start((aborted, errorCount, warnings, compileContext) -> {
-            List<String> errors;
-            if (aborted) {
-                errors = Collections.singletonList("Compilation was aborted.");
-            } else if (errorCount > 0) {
-                errors = formatCompilerMessages(project, compileContext.getMessages(CompilerMessageCategory.ERROR));
-            } else {
-                errors = Collections.emptyList();
-            }
-            result.set(new CompilationRun(errors, aborted, errorCount));
-            latch.countDown();
-        });
-
-        Application application = ApplicationManager.getApplication();
-        if (application.isDispatchThread()) {
-            startCompilation.run();
-        } else {
-            ModalityState modality = indicator.getModalityState();
-            if (modality == null) {
-                modality = ModalityState.defaultModalityState();
-            }
-            application.invokeAndWait(startCompilation, modality);
-        }
-
-        try {
-            while (!latch.await(WAIT_SLICE_MILLIS, TimeUnit.MILLISECONDS)) {
-                indicator.checkCanceled();
-            }
-            return result.get();
-        } catch (InterruptedException interruptedException) {
-            Thread.currentThread().interrupt();
-            return new CompilationRun(
-                Collections.singletonList("Compilation check was interrupted."), true, 0);
-        }
-    }
-
-    private static final class CompilationRun {
-        private final List<String> errors;
-        private final boolean aborted;
-        private final int errorCount;
-
-        private CompilationRun(List<String> errors, boolean aborted, int errorCount) {
-            this.errors = errors;
-            this.aborted = aborted;
-            this.errorCount = errorCount;
-        }
-
-        private static CompilationRun clean() {
-            return new CompilationRun(Collections.emptyList(), false, 0);
-        }
+        return IdeCompilationRunner.runWithRecovery(
+            project,
+            indicator,
+            projectScope,
+            stamps,
+            compilerManager,
+            compilationStarter);
     }
 
     /**
@@ -1423,11 +1332,6 @@ public final class PrePushCompilationHandler implements PrePushHandler {
                 .createNotification("Abort Commit", message, type)
                 .notify(project);
         };
-    }
-
-    @FunctionalInterface
-    private interface CompilationStarter {
-        void start(CompileStatusNotification notification);
     }
 
     private static final class PushChangeSet {

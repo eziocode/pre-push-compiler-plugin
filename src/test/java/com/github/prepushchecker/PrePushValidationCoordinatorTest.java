@@ -78,6 +78,14 @@ public class PrePushValidationCoordinatorTest extends BasePlatformTestCase {
             assertEquals(List.of("shared error"), first.get(5, TimeUnit.SECONDS).errors());
             assertEquals(List.of("shared error"), second.get(5, TimeUnit.SECONDS).errors());
             assertEquals(1, validations.get());
+
+            Future<PrePushValidationCoordinator.Outcome> later = callers.submit(() ->
+                coordinator.request("same", () -> null, () -> {
+                    validations.incrementAndGet();
+                    return List.of("fresh error");
+                }, null));
+            assertEquals(List.of("fresh error"), later.get(5, TimeUnit.SECONDS).errors());
+            assertEquals(2, validations.get());
         } finally {
             callers.shutdownNow();
         }

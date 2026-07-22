@@ -32,4 +32,15 @@ public class ExternalPushErrorLoaderTest extends BasePlatformTestCase {
         assertEquals(1, errors.size());
         assertTrue(errors.get(0).contains("[src/main/java/App.java (5, 9)] cannot find symbol"));
     }
+
+    public void testParseDetachedSnapshotWorktreePathAsProjectRelative() {
+        List<String> errors = ExternalPushErrorLoader.parseErrors(getProject(), List.of(
+            "[ERROR] /tmp/prepushchecker-snapshot.ABC123/worktree/src/main/java/App.java:"
+                + "[7,3] package com.example.shared does not exist"
+        ));
+
+        assertEquals(1, errors.size());
+        assertTrue(errors.get(0).contains(
+            "[src/main/java/App.java (7, 3)] package com.example.shared does not exist"));
+    }
 }

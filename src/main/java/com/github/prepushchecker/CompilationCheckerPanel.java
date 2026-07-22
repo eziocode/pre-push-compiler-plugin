@@ -17,7 +17,6 @@ import com.intellij.openapi.actionSystem.Toggleable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompilerManager;
-import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
@@ -40,9 +39,6 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 
 final class CompilationCheckerPanel extends JPanel implements Disposable {
 
@@ -291,34 +287,14 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                     @Override
                     public void run(@NotNull ProgressIndicator indicator) {
                         CompilerManager compiler = CompilerManager.getInstance(project);
-                        CountDownLatch latch = new CountDownLatch(1);
-                        AtomicReference<List<String>> result =
-                            new AtomicReference<>(Collections.emptyList());
-
-                        ApplicationManager.getApplication().invokeAndWait(() ->
-                            compiler.make(compiler.createProjectCompileScope(project),
-                                (aborted, errorCount, warnings, ctx) -> {
-                                    if (!aborted && errorCount > 0) {
-                                        result.set(PrePushCompilationHandler.formatCompilerMessages(
-                                            project, ctx.getMessages(CompilerMessageCategory.ERROR)));
-                                    }
-                                    latch.countDown();
-                                }),
-                            ModalityState.defaultModalityState()
-                        );
-
-                        try {
-                            while (!latch.await(250, TimeUnit.MILLISECONDS)) {
-                                indicator.checkCanceled();
-                            }
-                        } catch (InterruptedException ignored) {
-                            Thread.currentThread().interrupt();
-                        }
-
-                        // Record project-scope result so a subsequent push with no file
-                        // changes can reuse the cached verdict instead of rebuilding.
-                        CompilationErrorService.getInstance(project).recordCompletion(
-                            true, java.util.Collections.emptyMap(), result.get());
+                        IdeCompilationRunner.runWithRecovery(
+                            project,
+                            indicator,
+                            true,
+                            Collections.emptyMap(),
+                            compiler,
+                            notification -> compiler.make(
+                                compiler.createProjectCompileScope(project), notification));
                     }
                 });
         }
@@ -354,31 +330,12 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                     @Override
                     public void run(@NotNull ProgressIndicator indicator) {
                         CompilerManager compiler = CompilerManager.getInstance(project);
-                        CountDownLatch latch = new CountDownLatch(1);
-                        AtomicReference<List<String>> result =
-                            new AtomicReference<>(Collections.emptyList());
-
-                        ApplicationManager.getApplication().invokeAndWait(() ->
-                            compiler.rebuild((aborted, errorCount, warnings, ctx) -> {
-                                if (!aborted && errorCount > 0) {
-                                    result.set(PrePushCompilationHandler.formatCompilerMessages(
-                                        project, ctx.getMessages(CompilerMessageCategory.ERROR)));
-                                }
-                                latch.countDown();
-                            }),
-                            ModalityState.defaultModalityState()
-                        );
-
-                        try {
-                            while (!latch.await(250, TimeUnit.MILLISECONDS)) {
-                                indicator.checkCanceled();
-                            }
-                        } catch (InterruptedException ignored) {
-                            Thread.currentThread().interrupt();
-                        }
-
-                        CompilationErrorService.getInstance(project).recordCompletion(
-                            true, java.util.Collections.emptyMap(), result.get());
+                        IdeCompilationRunner.runOnce(
+                            project,
+                            indicator,
+                            true,
+                            Collections.emptyMap(),
+                            compiler::rebuild);
                     }
                 });
         }

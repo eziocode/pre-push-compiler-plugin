@@ -34,6 +34,7 @@ public final class CompilationErrorService {
     private static final Logger LOG = Logger.getInstance(CompilationErrorService.class);
     static final int MAX_RETAINED_ERRORS = 200;
     private static final int MAX_RETAINED_ERROR_CHARS = 4_000;
+    static final long PRE_PUSH_SUCCESS_TTL_MILLIS = 60_000L;
 
     private volatile List<String> errors = Collections.emptyList();
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
@@ -43,7 +44,7 @@ public final class CompilationErrorService {
     private boolean lastScopeProject = false;
     private Map<String, Long> lastFileStamps = Collections.emptyMap();
     private String lastPrePushKey = "";
-    private List<String> lastPrePushErrors = Collections.emptyList();
+    private long lastPrePushSuccessAt = 0L;
 
     // Clean-commit ledger: (repoRoot, headSha) -> scope under which that snapshot was
     // verified clean. Bounded LRU. We only ever store *clean* results — a missing entry
@@ -119,6 +120,7 @@ public final class CompilationErrorService {
         this.lastComputedAt = System.currentTimeMillis();
         this.lastScopeProject = projectScope;
         this.lastFileStamps = stamps.isEmpty() ? Collections.emptyMap() : Map.copyOf(stamps);
+        clearPrePushResult();
         setErrors(newErrors);
     }
 
@@ -130,14 +132,13 @@ public final class CompilationErrorService {
         this.lastComputedAt = 0L;
         this.lastScopeProject = false;
         this.lastFileStamps = Collections.emptyMap();
-        this.lastPrePushKey = "";
-        this.lastPrePushErrors = Collections.emptyList();
+        clearPrePushResult();
         this.cleanLedger.clear();
     }
 
     /**
-     * Return the cached error list if it is still valid for every file in {@code files}.
-     * "Valid" means either:
+     * Return a cached clean result if it is still valid for every file in {@code files}.
+     * Failed compilations are never reusable. A clean result is valid when either:
      *   - the last compile was project-scope and no requested file has a timestamp newer
      *     than {@code lastComputedAt}; or
      *   - the last compile was file-scope, every requested file was part of the cached
@@ -146,7 +147,7 @@ public final class CompilationErrorService {
      * Returns {@code null} if the cache cannot be reused.
      */
     public synchronized @Nullable List<String> tryReuse(@NotNull Collection<VirtualFile> files) {
-        if (lastComputedAt == 0L) return null;
+        if (lastComputedAt == 0L || !errors.isEmpty()) return null;
         if (lastScopeProject) {
             for (VirtualFile f : files) {
                 if (f == null || !f.isValid()) return null;
@@ -165,16 +166,48 @@ public final class CompilationErrorService {
     }
 
     public synchronized @Nullable List<String> tryReusePrePushResult(@NotNull String key) {
-        return !key.isBlank() && key.equals(lastPrePushKey) ? lastPrePushErrors : null;
+        return tryReusePrePushResult(key, System.currentTimeMillis());
+    }
+
+    synchronized @Nullable List<String> tryReusePrePushResult(
+        @NotNull String key,
+        long nowMillis
+    ) {
+        if (key.isBlank() || !key.equals(lastPrePushKey) || lastPrePushSuccessAt == 0L) {
+            return null;
+        }
+        long age = nowMillis - lastPrePushSuccessAt;
+        if (age < 0L || age >= PRE_PUSH_SUCCESS_TTL_MILLIS) {
+            clearPrePushResult();
+            return null;
+        }
+        return Collections.emptyList();
     }
 
     public void recordPrePushResult(@NotNull String key, @NotNull List<String> newErrors) {
+        recordPrePushResult(key, newErrors, System.currentTimeMillis());
+    }
+
+    void recordPrePushResult(
+        @NotNull String key,
+        @NotNull List<String> newErrors,
+        long nowMillis
+    ) {
         List<String> snapshot = compactErrors(newErrors);
         synchronized (this) {
-            this.lastPrePushKey = key;
-            this.lastPrePushErrors = snapshot;
+            if (!key.isBlank() && snapshot.isEmpty()) {
+                this.lastPrePushKey = key;
+                this.lastPrePushSuccessAt = nowMillis;
+            } else {
+                clearPrePushResult();
+            }
         }
         setErrors(snapshot);
+    }
+
+    private void clearPrePushResult() {
+        this.lastPrePushKey = "";
+        this.lastPrePushSuccessAt = 0L;
     }
 
     /**

@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 public class GitHookInstallerTest extends BasePlatformTestCase {
@@ -26,41 +27,37 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("No source or build changes detected. Skipping compilation check."));
         assertTrue(script.contains("run_build_tool_command"));
         assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $_gradle_tasks"));
-        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false \"$_maven_goal\""));
+        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true \"$_maven_goal\""));
+        assertTrue(script.contains("mvn -q -Dmaven.javadoc.skip=true clean \"$_maven_goal\""));
+        assertFalse(script.contains("maven.compiler.useIncrementalCompilation=false"));
         assertTrue(script.contains("setup_maven_java_home"));
         assertTrue(script.contains("preferredJavaHome="));
         assertTrue(script.contains("try_ide_compile_with_retry"));
         assertTrue(script.contains("IntelliJ appears to be running; waiting briefly for IDE compiler service"));
         assertTrue(script.contains("IntelliJ incremental compile unavailable"));
-        assertTrue(script.contains("Fallback reported likely cache/generated-symbol false positives; retrying IntelliJ incremental compile once before aborting"));
+        assertFalse(script.contains("retrying IntelliJ incremental compile once before aborting"));
         assertTrue(script.contains("FALLBACK_LOCK_DIR"));
         assertTrue(script.contains("FALLBACK_WAIT_SECONDS=300"));
-        assertTrue(script.contains("publish_fallback_result"));
-        assertTrue(script.contains("Reusing previous fallback result for unchanged HEAD"));
+        assertTrue(script.contains("FALLBACK_SUCCESS_TTL_SECONDS=60"));
+        assertTrue(script.contains("publish_success_result"));
+        assertTrue(script.contains("publish_run_result"));
+        assertTrue(script.contains("Reusing recent successful fallback result"));
+        assertTrue(script.contains("Reusing result from the same in-flight fallback validation"));
         assertTrue(script.contains("IntelliJ validation timed out"));
         assertTrue(script.contains("extract_error_records"));
-        assertTrue(script.contains("suppression_hard_gate_allows"));
-        assertTrue(script.contains("all_error_records_safe_generated_symbols"));
-        assertTrue(script.contains("error_records_touch_pushed_files"));
-        assertTrue(script.contains("error_records_include_build_files"));
-        assertTrue(script.contains("looks_like_generated_symbol_false_positive"));
-        assertTrue(script.contains("looks_like_stale_build_output"));
+        assertTrue(script.contains("looks_like_stale_or_parallel_failure"));
         assertTrue(script.contains("bad class file:"));
         assertTrue(script.contains("NoSuchFileException:"));
-        assertTrue(script.contains("preview[[:space:]]+feature"));
         assertTrue(script.contains("package[[:space:]]+[^[:space:]]+[[:space:]]+does not exist"));
-        assertTrue(script.contains("cannot access[[:space:]]+"));
-        assertTrue(script.contains("/target/(test-)?classes/|/build/classes/"));
-        assertTrue(script.contains("clear_stale_build_output"));
-        assertTrue(script.contains("Build output cache looks stale; refreshing class output before retrying fallback compile."));
-        assertTrue(script.contains("mvnd -q -T1C -Dmaven.javadoc.skip=true -Dmaven.compiler.useIncrementalCompilation=false"));
-        assertTrue(script.contains("retrying full compile scope once"));
-        assertTrue(script.contains("run_build_tool_command \"classes testClasses\" \"test-compile\" \"$TMP_OUT\""));
-        assertTrue(script.contains("if [ $rc -ne 0 ] && suppression_hard_gate_allows \"$TMP_OUT\" \"$TMP_REC\"; then"));
-        assertFalse(script.contains("project_uses_lombok && all_error_records_safe_generated_symbols"));
-        assertTrue(script.contains("Build-tool fallback reported only safe generated-symbol records outside pushed files"));
-        assertTrue(script.contains("STASH_RESTORE_FAILED=1"));
-        assertTrue(script.contains("stash restore failed. Your changes are still saved in the stash."));
+        assertTrue(script.contains("cannot access[[:space:]]"));
+        assertTrue(script.contains("mvnd -q -T1C -Dmaven.javadoc.skip=true"));
+        assertTrue(script.contains("mvnd -q -T1 -Dmaven.javadoc.skip=true clean"));
+        assertFalse(script.contains("if [ $rc -ne 0 ] && suppression_hard_gate_allows"));
+        assertTrue(script.contains("git -C \"$REPO_ROOT\" worktree add --detach"));
+        assertTrue(script.contains("git -C \"$REPO_ROOT\" worktree remove --force"));
+        assertTrue(script.contains("Running build-tool fallback in isolated HEAD worktree."));
+        assertFalse(script.contains("git stash push"));
+        assertFalse(script.contains("STASH_RESTORE_FAILED"));
         assertFalse(script.contains("git checkout -- ."));
         assertFalse(script.contains("git clean -fd"));
     }
@@ -529,6 +526,247 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             + "\nSecond:\n" + secondOutput, Files.exists(count));
         assertEquals("First:\n" + firstOutput + "\nSecond:\n" + secondOutput,
             List.of("build"), Files.readAllLines(count, StandardCharsets.UTF_8));
+    }
+
+    public void testFailedFallbackResultIsNotReusedByLaterInvocation() throws Exception {
+        File repo = createFallbackRepository("prepushchecker-failure-retry", false);
+        Path repoPath = repo.toPath();
+        Path count = repoPath.resolve("build-count");
+        Path fakeBuild = repoPath.resolve("fake-build.sh");
+        Files.writeString(fakeBuild,
+            "#!/usr/bin/env sh\nprintf 'build\\n' >> \"" + count + "\"\n"
+                + "echo '[ERROR] real compilation failure'\nexit 1\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeBuild.toFile().setExecutable(true, false));
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "add failure harness");
+
+        HookFixture fixture = installHookFixture(repo);
+        Path legacyResult = repoPath.resolve(
+            ".idea/pre-push-checker/last-fallback-result");
+        Files.createDirectories(legacyResult.getParent());
+        Files.writeString(legacyResult, fixture.headSha() + "|main|1\n",
+            StandardCharsets.UTF_8);
+        HookRun first = runHook(fixture, Map.of("PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString()));
+        HookRun second = runHook(fixture, Map.of("PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString()));
+
+        assertTrue(first.output(), first.exitCode() != 0);
+        assertTrue(second.output(), second.exitCode() != 0);
+        assertFalse(Files.exists(legacyResult));
+        assertEquals(List.of("build", "build"),
+            Files.readAllLines(count, StandardCharsets.UTF_8));
+    }
+
+    public void testSuccessfulFallbackCacheExpiresByTimestamp() throws Exception {
+        File repo = createFallbackRepository("prepushchecker-success-cache", false);
+        Path repoPath = repo.toPath();
+        Path count = repoPath.resolve("build-count");
+        Path fakeBuild = repoPath.resolve("fake-build.sh");
+        Files.writeString(fakeBuild,
+            "#!/usr/bin/env sh\nprintf 'build\\n' >> \"" + count + "\"\nexit 0\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeBuild.toFile().setExecutable(true, false));
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "add success harness");
+
+        HookFixture fixture = installHookFixture(repo);
+        Map<String, String> environment = Map.of(
+            "PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString());
+        HookRun first = runHook(fixture, environment);
+        HookRun cached = runHook(fixture, environment);
+
+        assertEquals(first.output(), 0, first.exitCode());
+        assertEquals(cached.output(), 0, cached.exitCode());
+        assertEquals(List.of("build"), Files.readAllLines(count, StandardCharsets.UTF_8));
+
+        Path successFile = repoPath.resolve(
+            ".idea/pre-push-checker/last-fallback-success-v2");
+        List<String> fields = List.of(Files.readString(successFile, StandardCharsets.UTF_8)
+            .trim().split("\\|", -1));
+        assertEquals(4, fields.size());
+        Files.writeString(successFile,
+            fields.get(0) + "|" + fields.get(1) + "|0|0\n", StandardCharsets.UTF_8);
+
+        HookRun expired = runHook(fixture, environment);
+        assertEquals(expired.output(), 0, expired.exitCode());
+        assertEquals(List.of("build", "build"),
+            Files.readAllLines(count, StandardCharsets.UTF_8));
+    }
+
+    public void testFallbackBuildRunsInDetachedWorktreeWithoutOldOutputs() throws Exception {
+        File repo = createFallbackRepository("prepushchecker-isolated-worktree", false);
+        Path repoPath = repo.toPath();
+        Path staleOutput = repoPath.resolve("target/classes/Stale.class");
+        Files.createDirectories(staleOutput.getParent());
+        Files.writeString(staleOutput, "stale", StandardCharsets.UTF_8);
+        Path observed = repoPath.resolve("observed-worktree");
+        Path fakeBuild = repoPath.resolve("fake-build.sh");
+        Files.writeString(fakeBuild,
+            "#!/usr/bin/env sh\n"
+                + "[ \"$PWD\" != \"$PRE_PUSH_CHECKER_ORIGINAL_ROOT\" ] || exit 7\n"
+                + "[ ! -e target/classes/Stale.class ] || exit 8\n"
+                + "printf '%s|%s|%s\\n' \"$PWD\" \"$PRE_PUSH_CHECKER_ORIGINAL_ROOT\" "
+                + "\"$PRE_PUSH_CHECKER_SNAPSHOT_ROOT\" > \"" + observed + "\"\n"
+                + "exit 0\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeBuild.toFile().setExecutable(true, false));
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "add isolation harness");
+
+        HookFixture fixture = installHookFixture(repo);
+        HookRun run = runHook(fixture, Map.of(
+            "PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString()));
+
+        assertEquals(run.output(), 0, run.exitCode());
+        String[] values = Files.readString(observed, StandardCharsets.UTF_8)
+            .trim().split("\\|", -1);
+        assertEquals(3, values.length);
+        assertFalse(values[0].equals(repo.getAbsolutePath()));
+        assertEquals(repo.getCanonicalPath(), new File(values[1]).getCanonicalPath());
+        assertEquals(normalizeMacPath(values[0]), normalizeMacPath(values[2]));
+        assertTrue(Files.exists(staleOutput));
+    }
+
+    public void testMavenFallbackRetriesParallelClasspathFailureSequentially() throws Exception {
+        File repo = createFallbackRepository("prepushchecker-maven-recovery", true);
+        Path repoPath = repo.toPath();
+        Path invocations = repoPath.resolve("maven-invocations");
+        HookFixture fixture = installHookFixture(repo);
+        Path fakeMaven = fixture.fakeBin().resolve("mvn");
+        Files.writeString(fakeMaven,
+            "#!/usr/bin/env sh\n"
+                + "printf '%s\\n' \"$*\" >> \"" + invocations + "\"\n"
+                + "case \" $* \" in\n"
+                + "  *' -T1C '*)\n"
+                + "    echo \"[ERROR] $PWD/src/main/java/App.java:[1,1] "
+                + "class file for javax.persistence.Table not found\"\n"
+                + "    exit 1 ;;\n"
+                + "  *) exit 0 ;;\n"
+                + "esac\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeMaven.toFile().setExecutable(true, false));
+
+        HookRun run = runHook(fixture, Map.of());
+
+        assertEquals(run.output(), 0, run.exitCode());
+        List<String> calls = Files.readAllLines(invocations, StandardCharsets.UTF_8);
+        assertEquals(calls.toString(), 2, calls.size());
+        assertTrue(calls.get(0), calls.get(0).contains("-T1C"));
+        assertFalse(calls.get(1), calls.get(1).contains("-T1C"));
+        assertTrue(calls.get(1), calls.get(1).contains("clean compile"));
+    }
+
+    public void testMavenFallbackDoesNotRetryOrdinaryCompileFailure() throws Exception {
+        File repo = createFallbackRepository("prepushchecker-maven-real-error", true);
+        Path repoPath = repo.toPath();
+        Path invocations = repoPath.resolve("maven-invocations");
+        HookFixture fixture = installHookFixture(repo);
+        Path fakeMaven = fixture.fakeBin().resolve("mvn");
+        Files.writeString(fakeMaven,
+            "#!/usr/bin/env sh\n"
+                + "printf '%s\\n' \"$*\" >> \"" + invocations + "\"\n"
+                + "echo \"[ERROR] $PWD/src/main/java/App.java:[1,1] ';' expected\"\n"
+                + "exit 1\n",
+            StandardCharsets.UTF_8);
+        assertTrue(fakeMaven.toFile().setExecutable(true, false));
+
+        HookRun run = runHook(fixture, Map.of());
+
+        assertTrue(run.output(), run.exitCode() != 0);
+        assertEquals(1, Files.readAllLines(invocations, StandardCharsets.UTF_8).size());
+    }
+
+    private static File createFallbackRepository(String prefix, boolean includePom)
+        throws Exception {
+        File repo = createTempDir(prefix);
+        runGit(repo, "init");
+        runGit(repo, "config", "user.email", "test@example.com");
+        runGit(repo, "config", "user.name", "Test User");
+        Path repoPath = repo.toPath();
+        Path source = repoPath.resolve("src/main/java/App.java");
+        Files.createDirectories(source.getParent());
+        Files.writeString(source, "class App {}\n", StandardCharsets.UTF_8);
+        if (includePom) {
+            Files.writeString(repoPath.resolve("pom.xml"),
+                "<project><modelVersion>4.0.0</modelVersion>"
+                    + "<groupId>test</groupId><artifactId>app</artifactId>"
+                    + "<version>1</version></project>\n",
+                StandardCharsets.UTF_8);
+        }
+        Files.writeString(repoPath.resolve(".gitignore"),
+            ".idea/\nbuild-count\nmaven-invocations\nobserved-worktree\ntarget/\n",
+            StandardCharsets.UTF_8);
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "init");
+        Files.writeString(source, "class App { int value; }\n", StandardCharsets.UTF_8);
+        runGit(repo, "add", ".");
+        runGit(repo, "commit", "-m", "change");
+        return repo;
+    }
+
+    private static HookFixture installHookFixture(File repo) throws Exception {
+        Path repoPath = repo.toPath();
+        Path hook = repoPath.resolve(".git/hooks").resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Files.writeString(hook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+        assertTrue(hook.toFile().setExecutable(true, false));
+
+        Path fakeHome = repoPath.resolve("fake-home");
+        Path fakeBin = repoPath.resolve("fake-bin");
+        Files.createDirectories(fakeHome.resolve(".prepush-checker"));
+        Files.createDirectories(fakeBin);
+        Files.writeString(fakeHome.resolve(".prepush-checker/installed"), "1\n",
+            StandardCharsets.UTF_8);
+        Path fakePgrep = fakeBin.resolve("pgrep");
+        Files.writeString(fakePgrep, "#!/usr/bin/env sh\nexit 1\n", StandardCharsets.UTF_8);
+        assertTrue(fakePgrep.toFile().setExecutable(true, false));
+        return new HookFixture(
+            repo,
+            hook,
+            fakeHome,
+            fakeBin,
+            runGitOutput(repo, "rev-parse", "HEAD").trim());
+    }
+
+    private static HookRun runHook(
+        HookFixture fixture,
+        Map<String, String> extraEnvironment
+    ) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(fixture.hook().toString())
+            .directory(fixture.repo())
+            .redirectErrorStream(true);
+        builder.environment().put("HOME", fixture.fakeHome().toString());
+        builder.environment().put("PATH",
+            fixture.fakeBin() + File.pathSeparator + "/usr/bin:/bin");
+        builder.environment().putAll(extraEnvironment);
+
+        Process process = builder.start();
+        String input = "refs/heads/main " + fixture.headSha() + " refs/heads/main "
+            + "0000000000000000000000000000000000000000\n";
+        process.getOutputStream().write(input.getBytes(StandardCharsets.UTF_8));
+        process.getOutputStream().close();
+        assertTrue(process.waitFor(30, TimeUnit.SECONDS));
+        return new HookRun(
+            process.exitValue(),
+            new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+    }
+
+    private record HookFixture(
+        File repo,
+        Path hook,
+        Path fakeHome,
+        Path fakeBin,
+        String headSha
+    ) {
+    }
+
+    private record HookRun(int exitCode, String output) {
+    }
+
+    private static String normalizeMacPath(String path) {
+        String normalized = path.replace("//", "/");
+        return normalized.startsWith("/private/var/")
+            ? normalized.substring("/private".length())
+            : normalized;
     }
 
     private static File createTempDir(String prefix) {

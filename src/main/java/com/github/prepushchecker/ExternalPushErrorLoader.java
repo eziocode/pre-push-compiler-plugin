@@ -289,6 +289,13 @@ public final class ExternalPushErrorLoader {
         if (basePath == null) return path;
         String normalizedBase = basePath.replace('\\', '/');
         String normalizedPath = path.replace('\\', '/');
+        int snapshotRoot = normalizedPath.indexOf("/prepushchecker-snapshot.");
+        if (snapshotRoot >= 0) {
+            int worktreeRoot = normalizedPath.indexOf("/worktree/", snapshotRoot);
+            if (worktreeRoot >= 0) {
+                return normalizedPath.substring(worktreeRoot + "/worktree/".length());
+            }
+        }
         if (normalizedPath.startsWith(normalizedBase + "/")) {
             return normalizedPath.substring(normalizedBase.length() + 1);
         }

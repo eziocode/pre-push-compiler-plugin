@@ -97,21 +97,40 @@ public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
 
     public void testSnapshotBuildCommandUsesMavenCompileGoals() {
         assertEquals(
-            List.of("mvn", "-q", "-T1C", "-Dmaven.javadoc.skip=true",
-                "-Dmaven.compiler.useIncrementalCompilation=false", "compile"),
+            List.of("mvn", "-q", "-T1C", "-Dmaven.javadoc.skip=true", "compile"),
             PrePushSnapshotGuard.buildCommand(
                 GitHookInstaller.BuildTool.MAVEN,
                 List.of("src/main/java/App.java")
             )
         );
         assertEquals(
-            List.of("./mvnw", "-q", "-T1C", "-Dmaven.javadoc.skip=true",
-                "-Dmaven.compiler.useIncrementalCompilation=false", "test-compile"),
+            List.of("./mvnw", "-q", "-T1C", "-Dmaven.javadoc.skip=true", "test-compile"),
             PrePushSnapshotGuard.buildCommand(
                 GitHookInstaller.BuildTool.MAVEN_WRAPPER,
                 List.of("src/test/java/AppTest.java")
             )
         );
+    }
+
+    public void testSnapshotMavenRecoveryCommandIsSequentialAndClean() {
+        assertEquals(
+            List.of("mvn", "-q", "-Dmaven.javadoc.skip=true", "clean", "compile"),
+            PrePushSnapshotGuard.buildRecoveryCommand(
+                GitHookInstaller.BuildTool.MAVEN,
+                List.of("src/main/java/App.java")
+            )
+        );
+        assertEquals(
+            List.of("./mvnw", "-q", "-Dmaven.javadoc.skip=true", "clean", "test-compile"),
+            PrePushSnapshotGuard.buildRecoveryCommand(
+                GitHookInstaller.BuildTool.MAVEN_WRAPPER,
+                List.of("src/test/java/AppTest.java")
+            )
+        );
+        assertTrue(PrePushSnapshotGuard.buildRecoveryCommand(
+            GitHookInstaller.BuildTool.GRADLE,
+            List.of("src/main/java/App.java")
+        ).isEmpty());
     }
 
     public void testResolveBuildCommandRunsWrapperThroughShell() throws IOException {
