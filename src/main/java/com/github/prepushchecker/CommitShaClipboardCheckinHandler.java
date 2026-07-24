@@ -114,6 +114,27 @@ public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactor
             || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
     }
 
+    static void copyValidatedPushShaSilently(
+        @NotNull Project project,
+        @NotNull String sha
+    ) {
+        if (!isCommitSha(sha)
+                || !PrePushCheckerSettings.isCopyCommitShaEnabled(project)
+                || PrePushCheckerSettings.getCopyCommitShaTrigger(project)
+                    != PrePushCheckerSettings.ShaTrigger.AFTER_PUSH) {
+            return;
+        }
+        PrePushCheckerSettings.ShaFormat format =
+            PrePushCheckerSettings.getCopyCommitShaFormat(project);
+        String displaySha = format == PrePushCheckerSettings.ShaFormat.SHORT
+            ? sha.substring(0, 7) : sha;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (!project.isDisposed()) {
+                CopyPasteManager.getInstance().setContents(new StringSelection(displaySha));
+            }
+        });
+    }
+
     static String readStableHeadSha(@NotNull List<String> repoRoots) {
         final String[] current = {null};
         watchStableSha(() -> readCurrentHeadSha(repoRoots), MAX_SHA_READS,

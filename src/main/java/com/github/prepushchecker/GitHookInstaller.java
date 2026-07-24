@@ -198,12 +198,20 @@ public final class GitHookInstaller {
             return;
         }
 
-        PrePushCheckerSettings.syncSettingsFile(project);
-        HookRepairResult result = repair(basePath);
-        if (result.isSuccess()) {
-            LOG.info(result.statusText());
-        } else {
-            LOG.warn(result.statusText());
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        roots.add(basePath);
+        for (git4idea.repo.GitRepository repository
+                : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+            roots.add(repository.getRoot().getPath());
+        }
+        for (String root : roots) {
+            PrePushCheckerSettings.syncSettingsFile(project, root);
+            HookRepairResult result = repair(root);
+            if (result.isSuccess()) {
+                LOG.info(result.statusText());
+            } else {
+                LOG.warn(result.statusText());
+            }
         }
     }
 
@@ -953,6 +961,8 @@ public final class GitHookInstaller {
             "  _age=$(( _now_s - _token_s ))",
             "  if [ \"$_age\" -ge 0 ] && [ \"$_age\" -lt 3600 ] 2>/dev/null; then",
             "    rm -f \"$BYPASS_TOKEN\" 2>/dev/null",
+            "    mkdir -p \"$REPO_ROOT/.idea/pre-push-checker\" 2>/dev/null || true",
+            "    printf '[pre-push-checker] exit=0\\n' > \"$REPO_ROOT/.idea/pre-push-checker/last-run.log\" 2>/dev/null || true",
             "    printf '[pre-push] Force-push bypass active. Skipping compilation check.\\n' >&2",
             "    exit 0",
             "  else",
@@ -1213,6 +1223,7 @@ public final class GitHookInstaller {
             "",
             "HOOK_INPUT=\"$(cat || true)\"",
             "CHANGED_FILES=\"$(printf '%s\\n' \"$HOOK_INPUT\" | collect_changed_files | sed '/^$/d' | sort -u)\"",
+            "PUSH_UPDATES_ID=\"$(printf '%s\\n' \"$HOOK_INPUT\" | cksum | awk '{print $1 \"-\" $2}')\"",
             "",
             "if [ -z \"$CHANGED_FILES\" ]; then",
             "  if git rev-parse --verify --quiet '@{upstream}' >/dev/null 2>&1; then",
@@ -1224,6 +1235,7 @@ public final class GitHookInstaller {
             "",
             "if [ -z \"$CHANGED_FILES\" ]; then",
             "  log \"[pre-push] No outgoing files detected. Skipping compilation check.\"",
+            "  printf '[pre-push-checker] exit=0\\n' >> \"$LOG_FILE\" 2>/dev/null || true",
             "  exit 0",
             "fi",
             "",
@@ -1233,6 +1245,7 @@ public final class GitHookInstaller {
             "",
             "if ! printf '%s\\n' \"$CHANGED_FILES\" | grep -Eq '(^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|gradlew|mvnw)$|(\\.java|\\.kt|\\.groovy|\\.scala)$'; then",
             "  log \"[pre-push] No source or build changes detected. Skipping compilation check.\"",
+            "  printf '[pre-push-checker] exit=0\\n' >> \"$LOG_FILE\" 2>/dev/null || true",
             "  exit 0",
             "fi",
             "",
@@ -1265,21 +1278,20 @@ public final class GitHookInstaller {
             "# Falls through to the build tool if IntelliJ is not running or the request fails.",
             "PORT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/server.port\"",
             "SETTINGS_FILE=\"$REPO_ROOT/.idea/pre-push-checker/settings\"",
+            "HEAD_SHA=\"$(git rev-parse --verify HEAD 2>/dev/null || printf '')\"",
             "FALLBACK_PROTOCOL_VERSION=2",
-            "FALLBACK_SUCCESS_FILE=\"$REPO_ROOT/.idea/pre-push-checker/last-fallback-success-v2\"",
             "FALLBACK_RUN_RESULT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/last-fallback-run-v2\"",
             "LEGACY_FALLBACK_RESULT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/last-fallback-result\"",
             "FALLBACK_LOCK_DIR=\"$REPO_ROOT/.idea/pre-push-checker/fallback.lock\"",
             "FALLBACK_LOCK_HELD=0",
             "FALLBACK_WAIT_SECONDS=300",
-            "FALLBACK_SUCCESS_TTL_SECONDS=60",
             "FALLBACK_WAIT_OWNER=\"\"",
             "SNAPSHOT_TEMP_BASE=\"${TMPDIR:-/tmp}\"",
             "SNAPSHOT_TEMP_BASE=\"${SNAPSHOT_TEMP_BASE%/}\"",
             "SNAPSHOT_TEMP_ROOT=\"\"",
             "SNAPSHOT_WORKTREE=\"\"",
-            "IDE_BOOTSTRAP_RETRIES=24",
-            "IDE_BOOTSTRAP_SLEEP=0.5",
+            "IDE_BOOTSTRAP_RETRIES=1",
+            "IDE_BOOTSTRAP_SLEEP=0.25",
             "IDE_FALLBACK_REASON=\"\"",
             "rm -f \"$LEGACY_FALLBACK_RESULT_FILE\" 2>/dev/null || true",
             "try_ide_compile() {",
@@ -1290,9 +1302,10 @@ public final class GitHookInstaller {
             "  command -v bash >/dev/null 2>&1 || return 2",
             "  # Translate the change list (repo-relative) to absolute paths so the IDE can resolve them.",
             "  ABS_FILES=\"$(printf '%s\\n' \"$CHANGED_FILES\" | awk -v root=\"$REPO_ROOT\" 'NF{print root\"/\"$0}')\"",
-            "  IDE_RESP=\"$(REQ_FILES=\"$ABS_FILES\" IDE_PORT=\"$IDE_PORT\" bash -c '",
+            "  REQ_FILES=\"$(printf '%s\\n' \"$ABS_FILES\" | sed 's/^/PATH=/')\"",
+            "  IDE_RESP=\"$(REQ_FILES=\"$REQ_FILES\" IDE_PORT=\"$IDE_PORT\" REQ_ROOT=\"$REPO_ROOT\" REQ_HEAD=\"$HEAD_SHA\" REQ_UPDATES=\"$PUSH_UPDATES_ID\" bash -c '",
             "    exec 3<>/dev/tcp/127.0.0.1/\"$IDE_PORT\" || exit 2",
-            "    printf \"CHECK\\n%s\\n\\n\" \"$REQ_FILES\" >&3",
+            "    printf \"CHECK 2\\nROOT=%s\\nHEAD=%s\\nUPDATES=%s\\n%s\\n\\n\" \"$REQ_ROOT\" \"$REQ_HEAD\" \"$REQ_UPDATES\" \"$REQ_FILES\" >&3",
             "    cat <&3",
             "  ' 2>/dev/null)\" || return 2",
             "  [ -n \"$IDE_RESP\" ] || return 2",
@@ -1309,6 +1322,10 @@ public final class GitHookInstaller {
             "      return 1 ;;",
             "    TIMEOUT*)",
             "      log \"[pre-push] IntelliJ validation timed out. Push aborted without starting a duplicate fallback build.\"",
+            "      printf '%s\\n' \"$IDE_RESP\" >> \"$LOG_FILE\" 2>/dev/null || true",
+            "      return 3 ;;",
+            "    STALE*)",
+            "      log \"[pre-push] Repository changed during validation. Retry push from current branch.\"",
             "      printf '%s\\n' \"$IDE_RESP\" >> \"$LOG_FILE\" 2>/dev/null || true",
             "      return 3 ;;",
             "    FAIL*)",
@@ -1391,7 +1408,6 @@ public final class GitHookInstaller {
             "elif [ \"$TEST_CHANGED\" -eq 1 ]; then",
             "  FALLBACK_MODE=\"test\"",
             "fi",
-            "HEAD_SHA=\"$(git rev-parse --verify HEAD 2>/dev/null || printf '')\"",
             "CACHED_FALLBACK_RC=",
             "FALLBACK_TOOL_ID=unknown",
             "if [ -n \"${PRE_PUSH_CHECKER_COMMAND:-}\" ]; then",
@@ -1409,19 +1425,6 @@ public final class GitHookInstaller {
             "  [ -n \"$_settings_java_home\" ] && FALLBACK_JAVA_ID=\"$_settings_java_home\"",
             "fi",
             "FALLBACK_FINGERPRINT=\"$(printf '%s\\n' \"$FALLBACK_PROTOCOL_VERSION|$HEAD_SHA|$FALLBACK_MODE|$FALLBACK_CHANGED_ID|$FALLBACK_TOOL_ID|$FALLBACK_JAVA_ID\" | cksum | awk '{print $1 \"-\" $2}')\"",
-            "",
-            "read_success_result() {",
-            "  [ -n \"$FALLBACK_FINGERPRINT\" ] && [ -r \"$FALLBACK_SUCCESS_FILE\" ] || return 1",
-            "  IFS='|' read -r _version _fingerprint _completed_at _result_rc < \"$FALLBACK_SUCCESS_FILE\" || return 1",
-            "  [ \"$_version\" = \"$FALLBACK_PROTOCOL_VERSION\" ] || return 1",
-            "  [ \"$_fingerprint\" = \"$FALLBACK_FINGERPRINT\" ] || return 1",
-            "  [ \"$_result_rc\" = \"0\" ] || return 1",
-            "  _now=\"$(date +%s 2>/dev/null || printf '0')\"",
-            "  _age=$(( _now - ${_completed_at:-0} ))",
-            "  [ \"$_age\" -ge 0 ] 2>/dev/null && [ \"$_age\" -lt \"$FALLBACK_SUCCESS_TTL_SECONDS\" ] 2>/dev/null || return 1",
-            "  CACHED_FALLBACK_RC=0",
-            "  return 0",
-            "}",
             "",
             "read_run_result() {",
             "  _expected_owner=\"$1\"",
@@ -1441,13 +1444,6 @@ public final class GitHookInstaller {
             "  _completed_at=\"$(date +%s 2>/dev/null || printf '0')\"",
             "  printf '%s|%s|%s|%s|%s\\n' \"$FALLBACK_PROTOCOL_VERSION\" \"$FALLBACK_LOCK_OWNER\" \"$FALLBACK_FINGERPRINT\" \"$1\" \"$_completed_at\" > \"$_result_tmp\" 2>/dev/null || return 1",
             "  mv -f \"$_result_tmp\" \"$FALLBACK_RUN_RESULT_FILE\" 2>/dev/null || { rm -f \"$_result_tmp\" 2>/dev/null || true; return 1; }",
-            "}",
-            "",
-            "publish_success_result() {",
-            "  _result_tmp=\"$FALLBACK_SUCCESS_FILE.$$\"",
-            "  _completed_at=\"$(date +%s 2>/dev/null || printf '0')\"",
-            "  printf '%s|%s|%s|0\\n' \"$FALLBACK_PROTOCOL_VERSION\" \"$FALLBACK_FINGERPRINT\" \"$_completed_at\" > \"$_result_tmp\" 2>/dev/null || return 1",
-            "  mv -f \"$_result_tmp\" \"$FALLBACK_SUCCESS_FILE\" 2>/dev/null || { rm -f \"$_result_tmp\" 2>/dev/null || true; return 1; }",
             "}",
             "",
             "create_snapshot_worktree() {",
@@ -1514,12 +1510,6 @@ public final class GitHookInstaller {
             "  done",
             "}",
             "",
-            "if read_success_result; then",
-            "  log \"[pre-push] Reusing recent successful fallback result for unchanged fingerprint.\"",
-            "  printf '[pre-push-checker] exit=%s\\n' \"$CACHED_FALLBACK_RC\" >> \"$LOG_FILE\" 2>/dev/null || true",
-            "  exit 0",
-            "fi",
-            "",
             "acquire_fallback_lock",
             "LOCK_RC=$?",
             "if [ \"$LOCK_RC\" -eq 1 ]; then",
@@ -1564,7 +1554,6 @@ public final class GitHookInstaller {
             "  exit 1",
             "fi",
             "",
-            "publish_success_result || true",
             "publish_run_result 0 || true",
             "release_fallback_lock",
             "log \"[pre-push] Compilation passed. Proceeding with push.\"",

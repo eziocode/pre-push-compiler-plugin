@@ -59,6 +59,9 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
             if (project.isDisposed()) continue;
             try {
                 GitHookInstaller.runStartup(project);
+                PrePushLocalServer.runStartup(project);
+                ExternalPushErrorLoader.runStartup(project);
+                RepositoryStateMonitor.runStartup(project);
             } catch (Throwable t) {
                 LOG.warn("Hook installation failed for project " + project.getName(), t);
             }

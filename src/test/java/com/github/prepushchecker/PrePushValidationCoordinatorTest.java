@@ -160,4 +160,25 @@ public class PrePushValidationCoordinatorTest extends BasePlatformTestCase {
             callers.shutdownNow();
         }
     }
+
+    public void testStaleSnapshotGetsDistinctOutcomeAndReleasesFlight() throws Exception {
+        PrePushValidationCoordinator coordinator =
+            PrePushValidationCoordinator.getInstance(getProject());
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        try {
+            Future<PrePushValidationCoordinator.Outcome> result = caller.submit(() ->
+                coordinator.request("stale", () -> null, () -> {
+                    throw new PrePushValidationCoordinator.StaleSnapshotException(
+                        "repository changed");
+                }, null));
+
+            PrePushValidationCoordinator.Outcome outcome =
+                result.get(5, TimeUnit.SECONDS);
+            assertEquals(PrePushValidationCoordinator.Status.STALE, outcome.status());
+            assertEquals("repository changed", outcome.message());
+            assertEquals(0, coordinator.requestCountForTest("stale"));
+        } finally {
+            caller.shutdownNow();
+        }
+    }
 }

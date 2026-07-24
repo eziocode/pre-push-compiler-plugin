@@ -13,7 +13,6 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -30,8 +29,6 @@ final class IdeCompilationRunner {
     static @NotNull List<String> runWithRecovery(
         @NotNull Project project,
         @NotNull ProgressIndicator indicator,
-        boolean projectScope,
-        @NotNull Map<String, Long> stamps,
         @NotNull CompilerManager compilerManager,
         @NotNull CompilationStarter initialCompilation
     ) {
@@ -39,8 +36,6 @@ final class IdeCompilationRunner {
             return runWithRecovery(
                 project,
                 indicator,
-                projectScope,
-                stamps,
                 compilerManager,
                 initialCompilation,
                 DEFAULT_TIMEOUT_SECONDS,
@@ -53,8 +48,6 @@ final class IdeCompilationRunner {
     static @NotNull List<String> runWithRecovery(
         @NotNull Project project,
         @NotNull ProgressIndicator indicator,
-        boolean projectScope,
-        @NotNull Map<String, Long> stamps,
         @NotNull CompilerManager compilerManager,
         @NotNull CompilationStarter initialCompilation,
         long timeout,
@@ -65,19 +58,14 @@ final class IdeCompilationRunner {
             AttemptResult initial =
                 runCompilation(project, indicator, initialCompilation, deadlineNanos);
             RecoveryOutcome outcome = recover(initial, () -> {
-                CompilationFailureClassifier.RecoveryDecision decision =
-                    CompilationFailureClassifier.classify(initial.errors());
-                LOG.info("IDE compilation reported likely stale compiler state ("
-                    + decision.reason() + "); rebuilding project once.");
+                LOG.info("IDE compilation reported errors; rebuilding project once "
+                    + "before publishing an authoritative result.");
                 indicator.setText("Rebuilding project to verify compiler errors");
                 return runCompilation(
                     project, indicator, compilerManager::rebuild, deadlineNanos);
             });
 
-            boolean finalProjectScope = projectScope || outcome.rebuilt();
-            Map<String, Long> finalStamps =
-                outcome.rebuilt() ? Collections.emptyMap() : stamps;
-            record(project, finalProjectScope, finalStamps, outcome.finalResult());
+            record(project, outcome.finalResult());
             return outcome.finalResult().errors();
         } catch (TimeoutException timeoutException) {
             recordUnavailable(project, timeoutException.getMessage());
@@ -88,8 +76,6 @@ final class IdeCompilationRunner {
     static @NotNull List<String> runOnce(
         @NotNull Project project,
         @NotNull ProgressIndicator indicator,
-        boolean projectScope,
-        @NotNull Map<String, Long> stamps,
         @NotNull CompilationStarter compilation
     ) {
         try {
@@ -98,7 +84,7 @@ final class IdeCompilationRunner {
                 indicator,
                 compilation,
                 System.nanoTime() + TimeUnit.SECONDS.toNanos(DEFAULT_TIMEOUT_SECONDS));
-            record(project, projectScope, stamps, result);
+            record(project, result);
             return result.errors();
         } catch (TimeoutException timeout) {
             recordUnavailable(project, timeout.getMessage());
@@ -113,12 +99,7 @@ final class IdeCompilationRunner {
         if (initial.aborted() || initial.errorCount() <= 0) {
             return new RecoveryOutcome(initial, false, "");
         }
-        CompilationFailureClassifier.RecoveryDecision decision =
-            CompilationFailureClassifier.classify(initial.errors());
-        if (!decision.shouldRecover()) {
-            return new RecoveryOutcome(initial, false, "");
-        }
-        return new RecoveryOutcome(cleanRebuild.get(), true, decision.reason());
+        return new RecoveryOutcome(cleanRebuild.get(), true, "initial compiler errors");
     }
 
     private static @NotNull AttemptResult runCompilation(
@@ -141,7 +122,7 @@ final class IdeCompilationRunner {
                 if (aborted) {
                     errors = Collections.singletonList("Compilation was aborted.");
                 } else if (errorCount > 0 && compileContext != null) {
-                    errors = PrePushCompilationHandler.formatCompilerMessages(
+                    errors = CompilationSupport.formatCompilerMessages(
                         project,
                         compileContext.getMessages(CompilerMessageCategory.ERROR));
                 } else if (errorCount > 0) {
@@ -184,26 +165,17 @@ final class IdeCompilationRunner {
 
     private static void record(
         @NotNull Project project,
-        boolean projectScope,
-        @NotNull Map<String, Long> stamps,
         @NotNull AttemptResult result
     ) {
-        CompilationErrorService service = CompilationErrorService.getInstance(project);
-        if (result.aborted()) {
-            service.invalidateFreshness();
-            service.setErrors(result.errors());
-        } else {
-            service.recordCompletion(projectScope, stamps, result.errors());
-        }
+        CompilationErrorService.getInstance(project).setErrors(result.errors());
     }
 
     private static void recordUnavailable(
         @NotNull Project project,
         @NotNull String message
     ) {
-        CompilationErrorService service = CompilationErrorService.getInstance(project);
-        service.invalidateFreshness();
-        service.setErrors(Collections.singletonList(message));
+        CompilationErrorService.getInstance(project)
+            .setErrors(Collections.singletonList(message));
     }
 
     @FunctionalInterface

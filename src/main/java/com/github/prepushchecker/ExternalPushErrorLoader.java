@@ -49,6 +49,7 @@ public final class ExternalPushErrorLoader {
     // when the VFS fires multiple events for one write.
     private static final java.util.Map<String, long[]> LAST_PARSED =
         new java.util.concurrent.ConcurrentHashMap<>();
+    private static final Set<String> STARTED = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // Gradle/javac: "/abs/or/rel/Path.java:123: error: message"
     // Gradle also emits:    "/abs/.../Path.java:123:45: error: message"
@@ -60,6 +61,8 @@ public final class ExternalPushErrorLoader {
         Pattern.compile("^(?:\\[ERROR]\\s*)?(?<path>[^\\s].*?\\.(?:java|kt|groovy|scala)):\\[(?<line>\\d+),(?<col>\\d+)]\\s*(?<msg>.*)$");
     private static final Pattern KOTLIN_PATTERN =
         Pattern.compile("^e:\\s+(?:file://)?(?<path>[^:]+\\.(?:kt|kts)):(?<line>\\d+):(?<col>\\d+)\\s+(?<msg>.+)$");
+    private static final Pattern IDE_FORMATTED_PATTERN =
+        Pattern.compile("^\\[.+\\.(?:java|kt|kts|groovy|scala)(?:\\s+(?:\\([^]]+\\)|\\d+(?::\\d+)?))?]\\s+.+$");
 
     /**
      * Project-startup entrypoint invoked by {@link PrePushProjectActivities.ExternalPushErrorLoaderActivity}.
@@ -71,7 +74,22 @@ public final class ExternalPushErrorLoader {
         if (basePath == null || basePath.isBlank()) {
             return;
         }
-        Path logFile = Path.of(basePath, GitHookInstaller.EXTERNAL_LOG_RELATIVE_PATH);
+        LinkedHashSet<String> roots = new LinkedHashSet<>();
+        roots.add(basePath);
+        for (git4idea.repo.GitRepository repository
+                : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+            roots.add(repository.getRoot().getPath());
+        }
+        roots.forEach(root -> watchRepository(project, root));
+    }
+
+    static void watchRepository(@NotNull Project project, @NotNull String repositoryRoot) {
+        if (repositoryRoot.isBlank()) return;
+        Path logFile = Path.of(repositoryRoot, GitHookInstaller.EXTERNAL_LOG_RELATIVE_PATH);
+        String key = parseKey(project, logFile);
+        if (!STARTED.add(key)) {
+            return;
+        }
 
         // Initial load — covers the case where the user pushed externally before opening the IDE.
         loadFromLogIfFailed(project, logFile);
@@ -80,10 +98,12 @@ public final class ExternalPushErrorLoader {
         VirtualFileManager.getInstance().addAsyncFileListener(
             new HookLogListener(project, logFile), project);
 
-        // Drop the static fingerprint entry when the project closes so repeated
-        // open/close cycles do not leak unbounded entries into LAST_PARSED.
-        String key = parseKey(project, logFile);
-        Disposer.register(project, (Disposable) () -> LAST_PARSED.remove(key));
+        // Drop static entries when the project closes so repeated open/close
+        // cycles and changing multi-root layouts do not leak state.
+        Disposer.register(project, (Disposable) () -> {
+            LAST_PARSED.remove(key);
+            STARTED.remove(key);
+        });
     }
 
     private static String parseKey(@NotNull Project project, @NotNull Path logFile) {
@@ -106,7 +126,11 @@ public final class ExternalPushErrorLoader {
 
             HookLogParseResult parsedLog = parseHookLog(project, logFile);
             Integer exitCode = parsedLog.exitCode();
-            if (exitCode == null || exitCode == 0) {
+            if (exitCode == null) {
+                return;
+            }
+            if (exitCode == 0) {
+                CompilationErrorService.getInstance(project).clearErrors();
                 return;
             }
 
@@ -196,6 +220,9 @@ public final class ExternalPushErrorLoader {
 
     @Nullable
     private static String parseErrorLine(@Nullable String basePath, @NotNull String line) {
+        if (IDE_FORMATTED_PATTERN.matcher(line).matches()) {
+            return line;
+        }
         Matcher m = KOTLIN_PATTERN.matcher(line);
         if (!m.matches()) {
             m = MAVEN_COMPILER_PATTERN.matcher(line);
@@ -317,8 +344,8 @@ public final class ExternalPushErrorLoader {
             Notification notification = NotificationGroupManager.getInstance()
                 .getNotificationGroup(NOTIFICATION_GROUP_ID)
                 .createNotification(
-                    "External push blocked by Pre-Push Compilation Checker",
-                    errorCount + " compilation error(s) detected while pushing from an external git client. "
+                    "Push blocked by Pre-Push Compilation Checker",
+                    errorCount + " compilation error(s) detected. "
                         + "Open the Compilation Checker tool window to see and navigate them.",
                     NotificationType.WARNING
                 );

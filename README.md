@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.0.4-blue)
+![Version](https://img.shields.io/badge/version-2.0.5-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -16,21 +16,20 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 
 ## Features
 
-- **IDE Push Guard** — hooks into IntelliJ's native push dialog (`prePushHandler` extension point)
+- **One push guard everywhere** — IntelliJ, terminal, Sublime Merge, and other Git clients use the same managed `pre-push` hook
 - **Smart compile scope** — compiles modules containing changed files plus dependent modules; automatically falls back to a full project build when build files (`build.gradle`, `pom.xml`, etc.) or file deletions are involved
-- **IDE problem check** — stale IntelliJ diagnostics are revalidated; only classpath/output-style failures get one bounded clean rebuild before a push is blocked
+- **False-error recovery** — every failed incremental IntelliJ check gets one clean project rebuild; only the rebuild result can block a push
 - **Push-only compilation** — edits, Git changes, and project startup never trigger a build; compilation runs only for explicit builds and pre-push validation
-- **Single-flight push checks** — concurrent external push requests share one per-project compiler flow and reuse its fresh result instead of launching duplicate JPS builds
+- **In-flight-only sharing** — concurrent identical pushes share one compiler run; later pushes always ask the incremental compiler again
 - **Symbolic A/B detection** — parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans HEAD content of pushed files for word-boundary references; blocks the push instantly when the pushed commit references a symbol defined only in an unpushed local edit (no compile required)
-- **Auto-retry on success** — when the background pre-push check passes, the plugin runs `git push` automatically per repository root with non-interactive credential settings and a 120s timeout
-- **Failure-choice dialog** — when errors are found, presents Reset Commit / Push Anyway / Leave Commit / Cancel options so you can recover without leaving the IDE
+- **Non-modal IntelliJ flow** — normal validation stays inside IntelliJ's native background Git task and never obscures the editor
+- **Failure-only UI** — confirmed errors block the push and produce one notification with an action to open navigable errors
 - **Isolated HEAD snapshot in the external hook** — when the IDE socket is unreachable, the hook builds a temporary detached worktree so old `target/`, `build/`, or local-only files cannot contaminate the pushed snapshot
 - **Terminal push guard** — installs a managed `pre-push` Git hook, honors `core.hooksPath`, reuses the running IDE compiler when available, then falls back to Gradle or adaptive Maven compilation against an isolated HEAD snapshot
 - **Compilation Checker tool window** — right-side panel that shows errors from the last check, with file-type icons and editor navigation
 - **Git hook repair action** — rechecks and repairs the terminal hook from the tool window if another tool overwrites or edits it
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
-- **Refresh action** — re-run the compilation check from within the push-block dialog without cancelling the push flow
-- **Auto-copy commit SHA to clipboard** — when a push is allowed (or after an IDE commit, depending on your setting), the HEAD commit SHA is automatically copied to the clipboard and confirmed with a balloon notification. Configurable: enable/disable, full 40-char or short 7-char format, and copy trigger (after push or after commit)
+- **Auto-copy commit SHA to clipboard** — when validation allows a push, or after an IDE commit, the HEAD commit SHA is copied in full or short form; push-time copying is silent
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
 
 ---
@@ -117,13 +116,13 @@ A starter template is included at `.github/commit-instructions.md` in this repos
 
 ### IDE Push (Git Dialog)
 
-1. You click **Push** in the Git Push dialog.
-2. The plugin inspects every commit being pushed and collects the changed source files.
-3. It consults IntelliJ's problem solver, then validates flagged files with the compiler. A failed incremental check gets one clean rebuild only when diagnostics match stale JPS classpath/output patterns; ordinary source errors are reported after the first build.
-4. If the strict A/B guard is enabled, a symbolic check parses `git diff HEAD` of unpushed local files and scans pushed files at HEAD for references to declarations that exist only in those unpushed edits. Matches block the push with a message naming each pushed file and the symbol it references.
-5. Otherwise it compiles the affected modules plus dependent modules (or the full project for build-file / deletion changes).
-6. If compilation fails, a modal dialog presents **Reset Commit** (soft-reset the pushed commits, keep changes in the working tree), **Push Anyway** (run `git push` despite errors), **Leave Commit** (no-op), or **Cancel**.
-7. When compilation passes, the plugin auto-retries the push for you (`git push` per repo root, non-interactive credentials, 120s timeout). No manual retry needed.
+1. You click **Push** or **Commit and Push**. IntelliJ starts its normal background Git task.
+2. Git invokes the same managed `pre-push` hook used by terminal and GUI clients.
+3. The hook sends repository root, HEAD, pushed-ref fingerprint, and changed paths to the IDE compiler service.
+4. IntelliJ incrementally compiles affected modules plus dependents, or the project for build-file changes.
+5. Any incremental failure triggers one clean project rebuild. Only confirmed rebuild errors block the push.
+6. Success continues the original native push silently. Failure shows one notification and stores navigable errors in the Compilation Checker tool window.
+7. Branch or file changes during validation abort with a retry message; commits and working-tree state are never modified.
 
 ### Terminal / External Git Push (Sublime Merge, SourceTree, GitHub Desktop, …)
 
@@ -133,7 +132,7 @@ When you push from a terminal or an external git client:
 
 1. The hook filters out non-code pushes (tags, empty pushes, deletion-only pushes).
 2. It honors the `PRE_PUSH_CHECKER_COMMAND` environment variable if set, letting you plug in any custom check command.
-3. If IntelliJ is open, the hook asks the plugin's local loopback server to reuse the IDE's incremental compiler and a matching cached manual or pre-push verdict (which now also runs the symbolic A/B check).
+3. If IntelliJ is open, the hook asks the plugin's local loopback server to run the IDE's incremental compiler. Only callers waiting for the same active snapshot share work; completed verdicts are never reused.
 4. If IntelliJ is unavailable or busy, the hook creates a temporary detached worktree at `HEAD` and runs `./gradlew classes testClasses` (or the Maven equivalent) there. Maven keeps the parallel `-T1C` fast path and retries once sequentially with `clean` only for likely classpath/reactor races. The worktree is removed on completion or interrupt.
 5. The full compiler output is written to `.idea/pre-push-checker/last-run.log`. When IntelliJ is open:
    - It **parses the log**, extracts the error locations, and shows them in the **Compilation Checker** tool window so you can double-click to jump to the offending line.
@@ -194,4 +193,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.4**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.5**.

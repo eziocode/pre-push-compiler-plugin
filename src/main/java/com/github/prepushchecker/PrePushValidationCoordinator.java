@@ -30,7 +30,7 @@ import java.util.concurrent.TimeoutException;
 public final class PrePushValidationCoordinator implements Disposable {
     static final long DEFAULT_TIMEOUT_SECONDS = 300L;
 
-    enum Status { COMPLETED, TIMEOUT, FAILURE, CANCELED }
+    enum Status { COMPLETED, TIMEOUT, FAILURE, CANCELED, STALE }
 
     record Outcome(@NotNull Status status, @NotNull List<String> errors, @NotNull String message) {
         static Outcome completed(@NotNull List<String> errors) {
@@ -48,6 +48,10 @@ public final class PrePushValidationCoordinator implements Disposable {
         static Outcome canceled() {
             return new Outcome(Status.CANCELED, Collections.emptyList(), "validation wait canceled");
         }
+
+        static Outcome stale(@NotNull String message) {
+            return new Outcome(Status.STALE, Collections.emptyList(), message);
+        }
     }
 
     @FunctionalInterface
@@ -58,6 +62,12 @@ public final class PrePushValidationCoordinator implements Disposable {
     @FunctionalInterface
     interface Validation {
         @NotNull List<String> run() throws Exception;
+    }
+
+    static final class StaleSnapshotException extends Exception {
+        StaleSnapshotException(@NotNull String message) {
+            super(message);
+        }
     }
 
     private final Project project;
@@ -161,6 +171,8 @@ public final class PrePushValidationCoordinator implements Disposable {
             }
         } catch (ProcessCanceledException canceled) {
             outcome = Outcome.failure("validation owner canceled");
+        } catch (StaleSnapshotException stale) {
+            outcome = Outcome.stale(messageOf(stale));
         } catch (TimeoutException timeout) {
             outcome = Outcome.timeout();
         } catch (Throwable failure) {

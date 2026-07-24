@@ -20,8 +20,6 @@ final class PrePushCheckerSettings {
         "prepushchecker.strictSnapshotGuard.stashFallback.enabled";
     private static final String DISABLE_BUILD_TOOL_FALLBACK_KEY =
         "prepushchecker.buildToolFallback.disabled";
-    private static final String REBASE_PRECHECK_KEY =
-        "prepushchecker.rebasePrecheck.enabled";
     private static final String COPY_SHA_ENABLED_KEY =
         "prepushchecker.copyCommitSha.enabled";
     private static final String COPY_SHA_FORMAT_KEY =
@@ -71,23 +69,6 @@ final class PrePushCheckerSettings {
             .setValue(DISABLE_BUILD_TOOL_FALLBACK_KEY, disabled, false);
     }
 
-    /**
-     * When enabled, {@code PrePushCompilationHandler.handle} fetches each push
-     * root before scheduling the compile and offers the user a chance to
-     * rebase first if the remote is ahead. Default {@code false} — fetch on
-     * every push is a network round-trip and a setting change to a ref the
-     * user might not want.
-     */
-    static boolean isRebasePrecheckEnabled(@NotNull Project project) {
-        return PropertiesComponent.getInstance(project)
-            .getBoolean(REBASE_PRECHECK_KEY, false);
-    }
-
-    static void setRebasePrecheckEnabled(@NotNull Project project, boolean enabled) {
-        PropertiesComponent.getInstance(project)
-            .setValue(REBASE_PRECHECK_KEY, enabled, false);
-    }
-
     /** Returns {@code true} if the auto-copy-SHA feature is active (default {@code true}). */
     static boolean isCopyCommitShaEnabled(@NotNull Project project) {
         return PropertiesComponent.getInstance(project)
@@ -132,7 +113,17 @@ final class PrePushCheckerSettings {
     static void syncSettingsFile(@NotNull Project project) {
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) return;
-        Path settingsFile = Path.of(basePath, ".idea/pre-push-checker/settings");
+        syncSettingsFile(project, basePath);
+        for (git4idea.repo.GitRepository repository
+                : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+            String root = repository.getRoot().getPath();
+            if (!root.equals(basePath)) syncSettingsFile(project, root);
+        }
+    }
+
+    static void syncSettingsFile(@NotNull Project project, @NotNull String repositoryRoot) {
+        if (repositoryRoot.isBlank()) return;
+        Path settingsFile = Path.of(repositoryRoot, ".idea/pre-push-checker/settings");
         try {
             Files.createDirectories(settingsFile.getParent());
             boolean disableFallback = isBuildToolFallbackDisabled(project);

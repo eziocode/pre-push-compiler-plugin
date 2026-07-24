@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+/** Limits clean build-tool retries to diagnostics that resemble stale output. */
 final class CompilationFailureClassifier {
     private static final int CLASSPATH_FAILURE_MIN_ERRORS = 4;
     private static final int CLASSPATH_FAILURE_MIN_FILES = 3;
@@ -20,31 +21,23 @@ final class CompilationFailureClassifier {
     }
 
     static @NotNull RecoveryDecision classify(@NotNull List<String> errors) {
-        if (errors.isEmpty()) {
-            return RecoveryDecision.noRecovery();
-        }
+        if (errors.isEmpty()) return RecoveryDecision.noRecovery();
 
         int classpathFailures = 0;
         Set<String> affectedFiles = new HashSet<>();
         boolean containsSyntaxFailure = false;
-
         for (String error : errors) {
             String normalized = error == null ? "" : error.toLowerCase(Locale.ROOT);
             if (isStrongStaleOutputSignal(normalized)) {
                 return RecoveryDecision.recover("stale classpath/output diagnostic");
             }
-            if (isSyntaxOrTypeFailure(normalized)) {
-                containsSyntaxFailure = true;
-            }
+            if (isSyntaxOrTypeFailure(normalized)) containsSyntaxFailure = true;
             if (isClasspathFailure(normalized)) {
                 classpathFailures++;
                 String path = extractAffectedPath(error);
-                if (path != null && !path.isBlank()) {
-                    affectedFiles.add(path);
-                }
+                if (path != null && !path.isBlank()) affectedFiles.add(path);
             }
         }
-
         if (!containsSyntaxFailure
                 && classpathFailures >= CLASSPATH_FAILURE_MIN_ERRORS
                 && affectedFiles.size() >= CLASSPATH_FAILURE_MIN_FILES) {
@@ -61,12 +54,8 @@ final class CompilationFailureClassifier {
                 || error.contains("nosuchfileexception:")) {
             return true;
         }
-        if (error.contains("class file for ") && error.contains(" not found")) {
-            return true;
-        }
-        if (error.contains("cannot access ")) {
-            return true;
-        }
+        if (error.contains("class file for ") && error.contains(" not found")) return true;
+        if (error.contains("cannot access ")) return true;
         return (error.contains("/target/classes/")
             || error.contains("/target/test-classes/")
             || error.contains("/build/classes/"))
@@ -92,13 +81,9 @@ final class CompilationFailureClassifier {
     }
 
     private static String extractAffectedPath(String error) {
-        if (error == null) {
-            return null;
-        }
+        if (error == null) return null;
         Matcher rawPath = RAW_COMPILER_PATH.matcher(error);
-        if (rawPath.find()) {
-            return rawPath.group(1);
-        }
+        if (rawPath.find()) return rawPath.group(1);
         String path = CompilationEntryRenderer.extractPath(error);
         return "ERROR".equals(path) ? null : path;
     }

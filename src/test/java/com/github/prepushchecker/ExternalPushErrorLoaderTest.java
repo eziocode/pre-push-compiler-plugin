@@ -2,6 +2,9 @@ package com.github.prepushchecker;
 
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 public class ExternalPushErrorLoaderTest extends BasePlatformTestCase {
@@ -42,5 +45,27 @@ public class ExternalPushErrorLoaderTest extends BasePlatformTestCase {
         assertEquals(1, errors.size());
         assertTrue(errors.get(0).contains(
             "[src/main/java/App.java (7, 3)] package com.example.shared does not exist"));
+    }
+
+    public void testSuccessfulHookRunClearsPreviousErrors() throws Exception {
+        Path log = Files.createTempFile("prepushchecker-success-", ".log");
+        try {
+            CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+            service.setErrors(List.of("stale error"));
+            Files.writeString(log, "[pre-push-checker] exit=0\n", StandardCharsets.UTF_8);
+
+            ExternalPushErrorLoader.loadFromLogIfFailed(getProject(), log);
+
+            assertTrue(service.getErrors().isEmpty());
+        } finally {
+            Files.deleteIfExists(log);
+        }
+    }
+
+    public void testParseIdeFormattedErrorPreservesNavigableEntry() {
+        String entry = "[src/main/java/App.java (12, 7)] cannot find symbol";
+        assertEquals(
+            List.of(entry),
+            ExternalPushErrorLoader.parseErrors(getProject(), List.of(entry)));
     }
 }

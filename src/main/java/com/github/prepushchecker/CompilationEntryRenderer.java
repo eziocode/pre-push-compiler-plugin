@@ -18,7 +18,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * List cell renderer that displays a file-type icon next to each compilation entry.
  *
- * <p>Understands two entry formats produced by {@link PrePushCompilationHandler}:
+ * <p>Understands compiler entry formats produced by {@link CompilationSupport}:
  * <ul>
  *   <li>{@code [src/Foo.java 10:5] cannot find symbol} — compilation error</li>
  *   <li>{@code src/Foo.java} — IDE problem file</li>

@@ -38,11 +38,15 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertFalse(script.contains("retrying IntelliJ incremental compile once before aborting"));
         assertTrue(script.contains("FALLBACK_LOCK_DIR"));
         assertTrue(script.contains("FALLBACK_WAIT_SECONDS=300"));
-        assertTrue(script.contains("FALLBACK_SUCCESS_TTL_SECONDS=60"));
-        assertTrue(script.contains("publish_success_result"));
         assertTrue(script.contains("publish_run_result"));
-        assertTrue(script.contains("Reusing recent successful fallback result"));
         assertTrue(script.contains("Reusing result from the same in-flight fallback validation"));
+        assertFalse(script.contains("FALLBACK_SUCCESS_TTL_SECONDS"));
+        assertFalse(script.contains("publish_success_result"));
+        assertTrue(script.contains("CHECK 2"));
+        assertTrue(script.contains("ROOT=%s"));
+        assertTrue(script.contains("HEAD=%s"));
+        assertTrue(script.contains("UPDATES=%s"));
+        assertTrue(script.contains("IDE_BOOTSTRAP_RETRIES=1"));
         assertTrue(script.contains("IntelliJ validation timed out"));
         assertTrue(script.contains("extract_error_records"));
         assertTrue(script.contains("looks_like_stale_or_parallel_failure"));
@@ -557,7 +561,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             Files.readAllLines(count, StandardCharsets.UTF_8));
     }
 
-    public void testSuccessfulFallbackCacheExpiresByTimestamp() throws Exception {
+    public void testSuccessfulFallbackResultIsNotReusedByLaterInvocation() throws Exception {
         File repo = createFallbackRepository("prepushchecker-success-cache", false);
         Path repoPath = repo.toPath();
         Path count = repoPath.resolve("build-count");
@@ -573,24 +577,14 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         Map<String, String> environment = Map.of(
             "PRE_PUSH_CHECKER_COMMAND", fakeBuild.toString());
         HookRun first = runHook(fixture, environment);
-        HookRun cached = runHook(fixture, environment);
+        HookRun second = runHook(fixture, environment);
 
         assertEquals(first.output(), 0, first.exitCode());
-        assertEquals(cached.output(), 0, cached.exitCode());
-        assertEquals(List.of("build"), Files.readAllLines(count, StandardCharsets.UTF_8));
-
-        Path successFile = repoPath.resolve(
-            ".idea/pre-push-checker/last-fallback-success-v2");
-        List<String> fields = List.of(Files.readString(successFile, StandardCharsets.UTF_8)
-            .trim().split("\\|", -1));
-        assertEquals(4, fields.size());
-        Files.writeString(successFile,
-            fields.get(0) + "|" + fields.get(1) + "|0|0\n", StandardCharsets.UTF_8);
-
-        HookRun expired = runHook(fixture, environment);
-        assertEquals(expired.output(), 0, expired.exitCode());
+        assertEquals(second.output(), 0, second.exitCode());
         assertEquals(List.of("build", "build"),
             Files.readAllLines(count, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(repoPath.resolve(
+            ".idea/pre-push-checker/last-fallback-success-v2")));
     }
 
     public void testFallbackBuildRunsInDetachedWorktreeWithoutOldOutputs() throws Exception {

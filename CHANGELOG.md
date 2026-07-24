@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.0.5]
+
+### Fixed
+
+- Removed the modal IntelliJ `prePushHandler` path. IntelliJ, terminal, and GUI Git clients now
+  use one managed Git hook, preventing duplicate compilation and editor-obscuring wait dialogs.
+- Removed completed IDE and fallback verdict caches. Only identical requests waiting for the same
+  active validation share work; every later push invokes the incremental compiler again.
+- Any failed IntelliJ incremental compile now receives exactly one clean project rebuild. Only the
+  rebuild result is published, preventing stale JPS diagnostics from blocking a valid push.
+- Hook requests include repository root, expected HEAD, pushed-ref fingerprint, and changed paths.
+  Branch, HEAD, or file drift during compilation aborts with a retry result instead of stale errors.
+- Successful checks and repository changes clear old Compilation Checker errors.
+- Dynamic plugin loading starts hook repair, compiler server, log listener, and repository monitor
+  for every open Git root.
+
+### Changed
+
+- Successful IntelliJ validation is silent. Confirmed errors use a notification linked to the
+  Compilation Checker tool window; plugin dialogs never reset or alter commits.
+- Removed the custom rebase-precheck UI. Native Git/IntelliJ push rejection owns rebase handling.
+
+---
+
 ## [2.0.4]
 
 ### Fixed

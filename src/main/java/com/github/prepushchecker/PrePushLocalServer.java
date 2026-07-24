@@ -31,8 +31,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
@@ -49,10 +50,11 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Protocol (line-delimited, UTF-8):
  * <pre>
- *   C -> S : CHECK\n
+ *   C -> S : CHECK 2\nROOT=&lt;path&gt;\nHEAD=&lt;sha&gt;\nUPDATES=&lt;id&gt;\nPATH=&lt;path&gt;...\n\n
  *   S -> C : OK\n                              (compile succeeded)
  *           | ERRORS &lt;n&gt;\n&lt;line&gt;...\nEND\n    (n errors follow)
- *           | ERR &lt;reason&gt;\n                   (server could not run the check)
+ *           | STALE &lt;reason&gt;\n                  (repository changed during check)
+ *           | FAIL &lt;reason&gt;\n                   (server could not run the check)
  * </pre>
  *
  * <p>The server binds to {@code 127.0.0.1} on an ephemeral port and writes the port to
@@ -72,7 +74,7 @@ public final class PrePushLocalServer implements Disposable {
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile ServerSocket server;
     private volatile Thread acceptThread;
-    private volatile Path portFile;
+    private final Set<Path> portFiles = ConcurrentHashMap.newKeySet();
 
     public PrePushLocalServer(@NotNull Project project) {
         this.project = project;
@@ -108,9 +110,11 @@ public final class PrePushLocalServer implements Disposable {
         try {
             ServerSocket s = new ServerSocket(0, BACKLOG, InetAddress.getLoopbackAddress());
             server = s;
-            portFile = Path.of(basePath, PORT_FILE_RELATIVE);
-            Files.createDirectories(portFile.getParent());
-            writePortFileAtomically(portFile, s.getLocalPort());
+            publishPortFile(basePath);
+            for (git4idea.repo.GitRepository repository
+                    : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+                publishPortFile(repository.getRoot().getPath());
+            }
 
             Thread t = new Thread(this::acceptLoop, "PrePushChecker-Server-" + project.getName());
             t.setDaemon(true);
@@ -131,6 +135,19 @@ public final class PrePushLocalServer implements Disposable {
             }
             LOG.warn("Could not start local pre-push server; external hook will fall back to build tool.", ex);
             started.set(false);
+        }
+    }
+
+    void publishPortFile(@NotNull String repositoryRoot) {
+        ServerSocket activeServer = server;
+        if (repositoryRoot.isBlank() || activeServer == null || activeServer.isClosed()) return;
+        Path descriptor = Path.of(repositoryRoot, PORT_FILE_RELATIVE);
+        try {
+            Files.createDirectories(descriptor.getParent());
+            writePortFileAtomically(descriptor, activeServer.getLocalPort());
+            portFiles.add(descriptor);
+        } catch (IOException failure) {
+            LOG.warn("Could not publish IDE compiler port for " + repositoryRoot, failure);
         }
     }
 
@@ -183,17 +200,35 @@ public final class PrePushLocalServer implements Disposable {
 
             String line = in.readLine();
             String command = line == null ? "" : line.trim();
-            if (!command.equals("CHECK")) {
+            boolean versionTwo = command.equals("CHECK 2");
+            if (!versionTwo && !command.equals("CHECK")) {
                 out.write("ERR unknown-request\n");
                 out.flush();
                 return;
             }
-            // Read optional list of absolute file paths (one per line) until a blank line or EOF.
+            String repositoryRoot = "";
+            String expectedHead = "";
+            String updatesFingerprint = "";
             List<String> requestedPaths = new ArrayList<>();
             boolean pathLimitExceeded = false;
             while ((line = in.readLine()) != null) {
-                String trimmed = line.trim();
+                String trimmed = line.strip();
                 if (trimmed.isEmpty()) break;
+                if (versionTwo && trimmed.startsWith("ROOT=")) {
+                    repositoryRoot = trimmed.substring("ROOT=".length());
+                    continue;
+                }
+                if (versionTwo && trimmed.startsWith("HEAD=")) {
+                    expectedHead = trimmed.substring("HEAD=".length());
+                    continue;
+                }
+                if (versionTwo && trimmed.startsWith("UPDATES=")) {
+                    updatesFingerprint = trimmed.substring("UPDATES=".length());
+                    continue;
+                }
+                if (versionTwo && trimmed.startsWith("PATH=")) {
+                    trimmed = trimmed.substring("PATH=".length());
+                }
                 if (pathLimitExceeded) continue;
                 if (requestedPaths.size() >= MAX_REQUESTED_PATHS) {
                     requestedPaths.clear();
@@ -211,14 +246,23 @@ public final class PrePushLocalServer implements Disposable {
                 return;
             }
 
-            PrePushValidationCoordinator.Outcome outcome =
-                runCompile(pathLimitExceeded ? Collections.emptyList() : requestedPaths);
+            ValidationRequest request = new ValidationRequest(
+                normalizeRoot(repositoryRoot),
+                expectedHead.trim(),
+                updatesFingerprint.trim(),
+                pathLimitExceeded ? Collections.emptyList() : requestedPaths);
+            PrePushValidationCoordinator.Outcome outcome = runCompile(request);
             if (outcome.status() == PrePushValidationCoordinator.Status.TIMEOUT) {
                 out.write("TIMEOUT validation-timeout\n");
+            } else if (outcome.status() == PrePushValidationCoordinator.Status.STALE) {
+                out.write("STALE "
+                    + outcome.message().replace('\r', ' ').replace('\n', ' ') + "\n");
             } else if (outcome.status() != PrePushValidationCoordinator.Status.COMPLETED) {
                 out.write("FAIL infrastructure "
                     + outcome.message().replace('\r', ' ').replace('\n', ' ') + "\n");
             } else if (outcome.errors().isEmpty()) {
+                CommitShaClipboardCheckinHandler.copyValidatedPushShaSilently(
+                    project, request.expectedHead());
                 out.write("OK\n");
             } else {
                 out.write("ERRORS " + outcome.errors().size() + "\n");
@@ -234,27 +278,37 @@ public final class PrePushLocalServer implements Disposable {
         }
     }
 
-    private PrePushValidationCoordinator.Outcome runCompile(List<String> requestedPaths) {
-        List<String> normalizedPaths = normalizeRequestedPaths(requestedPaths);
+    private PrePushValidationCoordinator.Outcome runCompile(ValidationRequest request) {
+        ApplicationManager.getApplication().invokeAndWait(
+            () -> FileDocumentManager.getInstance().saveAllDocuments(),
+            ModalityState.defaultModalityState());
+
+        List<String> normalizedPaths = normalizeRequestedPaths(request.requestedPaths());
         boolean projectScope = normalizedPaths.isEmpty()
             || normalizedPaths.stream().anyMatch(PushValidationPaths::isBuildFile);
         List<String> compilePaths = projectScope ? Collections.emptyList() : normalizedPaths;
-        String requestKey = buildRequestKey(normalizedPaths, projectScope);
-        CompilationErrorService errorService = CompilationErrorService.getInstance(project);
-        List<VirtualFile> requestedFiles = resolveExistingFiles(normalizedPaths);
+        ValidationRequest normalizedRequest = new ValidationRequest(
+            request.repositoryRoot().isBlank() ? normalizedProjectRoot() : request.repositoryRoot(),
+            request.expectedHead(),
+            request.updatesFingerprint(),
+            normalizedPaths);
+        SnapshotToken before = captureSnapshot(normalizedRequest);
+        String requestKey = buildRequestKey(normalizedRequest, projectScope, before);
 
         return PrePushValidationCoordinator.getInstance(project).request(
             requestKey,
+            () -> null,
             () -> {
-                List<String> cached = errorService.tryReusePrePushResult(requestKey);
-                if (cached != null) {
-                    return cached;
+                if (!snapshotMatches(normalizedRequest, before)) {
+                    throw new PrePushValidationCoordinator.StaleSnapshotException(
+                        "repository changed before validation started; retry push");
                 }
-                return projectScope ? null : errorService.tryReuse(requestedFiles);
-            },
-            () -> {
                 List<String> result = runCompileSingleFlight(compilePaths);
-                errorService.recordPrePushResult(requestKey, result);
+                if (!snapshotMatches(normalizedRequest, before)) {
+                    CompilationErrorService.getInstance(project).clearErrors();
+                    throw new PrePushValidationCoordinator.StaleSnapshotException(
+                        "repository changed during validation; retry push");
+                }
                 return result;
             },
             null,
@@ -262,22 +316,69 @@ public final class PrePushLocalServer implements Disposable {
             TimeUnit.SECONDS);
     }
 
-    private String buildRequestKey(List<String> normalizedPaths, boolean projectScope) {
-        String basePath = project.getBasePath();
-        String head = basePath == null ? null : GitOperations.headSha(basePath);
-        StringBuilder key = new StringBuilder("external\n");
+    private String buildRequestKey(
+        ValidationRequest request,
+        boolean projectScope,
+        SnapshotToken snapshot
+    ) {
+        StringBuilder key = new StringBuilder("hook-v2\n");
         key.append("scope=").append(projectScope ? "project" : "files").append('\n');
-        key.append("head=").append(head == null ? "" : head).append('\n');
-        for (String path : normalizedPaths) {
-            key.append("path=").append(path);
-            try {
-                key.append('@').append(Files.getLastModifiedTime(Path.of(path)).toMillis());
-            } catch (IOException | RuntimeException ignored) {
-                key.append("@missing");
-            }
-            key.append('\n');
-        }
+        key.append("root=").append(request.repositoryRoot()).append('\n');
+        key.append("head=").append(request.expectedHead()).append('\n');
+        key.append("updates=").append(request.updatesFingerprint()).append('\n');
+        key.append(snapshot.fingerprint());
         return key.toString();
+    }
+
+    private String normalizedProjectRoot() {
+        return normalizeRoot(project.getBasePath());
+    }
+
+    private static String normalizeRoot(String root) {
+        if (root == null || root.isBlank()) return "";
+        try {
+            return Path.of(root).toAbsolutePath().normalize().toString().replace('\\', '/');
+        } catch (RuntimeException ignored) {
+            return root.replace('\\', '/');
+        }
+    }
+
+    private static SnapshotToken captureSnapshot(ValidationRequest request) {
+        String actualHead = request.repositoryRoot().isBlank()
+            ? ""
+            : valueOrEmpty(GitOperations.headSha(request.repositoryRoot()));
+        StringBuilder fingerprint = new StringBuilder()
+            .append("actualHead=").append(actualHead).append('\n');
+        for (String path : request.requestedPaths()) {
+            fingerprint.append("path=").append(path);
+            try {
+                Path file = Path.of(path);
+                fingerprint.append('@')
+                    .append(Files.getLastModifiedTime(file).toMillis())
+                    .append(':')
+                    .append(Files.size(file));
+            } catch (IOException | RuntimeException ignored) {
+                fingerprint.append("@missing");
+            }
+            fingerprint.append('\n');
+        }
+        return new SnapshotToken(actualHead, fingerprint.toString());
+    }
+
+    private static boolean snapshotMatches(
+        ValidationRequest request,
+        SnapshotToken before
+    ) {
+        SnapshotToken now = captureSnapshot(request);
+        if (!request.expectedHead().isBlank()
+                && !request.expectedHead().equals(now.actualHead())) {
+            return false;
+        }
+        return before.equals(now);
+    }
+
+    private static String valueOrEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     private static List<String> normalizeRequestedPaths(List<String> requestedPaths) {
@@ -306,8 +407,6 @@ public final class PrePushLocalServer implements Disposable {
             return snapshotErrors;
         }
 
-        AtomicReference<List<VirtualFile>> filesRef =
-            new AtomicReference<>(Collections.emptyList());
         AtomicReference<CompileScope> scopeRef = new AtomicReference<>();
         AtomicReference<CompilerManager> compilerRef = new AtomicReference<>();
         ApplicationManager.getApplication().invokeAndWait(() -> {
@@ -322,32 +421,16 @@ public final class PrePushLocalServer implements Disposable {
             }
             CompileScope scope = files.isEmpty()
                 ? compiler.createProjectCompileScope(project)
-                : PrePushCompilationHandler.buildPushScopeForExternal(project, files, compiler);
+                : CompilationSupport.buildPushScope(project, files, compiler);
             compilerRef.set(compiler);
-            filesRef.set(List.copyOf(files));
             scopeRef.set(scope);
         }, ModalityState.defaultModalityState());
 
-        List<VirtualFile> files = filesRef.get();
-        CompilationErrorService service = CompilationErrorService.getInstance(project);
-        if (!files.isEmpty()) {
-            List<String> cached = service.tryReuse(files);
-            if (cached != null && cached.isEmpty()) {
-                return cached;
-            }
-        }
-
-        boolean projectScope = files.isEmpty();
-        Map<String, Long> stamps = projectScope
-            ? Collections.emptyMap()
-            : CompilationErrorService.snapshotStamps(files);
         CompilerManager compiler = compilerRef.get();
         CompileScope scope = scopeRef.get();
         return IdeCompilationRunner.runWithRecovery(
             project,
             new EmptyProgressIndicator(),
-            projectScope,
-            stamps,
             compiler,
             notification -> compiler.make(scope, notification),
             COMPILE_TIMEOUT_SECONDS,
@@ -378,16 +461,21 @@ public final class PrePushLocalServer implements Disposable {
         return out;
     }
 
-    private static List<VirtualFile> resolveExistingFiles(List<String> paths) {
-        if (paths.isEmpty()) return Collections.emptyList();
-        LocalFileSystem lfs = LocalFileSystem.getInstance();
-        List<VirtualFile> out = new ArrayList<>(paths.size());
-        for (String path : paths) {
-            VirtualFile file = lfs.findFileByPath(path);
-            if (file == null) file = lfs.refreshAndFindFileByPath(path);
-            if (file != null && !file.isDirectory()) out.add(file);
+    private record ValidationRequest(
+        @NotNull String repositoryRoot,
+        @NotNull String expectedHead,
+        @NotNull String updatesFingerprint,
+        @NotNull List<String> requestedPaths
+    ) {
+        private ValidationRequest {
+            requestedPaths = List.copyOf(requestedPaths);
         }
-        return out;
+    }
+
+    private record SnapshotToken(
+        @NotNull String actualHead,
+        @NotNull String fingerprint
+    ) {
     }
 
     @Override
@@ -401,10 +489,10 @@ public final class PrePushLocalServer implements Disposable {
         clientExecutor.shutdownNow();
         Thread t = acceptThread;
         if (t != null) t.interrupt();
-        Path p = portFile;
-        if (p != null) {
-            try { Files.deleteIfExists(p); } catch (IOException ignored) {}
+        for (Path descriptor : portFiles) {
+            try { Files.deleteIfExists(descriptor); } catch (IOException ignored) {}
         }
+        portFiles.clear();
     }
 
     /** Starts the per-project server on project open. Multiple startup entrypoints can safely call this. */

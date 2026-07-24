@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.0.4</version>
+    <version>2.0.5</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -9,19 +9,17 @@
 
         <h3>How it works</h3>
         <ul>
-            <li><b>IDE Push Guard:</b> Hooks into the IntelliJ Git Push dialog via the
-                <code>prePushHandler</code> extension point. Checks whether the IDE already knows
-                about problems in the pushed files, then compiles the affected modules and their dependents.
-                A full project build is used only when build files or file deletions are involved.</li>
+            <li><b>One push guard:</b> IntelliJ, terminal, and GUI Git clients all use the same
+                managed <code>pre-push</code> hook. When IntelliJ is open, the hook uses its
+                incremental compiler without opening a modal pre-push dialog.</li>
             <li><b>Strict A/B preflight:</b> When enabled, the plugin escalates only risky pushes
                 to exact pushed-snapshot validation, so local-only dependent changes cannot silently
                 hide a compile failure in the pushed commits. A symbolic check (<code>git diff HEAD</code>
                 of unpushed local files vs. HEAD content of pushed files) catches A/B mismatches in
                 milliseconds without invoking a build.</li>
-            <li><b>Auto-retry on success / choice dialog on failure:</b> When the background pre-push
-                check passes, the plugin runs <code>git push</code> automatically per repository root.
-                When errors are found, a modal dialog offers Reset Commit / Push Anyway / Leave Commit
-                / Cancel.</li>
+            <li><b>Silent success / failure-only UI:</b> A clean check continues the original Git
+                push silently. Confirmed errors block it and produce one notification linked to the
+                navigable Compilation Checker tool window.</li>
             <li><b>Terminal Push Guard:</b> On project open, the plugin installs a managed
                 <code>pre-push</code> Git hook that reuses the running IDE compiler when available,
                 then falls back to a fast Gradle or Maven compile before allowing any push from a
@@ -36,8 +34,7 @@
         <ul>
             <li>Smart compile scope — changed modules plus dependent modules by default, project-level when necessary</li>
             <li>IDE problem check — revalidates stale classpath/output diagnostics with at most one clean rebuild</li>
-            <li>Navigable error dialog — double-click any error to jump to the source file</li>
-            <li>Refresh action — re-run the check from the block dialog without cancelling the push</li>
+            <li>Navigable error tool window — double-click any error to jump to the source file</li>
             <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
             <li>Gradle (wrapper or system) and Maven (wrapper or system) support</li>
             <li>Optional stash fallback for strict A/B validation when detached worktrees are unavailable</li>
@@ -68,6 +65,22 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.0.5 — Fast non-modal push validation</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>No editor-blocking push popup.</b> IntelliJ now uses the same managed Git hook
+                as terminal and GUI clients; successful checks stay in the native background push task.</li>
+            <li><b>No duplicate or stale verdict reuse.</b> Completed success caches were removed.
+                Only identical callers waiting for the same active validation share work.</li>
+            <li><b>Automatic false-error recovery.</b> Any failed incremental JPS check receives
+                exactly one clean project rebuild before errors are published.</li>
+            <li><b>Branch-safe diagnostics.</b> Repository or file changes during validation cause
+                a retry result, and successful checks or branch changes clear old tool-window errors.</li>
+            <li><b>Reliable startup.</b> Dynamic plugin loading starts the compiler server, log
+                listener, and hook repair for every open Git root.</li>
+        </ul>
+
         <h3>2.0.4 — Reliable bounded compilation recovery</h3>
 
         <h4>Fixed</h4>
@@ -855,13 +868,14 @@
     <depends optional="true" config-file="commitgen-intellij-ai.xml">com.intellij.ml.llm</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <prePushHandler implementation="com.github.prepushchecker.PrePushCompilationHandler"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$GitHookInstallerActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$ExternalPushErrorLoaderActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$PrePushLocalServerActivity"/>
+        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$RepositoryStateMonitorActivity"/>
         <postStartupActivity implementation="com.github.prepushchecker.PrePushLocalServerStartupActivity"/>
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.PrePushLocalServer"/>
+        <projectService serviceImplementation="com.github.prepushchecker.RepositoryStateMonitor"/>
 
         <!-- AI Commit Message Generator -->
         <applicationService
