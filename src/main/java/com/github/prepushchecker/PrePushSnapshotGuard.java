@@ -753,7 +753,7 @@ final class PrePushSnapshotGuard {
         List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
         List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
         if (!parsedErrors.isEmpty()) {
-            return parsedErrors;
+            return DiagnosticPathMatcher.filterIgnored(project, parsedErrors);
         }
 
         List<String> messages = new ArrayList<>();
@@ -795,7 +795,7 @@ final class PrePushSnapshotGuard {
                 LOG.info("Snapshot build reported only Lombok-generated symbol errors; suppressing false positives.");
                 return List.of();
             }
-            return filtered;
+            return DiagnosticPathMatcher.filterIgnored(project, filtered);
         }
         return commandFailure(summary, result, project, worktree);
     }

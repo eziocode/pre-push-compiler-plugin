@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.0.5</version>
+    <version>2.1.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -65,6 +65,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.1.0 — Exact-file compilation ignore controls</h3>
+        <ul>
+            <li><b>Local exact-file controls.</b> Add files or ignore a selected navigable error,
+                then enable, disable, or remove each project-relative entry in the tool window.</li>
+            <li><b>Consistent verdicts.</b> IDE, Gradle, Maven, Kotlin, detached snapshot, macOS,
+                and multi-root diagnostic paths use one matcher; terminal hooks receive synchronized state.</li>
+            <li><b>Fail-safe filtering.</b> Only errors attributed to enabled files are ignored.
+                Unknown, pathless, build/plugin, timeout, aborted, and infrastructure failures block.</li>
+            <li><b>Faster ignored-only checks.</b> Ignored-only IDE results skip recovery rebuild.</li>
+        </ul>
+        <p><b>Warning:</b> Ignored files weaken local push validation. Keep required CI and branch
+            protection enabled.</p>
+
         <h3>2.0.5 — Fast non-modal push validation</h3>
 
         <h4>Fixed</h4>

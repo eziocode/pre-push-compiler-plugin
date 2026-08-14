@@ -57,7 +57,7 @@ final class IdeCompilationRunner {
             long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
             AttemptResult initial =
                 runCompilation(project, indicator, initialCompilation, deadlineNanos);
-            RecoveryOutcome outcome = recover(initial, () -> {
+            RecoveryOutcome outcome = recover(project, initial, () -> {
                 LOG.info("IDE compilation reported errors; rebuilding project once "
                     + "before publishing an authoritative result.");
                 indicator.setText("Rebuilding project to verify compiler errors");
@@ -66,7 +66,7 @@ final class IdeCompilationRunner {
             });
 
             record(project, outcome.finalResult());
-            return outcome.finalResult().errors();
+            return DiagnosticPathMatcher.filterIgnored(project, outcome.finalResult().errors());
         } catch (TimeoutException timeoutException) {
             recordUnavailable(project, timeoutException.getMessage());
             throw timeoutException;
@@ -85,7 +85,7 @@ final class IdeCompilationRunner {
                 compilation,
                 System.nanoTime() + TimeUnit.SECONDS.toNanos(DEFAULT_TIMEOUT_SECONDS));
             record(project, result);
-            return result.errors();
+            return DiagnosticPathMatcher.filterIgnored(project, result.errors());
         } catch (TimeoutException timeout) {
             recordUnavailable(project, timeout.getMessage());
             return Collections.singletonList(timeout.getMessage());
@@ -100,6 +100,19 @@ final class IdeCompilationRunner {
             return new RecoveryOutcome(initial, false, "");
         }
         return new RecoveryOutcome(cleanRebuild.get(), true, "initial compiler errors");
+    }
+
+    static @NotNull RecoveryOutcome recover(
+        @NotNull Project project,
+        @NotNull AttemptResult initial,
+        @NotNull AttemptSupplier cleanRebuild
+    ) throws TimeoutException {
+        if (initial.aborted() || initial.errorCount() <= 0
+                || DiagnosticPathMatcher.filterIgnored(project, initial.errors()).isEmpty()) {
+            return new RecoveryOutcome(initial, false,
+                initial.errorCount() > 0 ? "only ignored compiler errors" : "");
+        }
+        return new RecoveryOutcome(cleanRebuild.get(), true, "initial blocking compiler errors");
     }
 
     private static @NotNull AttemptResult runCompilation(

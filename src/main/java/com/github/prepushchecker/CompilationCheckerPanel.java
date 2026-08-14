@@ -17,6 +17,8 @@ import com.intellij.openapi.actionSystem.Toggleable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompilerManager;
+import com.intellij.openapi.fileChooser.FileChooser;
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
@@ -48,6 +50,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final Project project;
     private final DefaultListModel<String> listModel = new DefaultListModel<>();
     private final JBLabel statusLabel = new JBLabel(" ");
+    private final JPanel ignoredFilesRows = new JPanel();
     private final Runnable serviceListener = this::onServiceUpdate;
     private String hookStatusText = " ";
 
@@ -92,6 +95,26 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                 if (e.getClickCount() == 2) {
                     CompilationEntryRenderer.navigateTo(project, errorList.getSelectedValue());
                 }
+            }
+
+            @Override
+            public void mousePressed(MouseEvent e) { maybeShowErrorMenu(e); }
+
+            @Override
+            public void mouseReleased(MouseEvent e) { maybeShowErrorMenu(e); }
+
+            private void maybeShowErrorMenu(MouseEvent e) {
+                if (!e.isPopupTrigger()) return;
+                int index = errorList.locationToIndex(e.getPoint());
+                if (index < 0) return;
+                errorList.setSelectedIndex(index);
+                String diagnostic = errorList.getSelectedValue();
+                if (!DiagnosticPathMatcher.canIgnoreDiagnostic(project, diagnostic)) return;
+                JPopupMenu menu = new JPopupMenu();
+                JMenuItem ignore = new JMenuItem("Ignore File");
+                ignore.addActionListener(event -> ignoreDiagnosticFile(diagnostic));
+                menu.add(ignore);
+                menu.show(errorList, e.getX(), e.getY());
             }
         });
         errorList.addKeyListener(new KeyAdapter() {
@@ -246,6 +269,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         options.add(Box.createVerticalStrut(4));
         options.add(copySha);
         options.add(shaSubPanel);
+        options.add(Box.createVerticalStrut(6));
+        options.add(createIgnoredFilesPanel());
 
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(BorderFactory.createCompoundBorder(
@@ -254,6 +279,65 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             BorderFactory.createEmptyBorder(2, 4, 4, 4)));
         panel.add(options, BorderLayout.WEST);
         return panel;
+    }
+
+    private JComponent createIgnoredFilesPanel() {
+        ignoredFilesRows.setLayout(new BoxLayout(ignoredFilesRows, BoxLayout.Y_AXIS));
+        refreshIgnoredFilesRows();
+
+        JButton add = new JButton("Add Files…");
+        add.setToolTipText("Choose exact project files whose attributed compiler errors may be ignored");
+        add.addActionListener(event -> FileChooser.chooseFiles(
+            FileChooserDescriptorFactory.createMultipleFilesNoJarsDescriptor(), project, null,
+            files -> {
+                IgnoredCompilationFiles state = IgnoredCompilationFiles.getInstance(project);
+                for (var file : files) state.add(file.getPath());
+                refreshIgnoredFilesRows();
+            }));
+
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 2));
+        actions.add(add);
+        JPanel content = new JPanel();
+        content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
+        content.add(actions);
+        content.add(ignoredFilesRows);
+
+        JPanel section = new JPanel(new BorderLayout());
+        section.setBorder(BorderFactory.createTitledBorder("Ignored Compilation Files"));
+        section.setToolTipText("Checked files are still compiled, but attributed errors do not block pushes");
+        section.add(content, BorderLayout.CENTER);
+        section.setAlignmentX(Component.LEFT_ALIGNMENT);
+        return section;
+    }
+
+    private void refreshIgnoredFilesRows() {
+        ignoredFilesRows.removeAll();
+        for (IgnoredCompilationFiles.Entry entry
+                : IgnoredCompilationFiles.getInstance(project).list()) {
+            JBCheckBox enabled = new JBCheckBox(entry.path(), entry.enabled());
+            enabled.setToolTipText("Checked means compiler errors from this exact file are ignored");
+            enabled.addActionListener(event ->
+                IgnoredCompilationFiles.getInstance(project)
+                    .setEnabled(entry.path(), enabled.isSelected()));
+            JButton remove = new JButton("Remove");
+            remove.addActionListener(event -> {
+                IgnoredCompilationFiles.getInstance(project).remove(entry.path());
+                refreshIgnoredFilesRows();
+            });
+            JPanel row = new JPanel(new BorderLayout(4, 0));
+            row.add(enabled, BorderLayout.CENTER);
+            row.add(remove, BorderLayout.EAST);
+            ignoredFilesRows.add(row);
+        }
+        ignoredFilesRows.revalidate();
+        ignoredFilesRows.repaint();
+    }
+
+    private void ignoreDiagnosticFile(String diagnostic) {
+        String path = CompilationEntryRenderer.extractPath(diagnostic);
+        if (path != null && IgnoredCompilationFiles.getInstance(project).add(path)) {
+            refreshIgnoredFilesRows();
+        }
     }
 
     // ── Toolbar actions ───────────────────────────────────────────────────────

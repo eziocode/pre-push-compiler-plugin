@@ -326,6 +326,9 @@ public final class PrePushLocalServer implements Disposable {
         key.append("root=").append(request.repositoryRoot()).append('\n');
         key.append("head=").append(request.expectedHead()).append('\n');
         key.append("updates=").append(request.updatesFingerprint()).append('\n');
+        key.append("ignored=")
+            .append(new TreeSet<>(IgnoredCompilationFiles.getInstance(project).enabledPaths()))
+            .append('\n');
         key.append(snapshot.fingerprint());
         return key.toString();
     }
@@ -398,10 +401,11 @@ public final class PrePushLocalServer implements Disposable {
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
             PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, null);
         if (strictSnapshot.wasChecked()) {
-            List<String> snapshotErrors = strictSnapshot.errors();
+            List<String> rawSnapshotErrors = strictSnapshot.errors();
+            List<String> snapshotErrors = DiagnosticPathMatcher.filterIgnored(project, rawSnapshotErrors);
             ApplicationManager.getApplication().invokeAndWait(() -> {
                 if (!project.isDisposed()) {
-                    CompilationErrorService.getInstance(project).setErrors(snapshotErrors);
+                    CompilationErrorService.getInstance(project).setErrors(rawSnapshotErrors);
                 }
             }, ModalityState.defaultModalityState());
             return snapshotErrors;

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.1.0]
+
+### Added
+
+- Added local, project-level **Ignored Compilation Files** controls with file selection,
+  per-file enable checkboxes, removal, and an **Ignore File** action on navigable diagnostics.
+- Exact enabled paths are synchronized into the Git-excluded hook runtime settings so terminal
+  and GUI Git-client fallback builds use the same verdict rules as IntelliJ.
+
+### Changed
+
+- Compiler diagnostics now share one normalized path matcher across IDE, Maven, Gradle, Kotlin,
+  detached snapshot, macOS `/private`, multi-root, sidebar, and external-log paths.
+- Ignored-only IDE failures count as clean and skip recovery rebuild. Mixed failures retain only
+  blocking errors. Unknown, pathless, build/plugin, timeout, abort, and infrastructure failures block.
+- Upgraded IntelliJ Platform Gradle Plugin from 2.16.0 to 2.18.1 and Kotlin Gradle Plugin from
+  1.9.25 to 2.2.21, removing Gradle 9's deprecated `StartParameter` access. Replaced the
+  tool-window error badge with a clean theme-safe code/checkmark icon.
+
+### Security
+
+- Ignoring files weakens local push validation. Rules remain local and exact-path-only; required
+  remote CI and branch protection remain the authoritative gate.
+
 ## [2.0.5]
 
 ### Fixed

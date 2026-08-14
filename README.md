@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.0.5-blue)
+![Version](https://img.shields.io/badge/version-2.1.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -27,6 +27,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Isolated HEAD snapshot in the external hook** — when the IDE socket is unreachable, the hook builds a temporary detached worktree so old `target/`, `build/`, or local-only files cannot contaminate the pushed snapshot
 - **Terminal push guard** — installs a managed `pre-push` Git hook, honors `core.hooksPath`, reuses the running IDE compiler when available, then falls back to Gradle or adaptive Maven compilation against an isolated HEAD snapshot
 - **Compilation Checker tool window** — right-side panel that shows errors from the last check, with file-type icons and editor navigation
+- **Exact-file ignore controls** — keep compiling selected files while excluding only their attributed diagnostics from local push verdicts
 - **Git hook repair action** — rechecks and repairs the terminal hook from the tool window if another tool overwrites or edits it
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
 - **Auto-copy commit SHA to clipboard** — when validation allows a push, or after an IDE commit, the HEAD commit SHA is copied in full or short form; push-time copying is silent
@@ -162,11 +163,15 @@ Open **View → Tool Windows → Compilation Checker** (or click the side panel 
 - View errors from the last pre-push check or manual run, rendered as `FileName:line:col — message` with the full path available on hover
 - Toggle **Enable strict A/B dependency guard** for the project. It is off by default; when enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
 - Configure **clipboard SHA settings** — "Copy commit SHA to clipboard automatically" checkbox with sub-options for SHA format (`Full / Short`) and copy trigger (`After Push / After Commit`). When "After Commit" is selected, the SHA is copied right after an IDE commit before the push step.
+- Manage **Ignored Compilation Files**. Use **Add Files…** or right-click a navigable error and choose **Ignore File**. Checked entries remain compiled, but errors attributed to that exact project-relative file do not block local pushes. Uncheck to block again; **Remove** deletes the entry. Rules stay in local workspace state and apply across branch switches.
 - See file-type icons for quick visual identification
 - **Run Check** button (hammer icon) — triggers a full project compile on demand
 - **Recheck / Repair Git Hooks** button (refresh icon) — verifies the terminal hook path and repairs missing, edited, or duplicated plugin-managed hook content
 - **Report Issue** button (warning icon) — opens the plugin's GitHub Issues page with a pre-populated title so you can file a bug in two clicks
 - Double-click or press **Enter** on any entry — jumps to the file and line in the editor
+
+> **Warning:** Ignored files weaken local push validation. Pathless, build-script, plugin,
+> timeout, aborted, and infrastructure failures still block. Keep required CI and branch protection enabled.
 
 ---
 
@@ -193,4 +198,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.0.5**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.1.0**.

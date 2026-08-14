@@ -28,6 +28,11 @@ public final class CompilationErrorService {
 
     private volatile List<String> errors = Collections.emptyList();
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
+    private final Project project;
+
+    public CompilationErrorService(@NotNull Project project) {
+        this.project = project;
+    }
 
     public static CompilationErrorService getInstance(@NotNull Project project) {
         return project.getService(CompilationErrorService.class);
@@ -72,8 +77,15 @@ public final class CompilationErrorService {
     }
 
     public @NotNull List<String> getErrors() {
-        return errors;
+        return DiagnosticPathMatcher.filterIgnored(project, errors);
     }
+
+    @NotNull List<String> getRawErrors() { return errors; }
+
+    void ignoredFilesChanged() {
+        ApplicationManager.getApplication().invokeLater(this::fireListeners);
+    }
+
 
     public void clearErrors() {
         setErrors(Collections.emptyList());

@@ -68,16 +68,11 @@ final class CompilationSupport {
             return List.of("Compilation failed with an unknown compiler error.");
         }
 
-        List<String> formatted = new ArrayList<>(
-            Math.min(messages.length, CompilationErrorService.MAX_RETAINED_ERRORS) + 1);
-        int omitted = 0;
+        List<String> blocking = new ArrayList<>();
+        List<String> ignored = new ArrayList<>();
+        int omittedBlocking = 0;
         for (CompilerMessage message : messages) {
             if (message == null) continue;
-            if (formatted.size() >= CompilationErrorService.MAX_RETAINED_ERRORS) {
-                omitted++;
-                continue;
-            }
-
             VirtualFile file = message.getVirtualFile();
             StringBuilder entry = new StringBuilder("[")
                 .append(file == null ? "unknown" : toDisplayPath(project, file));
@@ -86,10 +81,22 @@ final class CompilationSupport {
                 entry.append(' ').append(prefix.trim());
             }
             entry.append("] ").append(message.getMessage() == null ? "" : message.getMessage());
-            formatted.add(CompilationErrorService.compactError(entry.toString()));
+            List<String> target = file != null
+                && DiagnosticPathMatcher.isIgnoredDiagnostic(project, entry.toString())
+                ? ignored : blocking;
+            if (target.size() < CompilationErrorService.MAX_RETAINED_ERRORS) {
+                target.add(CompilationErrorService.compactError(entry.toString()));
+            } else if (target == blocking) {
+                omittedBlocking++;
+            }
         }
-        if (omitted > 0) {
-            formatted.add(CompilationErrorService.omittedErrorsMessage(omitted));
+        List<String> formatted = new ArrayList<>(CompilationErrorService.MAX_RETAINED_ERRORS + 1);
+        formatted.addAll(blocking.subList(0,
+            Math.min(blocking.size(), CompilationErrorService.MAX_RETAINED_ERRORS)));
+        int room = CompilationErrorService.MAX_RETAINED_ERRORS - formatted.size();
+        formatted.addAll(ignored.subList(0, Math.min(ignored.size(), room)));
+        if (omittedBlocking > 0) {
+            formatted.add(CompilationErrorService.omittedErrorsMessage(omittedBlocking));
         }
         return formatted.isEmpty()
             ? List.of("Compilation failed with an unknown compiler error.")

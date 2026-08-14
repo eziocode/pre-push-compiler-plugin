@@ -56,7 +56,7 @@ public final class ExternalPushErrorLoader {
     // Kotlin compile:       "e: file:///.../Path.kt:123:45 message"
     // Maven compiler plugin: "[ERROR] /abs/.../Path.java:[123,45] cannot find symbol".
     private static final Pattern JAVAC_PATTERN =
-        Pattern.compile("^(?<path>[^\\s:][^:]*\\.(?:java|kt|groovy|scala)):(?<line>\\d+)(?::(?<col>\\d+))?:\\s*(?:error|warning):?\\s*(?<msg>.+)$");
+        Pattern.compile("^(?<path>[^\\s:][^:]*\\.(?:java|kt|groovy|scala)):(?<line>\\d+)(?::(?<col>\\d+))?:\\s*error:?\\s*(?<msg>.+)$");
     private static final Pattern MAVEN_COMPILER_PATTERN =
         Pattern.compile("^(?:\\[ERROR]\\s*)?(?<path>[^\\s].*?\\.(?:java|kt|groovy|scala)):\\[(?<line>\\d+),(?<col>\\d+)]\\s*(?<msg>.*)$");
     private static final Pattern KOTLIN_PATTERN =
@@ -139,7 +139,8 @@ public final class ExternalPushErrorLoader {
                 errors = buildRawLogFallback(exitCode, parsedLog.rawLines());
             }
             CompilationErrorService.getInstance(project).setErrors(errors);
-            notifyUser(project, errors.size());
+            List<String> blocking = DiagnosticPathMatcher.filterIgnored(project, errors);
+            if (!blocking.isEmpty()) notifyUser(project, blocking.size());
         } catch (IOException e) {
             LOG.warn("Failed to read pre-push hook log at " + logFile, e);
         }
@@ -193,12 +194,12 @@ public final class ExternalPushErrorLoader {
 
     static List<String> parseErrors(@NotNull Project project, @NotNull List<String> lines) {
         String basePath = project.getBasePath();
-        ErrorCollector collector = new ErrorCollector();
+        ErrorCollector collector = new ErrorCollector(project);
         String pending = null;
         for (String raw : lines) {
             String line = raw == null ? "" : raw.trim();
             if (line.isEmpty()) continue;
-            String parsed = parseErrorLine(basePath, line);
+            String parsed = parseErrorLine(project, basePath, line);
             if (parsed != null) {
                 collector.add(pending);
                 pending = parsed;
@@ -219,7 +220,9 @@ public final class ExternalPushErrorLoader {
     }
 
     @Nullable
-    private static String parseErrorLine(@Nullable String basePath, @NotNull String line) {
+    private static String parseErrorLine(
+        @NotNull Project project, @Nullable String basePath, @NotNull String line
+    ) {
         if (IDE_FORMATTED_PATTERN.matcher(line).matches()) {
             return line;
         }
@@ -237,7 +240,8 @@ public final class ExternalPushErrorLoader {
         String col = safeGroup(m, "col");
         String msg = m.group("msg").trim();
 
-        String relativePath = toProjectRelative(basePath, path);
+        String normalized = DiagnosticPathMatcher.normalizeProjectPath(project, path);
+        String relativePath = normalized != null ? normalized : toProjectRelative(basePath, path);
         String position = col != null && !col.isEmpty() ? lineNo + ":" + col : lineNo;
         return "[" + relativePath + " (" + position.replace(":", ", ") + ")] " + msg;
     }
@@ -252,28 +256,36 @@ public final class ExternalPushErrorLoader {
     }
 
     private static final class ErrorCollector {
+        private final Project project;
         private final Set<String> seen = new LinkedHashSet<>();
-        private final List<String> formatted = new ArrayList<>();
-        private int omitted;
+        private final List<String> blocking = new ArrayList<>();
+        private final List<String> ignored = new ArrayList<>();
+        private int omittedBlocking;
+
+        private ErrorCollector(Project project) { this.project = project; }
 
         private void add(@Nullable String entry) {
             if (entry == null) return;
-            if (formatted.size() >= CompilationErrorService.MAX_RETAINED_ERRORS) {
-                omitted++;
-                return;
-            }
             if (seen.add(entry)) {
-                formatted.add(CompilationErrorService.compactError(entry));
+                boolean isIgnored = DiagnosticPathMatcher.isIgnoredDiagnostic(project, entry);
+                List<String> target = isIgnored ? ignored : blocking;
+                if (target.size() < CompilationErrorService.MAX_RETAINED_ERRORS) {
+                    target.add(CompilationErrorService.compactError(entry));
+                } else if (!isIgnored) {
+                    omittedBlocking++;
+                }
             }
         }
 
         private List<String> toList() {
-            if (omitted == 0) {
-                return List.copyOf(formatted);
+            List<String> result = new ArrayList<>(CompilationErrorService.MAX_RETAINED_ERRORS + 1);
+            result.addAll(blocking.subList(0,
+                Math.min(blocking.size(), CompilationErrorService.MAX_RETAINED_ERRORS)));
+            int room = CompilationErrorService.MAX_RETAINED_ERRORS - result.size();
+            result.addAll(ignored.subList(0, Math.min(ignored.size(), room)));
+            if (omittedBlocking > 0) {
+                result.add(CompilationErrorService.omittedErrorsMessage(omittedBlocking));
             }
-            List<String> result = new ArrayList<>(formatted.size() + 1);
-            result.addAll(formatted);
-            result.add(CompilationErrorService.omittedErrorsMessage(omitted));
             return List.copyOf(result);
         }
     }

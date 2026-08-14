@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    kotlin("jvm") version "1.9.25"
-    id("org.jetbrains.intellij.platform") version "2.16.0"
+    kotlin("jvm") version "2.2.21"
+    id("org.jetbrains.intellij.platform") version "2.18.1"
 }
 
 group = providers.gradleProperty("pluginGroup").get()

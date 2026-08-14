@@ -129,6 +129,15 @@ final class PrePushCheckerSettings {
             boolean disableFallback = isBuildToolFallbackDisabled(project);
             StringBuilder content = new StringBuilder();
             content.append("disableBuildToolFallback=").append(disableFallback).append('\n');
+            String projectBase = project.getBasePath();
+            for (String path : IgnoredCompilationFiles.getInstance(project).enabledPaths()) {
+                if (projectBase == null) continue;
+                String repositoryRelative = DiagnosticPathMatcher.relativeToRoot(
+                    Path.of(projectBase).resolve(path).normalize().toString(), repositoryRoot);
+                if (repositoryRelative != null && !repositoryRelative.contains("\n")) {
+                    content.append("ignoredFile=").append(repositoryRelative).append('\n');
+                }
+            }
             String preferredJavaHome = resolveProjectJavaHome(project);
             if (preferredJavaHome != null) {
                 content.append("preferredJavaHome=").append(preferredJavaHome).append('\n');
