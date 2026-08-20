@@ -61,6 +61,40 @@ public class IgnoredCompilationFilesTest extends BasePlatformTestCase {
         assertEquals(3, service.getErrors().size());
     }
 
+    public void testIgnoredFileNamedExceptionIsSuppressed() {
+        IgnoredCompilationFiles state = IgnoredCompilationFiles.getInstance(getProject());
+        state.add("src/main/java/com/foo/PaymentException.java");
+        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+        service.setErrors(List.of(
+            "[src/main/java/com/foo/PaymentException.java 12:5] cannot find symbol"));
+        assertTrue(service.getErrors().isEmpty());
+    }
+
+    public void testIgnoredFileWithExceptionInMessageIsSuppressed() {
+        IgnoredCompilationFiles state = IgnoredCompilationFiles.getInstance(getProject());
+        state.add("Foo.java");
+        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+        service.setErrors(List.of(
+            "[Foo.java 5:9] unreported exception java.io.IOException; "
+                + "must be caught or declared to be thrown"));
+        assertTrue(service.getErrors().isEmpty());
+    }
+
+    public void testInfrastructureFailuresAlwaysBlockEvenIfEverythingIgnored() {
+        IgnoredCompilationFiles state = IgnoredCompilationFiles.getInstance(getProject());
+        state.add("Foo.java");
+        CompilationErrorService service = CompilationErrorService.getInstance(getProject());
+        service.setErrors(List.of(
+            "[unknown] java.lang.OutOfMemoryError: Java heap space",
+            "[Foo.java 1:1] internal compiler error: NullPointerException"));
+        assertEquals(2, service.getErrors().size());
+    }
+
+    public void testCanIgnoreDiagnosticForExceptionNamedFile() {
+        assertTrue(DiagnosticPathMatcher.canIgnoreDiagnostic(getProject(),
+            "[src/main/java/com/foo/PaymentException.java 12:5] cannot find symbol"));
+    }
+
     public void testIgnoredOnlyIdeResultSkipsRecoveryRebuild() throws Exception {
         IgnoredCompilationFiles.getInstance(getProject()).add("src/A.java");
         AtomicInteger rebuilds = new AtomicInteger();

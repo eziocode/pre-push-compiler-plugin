@@ -84,17 +84,37 @@ final class DiagnosticPathMatcher {
             && !isAlwaysBlocking(diagnostic);
     }
 
+    private static final java.util.regex.Pattern THROWN_TYPE_PREFIX = java.util.regex.Pattern.compile(
+        "^(java|javax|kotlin|org\\.jetbrains)\\..*(Exception|Error)\\b");
+
+    /**
+     * Infrastructure-level failures (compiler crashes, OOMs, aborted builds) can never be
+     * suppressed by an ignore rule — only checks whether the message body names a real
+     * compiler-infrastructure failure. Must NOT inspect the file path: source file names like
+     * {@code PaymentException.java} legitimately contain words such as "exception".
+     */
     private static boolean isAlwaysBlocking(String diagnostic) {
-        String lower = diagnostic.toLowerCase(java.util.Locale.ROOT);
+        String path = CompilationEntryRenderer.extractPath(diagnostic);
+        if (path == null || "unknown".equals(path)) return true;
+
+        String message = CompilationEntryRenderer.extractMessage(diagnostic);
+        String body = message != null ? message : diagnostic;
+        String lower = body.toLowerCase(java.util.Locale.ROOT);
         return lower.contains("internal compiler error")
+            || lower.contains("internal error")
+            || lower.contains("exception in thread")
+            || lower.contains("stackoverflowerror")
+            || lower.contains("stack overflow")
+            || lower.contains("outofmemoryerror")
+            || (lower.contains("annotation processor") && lower.contains("failed"))
             || lower.contains("compiler plugin")
-            || lower.contains("exception")
             || lower.contains("timed out")
             || lower.contains("was aborted")
-            || lower.contains("build script");
+            || lower.contains("build script")
+            || THROWN_TYPE_PREFIX.matcher(body.trim()).find();
     }
 
-    private static Set<String> roots(Project project) {
+    static Set<String> roots(Project project) {
         LinkedHashSet<String> roots = new LinkedHashSet<>();
         if (project.getBasePath() != null) roots.add(cleanAbsolute(project.getBasePath()));
         for (git4idea.repo.GitRepository repository

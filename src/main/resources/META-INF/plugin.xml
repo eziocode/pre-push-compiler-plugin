@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.1.0</version>
+    <version>2.1.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -65,6 +65,25 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.1.1 — Fixed ignore rules not suppressing pushes</h3>
+
+        <h4>Fixed</h4>
+        <ul>
+            <li><b>Ignored files could still block a push.</b> The always-blocking guard matched
+                the word "exception" anywhere in a diagnostic, including the file path — so files
+                such as <code>PaymentException.java</code>, or any error whose message mentioned a
+                checked exception, stayed blocking even after being added to the ignore list. The
+                guard now inspects only the message body for real compiler-infrastructure failures
+                (internal compiler errors, OOM, stack overflow, aborted/timed-out builds), and the
+                terminal-hook fallback was updated to match so IDE and build-tool verdicts agree.</li>
+            <li><b>"Add Files…" browsed the whole filesystem.</b> The picker now opens scoped to
+                the project and git roots and only lists compilable source files, so files outside
+                the project or of the wrong type can no longer be selected only to be silently
+                rejected. A rejected file now shows a warning instead of failing silently.</li>
+            <li><b>New "Search…" option.</b> Find a project file by name instead of browsing a
+                tree when adding an ignore rule.</li>
+        </ul>
+
         <h3>2.1.0 — Exact-file compilation ignore controls</h3>
         <ul>
             <li><b>Local exact-file controls.</b> Add files or ignore a selected navigable error,

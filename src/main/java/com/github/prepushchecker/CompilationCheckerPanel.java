@@ -16,14 +16,21 @@ import com.intellij.openapi.actionSystem.Presentation;
 import com.intellij.openapi.actionSystem.Toggleable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
+import com.intellij.ide.util.gotoByName.ChooseByNamePopup;
+import com.intellij.ide.util.gotoByName.GotoFileModel;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.fileChooser.FileChooser;
+import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
 import com.intellij.openapi.util.IconLoader;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.psi.PsiFile;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
@@ -288,19 +295,25 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JButton add = new JButton("Add Files…");
         add.setToolTipText("Choose exact project files whose attributed compiler errors may be ignored");
         add.addActionListener(event -> FileChooser.chooseFiles(
-            FileChooserDescriptorFactory.createMultipleFilesNoJarsDescriptor(), project, null,
+            projectScopedDescriptor(), project, projectRootForDialog(),
             files -> {
-                IgnoredCompilationFiles state = IgnoredCompilationFiles.getInstance(project);
-                for (var file : files) state.add(file.getPath());
-                refreshIgnoredFilesRows();
+                for (var file : files) addIgnoredFile(file.getPath());
             }));
+
+        JButton search = new JButton("Search…");
+        search.setToolTipText("Find a project file by name to ignore");
+        search.addActionListener(event -> openSearchPopup());
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 2));
         actions.add(add);
+        actions.add(search);
         JPanel content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.add(actions);
-        content.add(ignoredFilesRows);
+        content.add(new JBScrollPane(ignoredFilesRows) {{
+            setPreferredSize(new Dimension(-1, 160));
+            setBorder(BorderFactory.createEmptyBorder());
+        }});
 
         JPanel section = new JPanel(new BorderLayout());
         section.setBorder(BorderFactory.createTitledBorder("Ignored Compilation Files"));
@@ -308,6 +321,56 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         section.add(content, BorderLayout.CENTER);
         section.setAlignmentX(Component.LEFT_ALIGNMENT);
         return section;
+    }
+
+    private FileChooserDescriptor projectScopedDescriptor() {
+        List<VirtualFile> roots = new java.util.ArrayList<>();
+        LocalFileSystem lfs = LocalFileSystem.getInstance();
+        for (String root : DiagnosticPathMatcher.roots(project)) {
+            VirtualFile vf = lfs.findFileByPath(root);
+            if (vf != null) roots.add(vf);
+        }
+        FileChooserDescriptor descriptor = FileChooserDescriptorFactory
+            .createMultipleFilesNoJarsDescriptor()
+            .withTreeRootVisible(false)
+            .withTitle("Select Project Files to Ignore")
+            .withDescription("Compiler errors attributed to these files will not block pushes")
+            .withFileFilter(vf -> vf.isDirectory() || PushValidationPaths.isCompilableSource(vf.getPath()));
+        return roots.isEmpty() ? descriptor : descriptor.withRoots(roots);
+    }
+
+    private VirtualFile projectRootForDialog() {
+        String basePath = project.getBasePath();
+        return basePath == null ? null : LocalFileSystem.getInstance().findFileByPath(basePath);
+    }
+
+    private void openSearchPopup() {
+        ChooseByNamePopup.createPopup(
+            project, new GotoFileModel(project), (com.intellij.psi.PsiElement) null).invoke(
+            new ChooseByNamePopup.Callback() {
+                @Override
+                public void onClose() {}
+
+                @Override
+                public void elementChosen(Object element) {
+                    VirtualFile file = element instanceof PsiFile psiFile
+                        ? psiFile.getVirtualFile()
+                        : element instanceof VirtualFile vf ? vf : null;
+                    if (file != null) addIgnoredFile(file.getPath());
+                }
+            },
+            com.intellij.openapi.application.ModalityState.current(), false);
+    }
+
+    private void addIgnoredFile(String path) {
+        if (IgnoredCompilationFiles.getInstance(project).add(path)) {
+            refreshIgnoredFilesRows();
+        } else {
+            Messages.showWarningDialog(project,
+                "\"" + path + "\" cannot be ignored — it must be a .java/.kt/.kts/.groovy/.scala "
+                    + "file inside the project.",
+                "Cannot Ignore File");
+        }
     }
 
     private void refreshIgnoredFilesRows() {
@@ -335,9 +398,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
 
     private void ignoreDiagnosticFile(String diagnostic) {
         String path = CompilationEntryRenderer.extractPath(diagnostic);
-        if (path != null && IgnoredCompilationFiles.getInstance(project).add(path)) {
-            refreshIgnoredFilesRows();
-        }
+        if (path != null) addIgnoredFile(path);
     }
 
     // ── Toolbar actions ───────────────────────────────────────────────────────
