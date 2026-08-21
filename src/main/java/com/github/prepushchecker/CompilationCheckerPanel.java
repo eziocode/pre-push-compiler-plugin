@@ -284,7 +284,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             BorderFactory.createTitledBorder(
                 BorderFactory.createEtchedBorder(), "Settings"),
             BorderFactory.createEmptyBorder(2, 4, 4, 4)));
-        panel.add(options, BorderLayout.WEST);
+        panel.add(options, BorderLayout.CENTER);
         return panel;
     }
 
@@ -310,10 +310,11 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JPanel content = new JPanel();
         content.setLayout(new BoxLayout(content, BoxLayout.Y_AXIS));
         content.add(actions);
-        content.add(new JBScrollPane(ignoredFilesRows) {{
-            setPreferredSize(new Dimension(-1, 160));
-            setBorder(BorderFactory.createEmptyBorder());
-        }});
+        JBScrollPane scrollPane = new JBScrollPane(ignoredFilesRows);
+        scrollPane.setPreferredSize(new Dimension(0, 140));
+        scrollPane.setMinimumSize(new Dimension(0, 60));
+        scrollPane.setBorder(BorderFactory.createEmptyBorder());
+        content.add(scrollPane);
 
         JPanel section = new JPanel(new BorderLayout());
         section.setBorder(BorderFactory.createTitledBorder("Ignored Compilation Files"));
@@ -390,6 +391,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             JPanel row = new JPanel(new BorderLayout(4, 0));
             row.add(enabled, BorderLayout.CENTER);
             row.add(remove, BorderLayout.EAST);
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
             ignoredFilesRows.add(row);
         }
         ignoredFilesRows.revalidate();
