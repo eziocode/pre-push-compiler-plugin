@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.1.2]
+
+### Fixed
+
+- Ignored Compilation Files panel now expands dynamically with the tool window width — the list
+  and Remove buttons were clipped when the panel was narrower than expected.
+- Remove button is now always visible alongside each ignored file entry.
+- Reduced vertical spacing between ignored file rows so the list is compact and readable.
+
+---
+
 ## [2.1.0]
 
 ### Added
