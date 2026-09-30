@@ -149,6 +149,20 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
             script.contains("Force-push bypass active. Skipping compilation check."));
     }
 
+    public void testBypassTokenIsKeptWhileSwitchIsOn() {
+        String script = GitHookInstaller.buildManagedHookScript();
+        int activeBranch = script.indexOf("-lt 3600");
+        int expiredBranch = script.indexOf("  else", activeBranch);
+        assertTrue(activeBranch > 0 && expiredBranch > activeBranch);
+
+        String active = script.substring(activeBranch, expiredBranch);
+        assertFalse("Active bypass must not consume the token, so it covers every push",
+            active.contains("rm -f \"$BYPASS_TOKEN\""));
+        assertTrue("Expired bypass token should be removed",
+            script.substring(expiredBranch, script.indexOf("fi", expiredBranch))
+                .contains("rm -f \"$BYPASS_TOKEN\""));
+    }
+
     public void testDelegatingSnippetCallsManagedHook() {
         String snippet = GitHookInstaller.buildDelegatingSnippet();
 

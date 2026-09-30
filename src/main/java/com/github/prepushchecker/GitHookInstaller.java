@@ -192,6 +192,8 @@ public final class GitHookInstaller {
      */
     public static void runStartup(@NotNull Project project) {
         touchGlobalMarker();
+        // The bypass switch always starts off; drop any token left by a previous session.
+        BypassController.getInstance(project).resetOnStartup();
 
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
@@ -951,7 +953,9 @@ public final class GitHookInstaller {
             "  fi",
             "fi",
             "",
-            "# ── Force-push bypass: skip check if the user requested it from the IDE ────────",
+            "# ── Bypass switch: skip check while the IDE's bypass switch is on ─────────────",
+            "# The IDE removes the token when the switch is turned off or auto-expires; the",
+            "# age check below also expires a token left behind by a closed or crashed IDE.",
             "BYPASS_TOKEN=\"$REPO_ROOT/.idea/pre-push-checker/bypass-token\"",
             "if [ -f \"$BYPASS_TOKEN\" ]; then",
             "  _token_ms=\"$(head -n1 \"$BYPASS_TOKEN\" 2>/dev/null | tr -d '[:space:]')\"",
@@ -960,10 +964,10 @@ public final class GitHookInstaller {
             "  _token_s=$(( ${_token_ms:-0} / 1000 ))",
             "  _age=$(( _now_s - _token_s ))",
             "  if [ \"$_age\" -ge 0 ] && [ \"$_age\" -lt 3600 ] 2>/dev/null; then",
-            "    rm -f \"$BYPASS_TOKEN\" 2>/dev/null",
+            "    _left_m=$(( (3600 - _age + 59) / 60 ))",
             "    mkdir -p \"$REPO_ROOT/.idea/pre-push-checker\" 2>/dev/null || true",
             "    printf '[pre-push-checker] exit=0\\n' > \"$REPO_ROOT/.idea/pre-push-checker/last-run.log\" 2>/dev/null || true",
-            "    printf '[pre-push] Force-push bypass active. Skipping compilation check.\\n' >&2",
+            "    printf '[pre-push] Force-push bypass active. Skipping compilation check. Auto-off in %sm.\\n' \"$_left_m\" >&2",
             "    exit 0",
             "  else",
             "    rm -f \"$BYPASS_TOKEN\" 2>/dev/null",

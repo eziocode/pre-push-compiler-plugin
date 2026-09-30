@@ -29,4 +29,10 @@ public class CompilationEntryRendererTest extends BasePlatformTestCase {
         assertEquals(41, lineColumn[0]);
         assertEquals(0, lineColumn[1]);
     }
+
+    public void testInfrastructureMessagesAreNotCompileErrors() {
+        assertTrue(CompilationEntryRenderer.isInfrastructureMessage("IDE compiler validation timed out."));
+        assertFalse(CompilationEntryRenderer.isInfrastructureMessage("[src/Foo.java 10:5] cannot find symbol"));
+        assertFalse(CompilationEntryRenderer.isInfrastructureMessage("src/Foo.java"));
+    }
 }

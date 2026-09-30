@@ -27,6 +27,7 @@ public final class CompilationErrorService {
     private static final int MAX_RETAINED_ERROR_CHARS = 4_000;
 
     private volatile List<String> errors = Collections.emptyList();
+    private volatile long lastChangedMillis;
     private final CopyOnWriteArrayList<Runnable> listeners = new CopyOnWriteArrayList<>();
     private final Project project;
 
@@ -44,6 +45,7 @@ public final class CompilationErrorService {
             return;
         }
         this.errors = snapshot;
+        this.lastChangedMillis = System.currentTimeMillis();
         ApplicationManager.getApplication().invokeLater(this::fireListeners);
     }
 
@@ -81,6 +83,9 @@ public final class CompilationErrorService {
     }
 
     @NotNull List<String> getRawErrors() { return errors; }
+
+    /** When the error list last changed, or {@code 0} if it never changed this session. */
+    long getLastChangedMillis() { return lastChangedMillis; }
 
     void ignoredFilesChanged() {
         ApplicationManager.getApplication().invokeLater(this::fireListeners);

@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.1.1</version>
+    <version>2.2.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -65,6 +65,27 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.2.0 — Bypass switch and tool window redesign</h3>
+
+        <h4>Changed</h4>
+        <ul>
+            <li><b>Bypass is now an on/off switch.</b> The one-shot "Force Next Push" toolbar
+                button is replaced by a <i>Bypass push check</i> switch at the top of the tool
+                window. While on, every push skips the compilation check. It turns itself off
+                after 1 hour (with a notification) and is always off when the IDE starts. The
+                tool window icon shows a warning badge while the bypass is on.</li>
+            <li><b>Redesigned tool window.</b> Settings and results sit in a resizable split, and
+                settings can be hidden with the gear button. Settings are grouped into
+                Validation, Commit SHA and Ignored Files, with shorter labels and <i>?</i> help
+                icons instead of truncated text.</li>
+            <li><b>Ignored files list.</b> Uses a standard list with add, remove and search
+                buttons. Rows show the file name with its folder dimmed; hover for the full path.</li>
+            <li><b>Clearer results.</b> Errors show the file name in bold. Failures of the check
+                itself (for example a timeout) get a warning icon and are not counted as compile
+                errors. The footer shows a status icon and when the list last changed.</li>
+            <li>New <i>Clear Results</i> toolbar action.</li>
+        </ul>
+
         <h3>2.1.1 — Fixed ignore rules not suppressing pushes</h3>
 
         <h4>Fixed</h4>

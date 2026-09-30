@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.2.0]
+
+### Changed
+
+- **Bypass is now an on/off switch** instead of a one-shot "Force Next Push" toolbar button. A
+  **Bypass push check** switch at the top of the tool window skips the compilation check for
+  every push while on. It turns itself off after 1 hour (with a notification) and is always off
+  when the IDE starts — the switch state lives only in memory, and any leftover token from a
+  previous session is cleared on project open. The tool window icon shows a warning badge while
+  the bypass is on.
+- **Redesigned tool window.** Settings and results now sit in a resizable, remembered split, and
+  the settings section can be hidden with a new gear toolbar button. Settings are grouped into
+  Validation, Commit SHA, and Ignored Files sections, with shorter labels and `?` help icons in
+  place of truncated tooltips.
+- **Ignored Compilation Files** now uses a standard add/remove/search list instead of hand-rolled
+  rows. Each row shows the file name with its parent folder dimmed; hover for the full path.
+- Compilation results show the file name in bold, and failures of the check itself (for example
+  a timeout) get a warning icon and are no longer counted as compile errors.
+- The results footer now shows a status icon and the time the list last changed.
+
+### Added
+
+- New **Clear Results** toolbar action.
+
+---
+
 ## [2.1.2]
 
 ### Fixed

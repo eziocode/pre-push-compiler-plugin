@@ -10,6 +10,7 @@ import org.jetbrains.annotations.NotNull;
 public final class PrePushLocalServerStartupActivity implements StartupActivity.DumbAware {
     @Override
     public void runActivity(@NotNull Project project) {
+        BypassController.getInstance(project).resetOnStartup();
         PrePushLocalServer.runStartup(project);
     }
 }

@@ -7,11 +7,12 @@ import com.intellij.openapi.project.Project;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.ColoredListCellRenderer;
+import com.intellij.ui.SimpleTextAttributes;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.*;
-import java.awt.*;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -24,24 +25,44 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>{@code src/Foo.java} — IDE problem file</li>
  * </ul>
  */
-final class CompilationEntryRenderer extends DefaultListCellRenderer {
+final class CompilationEntryRenderer extends ColoredListCellRenderer<String> {
 
     // Cache icons by lower-cased extension to avoid hitting FileTypeManager on every render.
     private static final Map<String, Icon> ICON_CACHE = new ConcurrentHashMap<>();
     private static final int MAX_DISPLAY_TEXT_CHARS = 100;
 
     @Override
-    public Component getListCellRendererComponent(
-        JList<?> list, Object value, int index, boolean isSelected, boolean cellHasFocus
+    protected void customizeCellRenderer(
+        @NotNull JList<? extends String> list, String value, int index, boolean selected, boolean hasFocus
     ) {
-        JLabel label = (JLabel) super.getListCellRendererComponent(
-            list, value, index, isSelected, cellHasFocus
-        );
-        String entry = value instanceof String ? (String) value : "";
-        label.setIcon(iconForEntry(entry));
-        label.setText(displayText(entry));
-        label.setToolTipText(tooltipText(entry));
-        return label;
+        String entry = value == null ? "" : value;
+        setIcon(iconForEntry(entry));
+        setToolTipText(tooltipText(entry));
+
+        String path = extractPath(entry);
+        String fileName = path != null && entry.startsWith("[") ? lastSegment(path) : null;
+        if (fileName == null || fileName.isEmpty()) {
+            append(trimDisplayText(entry), SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            return;
+        }
+        append(fileName, SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+        String position = extractPosition(entry);
+        if (position != null && !position.isEmpty()) {
+            append(":" + position, SimpleTextAttributes.GRAYED_ATTRIBUTES);
+        }
+        String message = extractMessage(entry);
+        if (message != null && !message.isEmpty()) {
+            append("  " + trimDisplayText(message), SimpleTextAttributes.REGULAR_ATTRIBUTES);
+        }
+    }
+
+    /**
+     * Entries that are not tied to a source file, such as "IDE compiler validation timed
+     * out.", describe a failure of the check itself rather than a compile error.
+     */
+    static boolean isInfrastructureMessage(String entry) {
+        if (entry == null || entry.isBlank() || entry.startsWith("[")) return false;
+        return !PushValidationPaths.isCompilableSource(entry.trim());
     }
 
     @Nullable
@@ -127,6 +148,12 @@ final class CompilationEntryRenderer extends DefaultListCellRenderer {
     }
 
     static Icon iconForEntry(String entry) {
+        if (entry != null && entry.startsWith("... ")) {
+            return AllIcons.General.Information;
+        }
+        if (isInfrastructureMessage(entry)) {
+            return AllIcons.General.Warning;
+        }
         String path = extractPath(entry);
         if (path == null || path.isBlank()) {
             return AllIcons.General.Error;

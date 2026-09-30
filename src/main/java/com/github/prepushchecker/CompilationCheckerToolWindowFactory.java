@@ -12,7 +12,7 @@ public final class CompilationCheckerToolWindowFactory implements ToolWindowFact
 
     @Override
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
-        CompilationCheckerPanel panel = new CompilationCheckerPanel(project);
+        CompilationCheckerPanel panel = new CompilationCheckerPanel(project, toolWindow);
         Content content = ContentFactory.getInstance().createContent(panel, "", false);
         toolWindow.getContentManager().addContent(content);
         Disposer.register(toolWindow.getDisposable(), panel);

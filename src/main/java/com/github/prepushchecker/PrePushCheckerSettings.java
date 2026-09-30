@@ -149,47 +149,48 @@ final class PrePushCheckerSettings {
     }
 
     /**
-     * Creates a one-shot bypass token so the next push attempt skips the compilation
-     * check. The hook consumes (deletes) the token, making it single-use. Expires
-     * after {@link #BYPASS_TOKEN_MAX_AGE_MS} to avoid stale flags.
+     * Writes the bypass token (activation time in epoch millis) for the project base path
+     * and every git root, so the hook skips the compilation check while the token is fresh.
+     * The hook treats tokens older than {@link #BYPASS_TOKEN_MAX_AGE_MS} as expired, which
+     * covers the IDE being closed or crashing while the bypass switch is on.
      */
-    static void setForcePushBypass(@NotNull Project project) {
-        String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank()) return;
-        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
-        try {
-            Files.createDirectories(tokenFile.getParent());
-            Files.writeString(tokenFile, String.valueOf(System.currentTimeMillis()) + '\n',
-                StandardCharsets.UTF_8);
-        } catch (IOException ignored) {}
-    }
-
-    /**
-     * Returns {@code true} if a valid (non-expired) bypass token exists.
-     */
-    static boolean isForcePushBypassActive(@NotNull Project project) {
-        String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank()) return false;
-        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
-        if (!Files.exists(tokenFile)) return false;
-        try {
-            String content = Files.readString(tokenFile, StandardCharsets.UTF_8).trim();
-            long timestamp = Long.parseLong(content);
-            return (System.currentTimeMillis() - timestamp) < BYPASS_TOKEN_MAX_AGE_MS;
-        } catch (Exception e) {
-            return false;
+    static void setForcePushBypass(@NotNull Project project, long activatedAtMillis) {
+        for (String root : bypassRoots(project)) {
+            Path tokenFile = Path.of(root, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
+            try {
+                Files.createDirectories(tokenFile.getParent());
+                Files.writeString(tokenFile, String.valueOf(activatedAtMillis) + '\n',
+                    StandardCharsets.UTF_8);
+            } catch (IOException ignored) {}
         }
     }
 
-    /**
-     * Removes the bypass token (called when the user toggles the force push off,
-     * or after the token has been consumed by a push).
-     */
+    /** Removes the bypass token from the project base path and every git root. */
     static void clearForcePushBypass(@NotNull Project project) {
+        for (String root : bypassRoots(project)) {
+            Path tokenFile = Path.of(root, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
+            try { Files.deleteIfExists(tokenFile); } catch (IOException ignored) {}
+        }
+    }
+
+    static long bypassMaxAgeMillis() {
+        return BYPASS_TOKEN_MAX_AGE_MS;
+    }
+
+    private static java.util.Set<String> bypassRoots(@NotNull Project project) {
+        java.util.LinkedHashSet<String> roots = new java.util.LinkedHashSet<>();
         String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank()) return;
-        Path tokenFile = Path.of(basePath, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
-        try { Files.deleteIfExists(tokenFile); } catch (IOException ignored) {}
+        if (basePath != null && !basePath.isBlank()) roots.add(basePath);
+        if (project.isDisposed()) return roots;
+        try {
+            for (git4idea.repo.GitRepository repository
+                    : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+                roots.add(repository.getRoot().getPath());
+            }
+        } catch (RuntimeException ignored) {
+            // Project is closing; the base path is still cleaned up.
+        }
+        return roots;
     }
 
     private static String resolveProjectJavaHome(@NotNull Project project) {
