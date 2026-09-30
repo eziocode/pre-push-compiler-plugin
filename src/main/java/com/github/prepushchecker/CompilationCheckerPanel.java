@@ -32,9 +32,9 @@ import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.psi.PsiFile;
-import com.intellij.ui.BadgeIconSupplier;
 import com.intellij.ui.CheckBoxList;
 import com.intellij.ui.ContextHelpLabel;
+import com.intellij.ui.LayeredIcon;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.OnePixelSplitter;
 import com.intellij.ui.TitledSeparator;
@@ -204,7 +204,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
         if (toolWindow != null && baseToolWindowIcon != null) {
             toolWindow.setIcon(active
-                ? new BadgeIconSupplier(baseToolWindowIcon).getWarningIcon()
+                ? LayeredIcon.create(baseToolWindowIcon, AllIcons.General.Warning)
                 : baseToolWindowIcon);
         }
         bypassBar.revalidate();
