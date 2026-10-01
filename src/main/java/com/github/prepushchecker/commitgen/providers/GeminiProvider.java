@@ -31,7 +31,8 @@ public final class GeminiProvider implements CommitMessageProvider {
                 "Gemini API key not configured. Go to Settings → Tools → AI Commit Message Generator.");
         }
         String model = settings.settings().geminiModel;
-        String url = API_BASE + model + ":generateContent?key=" + apiKey;
+        // Key goes in a header, not the query string, so it cannot leak through URLs in logs or exceptions.
+        String url = API_BASE + java.net.URLEncoder.encode(model, StandardCharsets.UTF_8) + ":generateContent";
 
         // Gemini supports a systemInstruction field (v1beta)
         String body = "{"
@@ -47,6 +48,7 @@ public final class GeminiProvider implements CommitMessageProvider {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", "application/json")
+            .header("x-goog-api-key", apiKey)
             .timeout(Duration.ofSeconds(60))
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();

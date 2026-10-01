@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.2.0</version>
+    <version>2.3.0</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -65,6 +65,30 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.3.0 — Security hardening and performance</h3>
+
+        <h4>Security</h4>
+        <ul>
+            <li><b>Authenticated IDE compiler server.</b> The loopback server now requires a
+                random per-session token. The token is written to the owner-only
+                <code>server.port</code> file (line 2) and sent by the managed hook, so other
+                local processes can no longer trigger compiles. Hooks are refreshed automatically
+                on project open; older hooks fall back to the build tool.</li>
+            <li><b>Bounded requests.</b> Request lines and header counts are capped, and client
+                connections use a bounded thread pool, so a misbehaving local client cannot
+                exhaust memory or threads.</li>
+            <li><b>Path scoping.</b> Paths outside the project and its git roots are ignored.</li>
+            <li><b>Captured process output is capped</b> at 8 MB per stream.</li>
+            <li><b>Gemini API key</b> is sent in the <code>x-goog-api-key</code> header instead of
+                the URL query string, so it cannot leak through URLs in logs or exceptions.</li>
+        </ul>
+
+        <h4>Performance</h4>
+        <ul>
+            <li>Process output is streamed into a capped buffer rather than read fully into
+                memory, and the server no longer spawns an unbounded thread per connection.</li>
+        </ul>
+
         <h3>2.2.0 — Bypass switch and tool window redesign</h3>
 
         <h4>Changed</h4>

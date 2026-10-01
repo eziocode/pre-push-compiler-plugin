@@ -27,7 +27,11 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -35,9 +39,10 @@ import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -50,7 +55,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Protocol (line-delimited, UTF-8):
  * <pre>
- *   C -> S : CHECK 2\nROOT=&lt;path&gt;\nHEAD=&lt;sha&gt;\nUPDATES=&lt;id&gt;\nPATH=&lt;path&gt;...\n\n
+ *   C -> S : CHECK 2\nTOKEN=&lt;secret&gt;\nROOT=&lt;path&gt;\nHEAD=&lt;sha&gt;\nUPDATES=&lt;id&gt;\nPATH=&lt;path&gt;...\n\n
  *   S -> C : OK\n                              (compile succeeded)
  *           | ERRORS &lt;n&gt;\n&lt;line&gt;...\nEND\n    (n errors follow)
  *           | STALE &lt;reason&gt;\n                  (repository changed during check)
@@ -58,7 +63,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * </pre>
  *
  * <p>The server binds to {@code 127.0.0.1} on an ephemeral port and writes the port to
- * {@link #PORT_FILE_RELATIVE}. When the IDE is closed the port file is removed and the hook
+ * {@link #PORT_FILE_RELATIVE} (line 1) together with a per-session random token (line 2) that
+ * every request must present; the file is owner-readable only where the filesystem supports
+ * POSIX permissions. When the IDE is closed the port file is removed and the hook
  * silently falls back to the build-tool path.
  */
 public final class PrePushLocalServer implements Disposable {
@@ -68,8 +75,13 @@ public final class PrePushLocalServer implements Disposable {
     private static final int BACKLOG = 4;
     private static final int MAX_REQUESTED_PATHS = 2_048;
     private static final int CLIENT_SO_TIMEOUT_MS = 305 * 1000;
+    private static final int MAX_CLIENT_THREADS = 8;
+    private static final int MAX_LINE_CHARS = 8_192;
+    private static final int MAX_HEADER_LINES = MAX_REQUESTED_PATHS + 16;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Project project;
+    private final String authToken = newAuthToken();
     private final ExecutorService clientExecutor;
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile ServerSocket server;
@@ -78,7 +90,38 @@ public final class PrePushLocalServer implements Disposable {
 
     public PrePushLocalServer(@NotNull Project project) {
         this.project = project;
-        this.clientExecutor = Executors.newCachedThreadPool(clientThreadFactory(project.getName()));
+        // Bounded: surplus connections are rejected instead of spawning unlimited threads.
+        this.clientExecutor = new ThreadPoolExecutor(
+            0, MAX_CLIENT_THREADS, 30L, TimeUnit.SECONDS,
+            new SynchronousQueue<>(), clientThreadFactory(project.getName()));
+    }
+
+    private static String newAuthToken() {
+        byte[] bytes = new byte[32];
+        RANDOM.nextBytes(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
+    }
+
+    private boolean tokenMatches(String presented) {
+        return MessageDigest.isEqual(
+            authToken.getBytes(StandardCharsets.UTF_8),
+            presented.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Reads one line, failing instead of buffering without bound when a peer never sends a newline. */
+    private static String readBoundedLine(BufferedReader in) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        int ch;
+        while ((ch = in.read()) != -1) {
+            if (ch == '\n') {
+                int n = sb.length();
+                if (n > 0 && sb.charAt(n - 1) == '\r') sb.setLength(n - 1);
+                return sb.toString();
+            }
+            if (sb.length() >= MAX_LINE_CHARS) throw new IOException("request line too long");
+            sb.append((char) ch);
+        }
+        return sb.length() == 0 ? null : sb.toString();
     }
 
     /**
@@ -87,9 +130,17 @@ public final class PrePushLocalServer implements Disposable {
      * Falls back to a regular replace move when the filesystem does not support
      * atomic moves (e.g. some network mounts).
      */
-    private static void writePortFileAtomically(Path portFile, int port) throws IOException {
+    private void writePortFileAtomically(Path portFile, int port) throws IOException {
         Path tmp = portFile.resolveSibling(portFile.getFileName().toString() + ".tmp");
-        Files.writeString(tmp, port + "\n", StandardCharsets.UTF_8);
+        Files.deleteIfExists(tmp);
+        try {
+            // Create owner-only up front so the token is never briefly world-readable.
+            Files.createFile(tmp, PosixFilePermissions.asFileAttribute(
+                PosixFilePermissions.fromString("rw-------")));
+        } catch (UnsupportedOperationException nonPosix) {
+            Files.createFile(tmp);
+        }
+        Files.writeString(tmp, port + "\n" + authToken + "\n", StandardCharsets.UTF_8);
         try {
             Files.move(tmp, portFile,
                 StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -160,7 +211,7 @@ public final class PrePushLocalServer implements Disposable {
                 try {
                     clientExecutor.execute(() -> handleClient(socket));
                 } catch (RejectedExecutionException rejected) {
-                    LOG.warn("Pre-push client rejected because the server is stopping.", rejected);
+                    LOG.warn("Pre-push client rejected because the server is busy or stopping.", rejected);
                     writeServerUnavailable(socket);
                 }
             } catch (IOException e) {
@@ -186,7 +237,7 @@ public final class PrePushLocalServer implements Disposable {
     private void writeServerUnavailable(Socket socket) {
         try (Socket c = socket;
              BufferedWriter out = new BufferedWriter(new OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8))) {
-            out.write("FAIL infrastructure server-stopping\n");
+            out.write("FAIL infrastructure server-busy-or-stopping\n");
             out.flush();
         } catch (IOException e) {
             LOG.debug("Could not notify pre-push client that the server is stopping", e);
@@ -198,7 +249,7 @@ public final class PrePushLocalServer implements Disposable {
              BufferedReader in = new BufferedReader(new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
              BufferedWriter out = new BufferedWriter(new OutputStreamWriter(c.getOutputStream(), StandardCharsets.UTF_8))) {
 
-            String line = in.readLine();
+            String line = readBoundedLine(in);
             String command = line == null ? "" : line.trim();
             boolean versionTwo = command.equals("CHECK 2");
             if (!versionTwo && !command.equals("CHECK")) {
@@ -209,11 +260,22 @@ public final class PrePushLocalServer implements Disposable {
             String repositoryRoot = "";
             String expectedHead = "";
             String updatesFingerprint = "";
+            String presentedToken = "";
             List<String> requestedPaths = new ArrayList<>();
             boolean pathLimitExceeded = false;
-            while ((line = in.readLine()) != null) {
+            int headerLines = 0;
+            while ((line = readBoundedLine(in)) != null) {
                 String trimmed = line.strip();
                 if (trimmed.isEmpty()) break;
+                if (++headerLines > MAX_HEADER_LINES) {
+                    out.write("ERR request-too-large\n");
+                    out.flush();
+                    return;
+                }
+                if (versionTwo && trimmed.startsWith("TOKEN=")) {
+                    presentedToken = trimmed.substring("TOKEN=".length());
+                    continue;
+                }
                 if (versionTwo && trimmed.startsWith("ROOT=")) {
                     repositoryRoot = trimmed.substring("ROOT=".length());
                     continue;
@@ -238,6 +300,12 @@ public final class PrePushLocalServer implements Disposable {
                     continue;
                 }
                 requestedPaths.add(trimmed);
+            }
+
+            if (!versionTwo || !tokenMatches(presentedToken)) {
+                out.write("ERR unauthorized\n");
+                out.flush();
+                return;
             }
 
             if (project.isDisposed()) {
@@ -283,7 +351,8 @@ public final class PrePushLocalServer implements Disposable {
             () -> FileDocumentManager.getInstance().saveAllDocuments(),
             ModalityState.defaultModalityState());
 
-        List<String> normalizedPaths = normalizeRequestedPaths(request.requestedPaths());
+        List<String> normalizedPaths = restrictToProjectRoots(
+            normalizeRequestedPaths(request.requestedPaths()));
         boolean projectScope = normalizedPaths.isEmpty()
             || normalizedPaths.stream().anyMatch(PushValidationPaths::isBuildFile);
         List<String> compilePaths = projectScope ? Collections.emptyList() : normalizedPaths;
@@ -314,6 +383,30 @@ public final class PrePushLocalServer implements Disposable {
             null,
             COMPILE_TIMEOUT_SECONDS,
             TimeUnit.SECONDS);
+    }
+
+    /** Drops requested paths that are not inside the project or one of its git roots (defense in depth). */
+    private List<String> restrictToProjectRoots(List<String> paths) {
+        List<String> roots = new ArrayList<>();
+        roots.add(normalizedProjectRoot());
+        for (git4idea.repo.GitRepository repository
+                : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+            roots.add(normalizeRoot(repository.getRoot().getPath()));
+        }
+        List<String> kept = new ArrayList<>(paths.size());
+        for (String path : paths) {
+            for (String root : roots) {
+                if (!root.isEmpty() && (path.equals(root) || path.startsWith(root + "/"))) {
+                    kept.add(path);
+                    break;
+                }
+            }
+        }
+        if (kept.size() != paths.size()) {
+            LOG.warn("Ignored " + (paths.size() - kept.size())
+                + " pre-push path(s) outside the project roots.");
+        }
+        return kept;
     }
 
     private String buildRequestKey(

@@ -2,6 +2,7 @@ package com.github.prepushchecker;
 
 import org.jetbrains.annotations.NotNull;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -18,6 +19,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public final class ProcessExecution {
     private static final Duration OUTPUT_DRAIN_TIMEOUT = Duration.ofSeconds(2);
+    private static final int MAX_CAPTURED_BYTES = 8 * 1024 * 1024;
     private static final AtomicInteger IO_THREAD_COUNTER = new AtomicInteger(1);
     private static final ExecutorService IO_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
         Thread thread = new Thread(
@@ -94,7 +96,15 @@ public final class ProcessExecution {
     private static CompletableFuture<String> readAsync(InputStream inputStream) {
         return CompletableFuture.supplyAsync(() -> {
             try (InputStream in = inputStream) {
-                return new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                byte[] chunk = new byte[8192];
+                int read;
+                // Keep draining past the cap so the child never blocks on a full pipe.
+                while ((read = in.read(chunk)) != -1) {
+                    int room = MAX_CAPTURED_BYTES - buffer.size();
+                    if (room > 0) buffer.write(chunk, 0, Math.min(read, room));
+                }
+                return buffer.toString(StandardCharsets.UTF_8);
             } catch (IOException e) {
                 throw new CompletionException(e);
             }

@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.3.0]
+
+### Security
+
+- **Authenticated IDE compiler server.** The loopback server now requires a random per-session
+  token, stored on line 2 of the owner-only `.idea/pre-push-checker/server.port` file and sent by
+  the managed hook (`TOKEN=` header). Other local processes can no longer trigger compiles.
+  Hooks are refreshed on project open; older hooks get `ERR unauthorized` and fall back to the
+  build tool.
+- Request lines (8 KB) and header counts are capped, and client connections use a bounded
+  thread pool (8) instead of an unbounded cached pool.
+- Requested paths outside the project and its git roots are ignored.
+- Captured subprocess output is capped at 8 MB per stream.
+- Gemini API key is sent via the `x-goog-api-key` header instead of the URL query string.
+
+### Performance
+
+- Subprocess output is streamed into a capped buffer instead of `readAllBytes`, and the server no
+  longer creates an unbounded number of threads under load.
+
+---
+
 ## [2.2.0]
 
 ### Changed
