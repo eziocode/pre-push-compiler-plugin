@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.3.1] - 2026-10-04
+
+### Fixed
+
+- Subprocess timeouts now cover writing stdin as well as waiting for completion,
+  preventing large input from hanging when a child does not read it.
+- Cancellation, timeout, and I/O failures terminate the subprocess and its descendants
+  and release process streams, preventing abandoned commands and I/O workers.
+- Preserve original subprocess I/O exceptions instead of wrapping them in an opaque
+  asynchronous completion error.
+- JSON response parsing preserves numeric types and rejects malformed numbers and
+  unescaped control characters instead of treating them as generated text.
+- Updated the README version badge and latest-release reference.
+
+### Performance
+
+- Commands without stdin close the pipe directly, avoiding an extra input worker.
+- JSON control-character escaping uses direct hexadecimal appends instead of allocating
+  a formatter for every character.
+
+### Tests
+
+- Added JSON numeric-type, malformed-input, and control-character round-trip coverage.
+- Added regression coverage for blocked stdin, stdin delivery and EOF, and cancellation
+  cleanup of parent and child processes.
+
+---
+
 ## [2.3.0]
 
 ### Security

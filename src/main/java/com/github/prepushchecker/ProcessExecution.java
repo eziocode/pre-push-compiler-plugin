@@ -59,30 +59,66 @@ public final class ProcessExecution {
         @NotNull Duration timeout,
         String stdin
     ) throws IOException, InterruptedException {
+        if (timeout.isNegative()) throw new IllegalArgumentException("Timeout must not be negative.");
+        long timeoutNanos = timeout.toNanos();
         Process process = processBuilder.start();
+        long started = System.nanoTime();
         CompletableFuture<String> stdout = readAsync(process.getInputStream());
         CompletableFuture<String> stderr = processBuilder.redirectErrorStream()
             ? CompletableFuture.completedFuture("")
             : readAsync(process.getErrorStream());
+        CompletableFuture<Void> input = stdin == null ? CompletableFuture.completedFuture(null)
+            : CompletableFuture.runAsync(() -> {
+                try {
+                    writeAndCloseStdin(process, stdin);
+                } catch (IOException e) {
+                    throw new CompletionException(e);
+                }
+            }, IO_EXECUTOR);
         try {
-            writeAndCloseStdin(process, stdin);
-        } catch (IOException e) {
-            process.destroyForcibly();
-            throw e;
+            if (stdin == null) process.getOutputStream().close();
+            boolean finished;
+            try {
+                input.get(remainingNanos(started, timeoutNanos), TimeUnit.NANOSECONDS);
+                finished = process.waitFor(remainingNanos(started, timeoutNanos), TimeUnit.NANOSECONDS);
+            } catch (TimeoutException e) {
+                finished = false;
+            } catch (ExecutionException e) {
+                throw outputFailure(e);
+            }
+            if (!finished) {
+                terminate(process);
+                process.waitFor(2, TimeUnit.SECONDS);
+            }
+            return new Result(
+                finished ? process.exitValue() : -1,
+                awaitDrain(stdout).trim(),
+                awaitDrain(stderr).trim(),
+                !finished
+            );
+        } finally {
+            // Also clean up on cancellation, stdin failure, or output-drain failure.
+            terminate(process);
+            closeQuietly(process.getOutputStream());
+            closeQuietly(process.getInputStream());
+            closeQuietly(process.getErrorStream());
+            input.cancel(true);
+            stdout.cancel(true);
+            stderr.cancel(true);
         }
+    }
 
-        boolean finished = process.waitFor(timeout.toMillis(), TimeUnit.MILLISECONDS);
-        if (!finished) {
-            process.destroyForcibly();
-            process.waitFor(2, TimeUnit.SECONDS);
-        }
+    private static long remainingNanos(long started, long timeoutNanos) {
+        return Math.max(0L, timeoutNanos - (System.nanoTime() - started));
+    }
 
-        return new Result(
-            finished ? process.exitValue() : -1,
-            awaitDrain(stdout).trim(),
-            awaitDrain(stderr).trim(),
-            !finished
-        );
+    private static void terminate(Process process) {
+        process.descendants().forEach(ProcessHandle::destroyForcibly);
+        if (process.isAlive()) process.destroyForcibly();
+    }
+
+    private static void closeQuietly(java.io.Closeable stream) {
+        try { stream.close(); } catch (IOException ignored) { }
     }
 
     private static void writeAndCloseStdin(Process process, String stdin) throws IOException {
@@ -118,11 +154,16 @@ public final class ProcessExecution {
         } catch (TimeoutException e) {
             throw new IOException("Timed out while reading process output.", e);
         } catch (ExecutionException e) {
-            Throwable cause = e.getCause();
-            if (cause instanceof IOException ioException) {
-                throw ioException;
-            }
-            throw new IOException("Failed to read process output.", cause);
+            throw outputFailure(e);
         }
+    }
+
+    private static IOException outputFailure(ExecutionException failure) {
+        Throwable cause = failure.getCause();
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause instanceof IOException ioException
+            ? ioException : new IOException("Process I/O failed.", cause);
     }
 }

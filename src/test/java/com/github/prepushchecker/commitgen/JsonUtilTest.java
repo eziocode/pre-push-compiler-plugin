@@ -3,6 +3,34 @@ package com.github.prepushchecker.commitgen;
 import junit.framework.TestCase;
 
 public class JsonUtilTest extends TestCase {
+    public void testNumericValuesAreNotExtractedAsStrings() {
+        assertNull(JsonUtil.extractStringAtPath("{\"text\":123}", "text"));
+        assertEquals("message", JsonUtil.extractString(
+            "{\"text\":123,\"nested\":{\"text\":\"message\"}}", "text"));
+        assertEquals("message", JsonUtil.extractStringAtPath(
+            "{\"cost\":-1.25e+3,\"text\":\"message\"}", "text"));
+    }
+
+    public void testMalformedNumbersAreRejected() {
+        for (String number : new String[] {"01", "+1", "1.", "1e", "--1", ".5"}) {
+            assertNull(number, JsonUtil.extractStringAtPath(
+                "{\"cost\":" + number + ",\"text\":\"message\"}", "text"));
+        }
+    }
+
+    public void testUnescapedControlCharactersAreRejected() {
+        assertNull(JsonUtil.extractStringAtPath("{\"text\":\"line\nline\"}", "text"));
+    }
+
+    public void testAllControlCharactersEscapeAndRoundTrip() {
+        StringBuilder controls = new StringBuilder();
+        for (char c = 0; c < 0x20; c++) controls.append(c);
+        String value = controls.toString();
+        assertEquals("\\u0000\\u0001", JsonUtil.escape("\u0000\u0001"));
+        assertEquals(value, JsonUtil.extractStringAtPath(
+            "{\"text\":" + JsonUtil.quoted(value) + "}", "text"));
+    }
+
     public void testExtractStringAtPathSelectsProviderMessageContent() {
         String json = """
             {

@@ -3,16 +3,21 @@ package com.github.prepushchecker.commitgen;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * Minimal JSON helpers for building request bodies and extracting string values
  * from provider API responses — no third-party dependency required.
  */
 public final class JsonUtil {
+    private static final String HEX_DIGITS = "0123456789abcdef";
+    private static final Pattern JSON_NUMBER =
+        Pattern.compile("-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?(?:[eE][+-]?[0-9]+)?");
 
     private JsonUtil() {}
 
@@ -29,7 +34,8 @@ public final class JsonUtil {
                 case '\t' -> sb.append("\\t");
                 default   -> {
                     if (c < 0x20) {
-                        sb.append(String.format("\\u%04x", (int) c));
+                        sb.append("\\u00").append(HEX_DIGITS.charAt(c >>> 4))
+                            .append(HEX_DIGITS.charAt(c & 0xf));
                     } else {
                         sb.append(c);
                     }
@@ -186,6 +192,7 @@ public final class JsonUtil {
                         default -> throw new IllegalArgumentException("Unsupported escape: " + escaped);
                     }
                 } else {
+                    if (c < 0x20) throw new IllegalArgumentException("Unescaped control character.");
                     sb.append(c);
                 }
             }
@@ -213,7 +220,7 @@ public final class JsonUtil {
             return value;
         }
 
-        private String parseNumber() {
+        private BigDecimal parseNumber() {
             int start = index;
             while (!isEnd()) {
                 char c = json.charAt(index);
@@ -226,7 +233,11 @@ public final class JsonUtil {
             if (start == index) {
                 throw new IllegalArgumentException("Expected JSON value.");
             }
-            return json.substring(start, index);
+            String number = json.substring(start, index);
+            if (!JSON_NUMBER.matcher(number).matches()) {
+                throw new IllegalArgumentException("Invalid JSON number.");
+            }
+            return new BigDecimal(number);
         }
 
         private boolean consume(char expected) {

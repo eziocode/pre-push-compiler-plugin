@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.3.0</version>
+    <version>2.3.1</version>
     <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
 
     <description><![CDATA[
@@ -65,6 +65,18 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.3.1 — Process timeout and cancellation fixes</h3>
+        <ul>
+            <li>Subprocess timeouts include stdin writes, preventing hangs when a command
+                does not consume large input.</li>
+            <li>Cancellation, timeout, and I/O failures terminate subprocess descendants
+                and release streams instead of leaving commands and I/O workers behind.</li>
+            <li>Original subprocess I/O errors are preserved for clearer diagnostics.</li>
+            <li>JSON parsing preserves numeric types and rejects malformed numbers and
+                unescaped control characters; control-character escaping avoids per-character
+                formatter allocation.</li>
+        </ul>
+
         <h3>2.3.0 — Security hardening and performance</h3>
 
         <h4>Security</h4>
