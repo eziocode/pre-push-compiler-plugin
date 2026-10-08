@@ -1,5 +1,6 @@
 package com.github.prepushchecker;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
@@ -10,8 +11,10 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermission;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -19,6 +22,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.EnumSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 
 public final class GitHookInstaller {
@@ -32,6 +36,8 @@ public final class GitHookInstaller {
     private static final Path GLOBAL_INSTALL_MARKER = GLOBAL_STATE_DIR.resolve("installed");
     private static final Path GLOBAL_TRACKED_REPOS = GLOBAL_STATE_DIR.resolve("repos.txt");
     private static final Object GLOBAL_REPO_LOCK = new Object();
+    // Startup, dynamic-load and repository-change events can all repair the same root at once.
+    private static final ConcurrentHashMap<String, Object> ROOT_LOCKS = new ConcurrentHashMap<>();
     private static final Set<PosixFilePermission> HOOK_PERMISSIONS = EnumSet.of(
         PosixFilePermission.OWNER_READ,
         PosixFilePermission.OWNER_WRITE,
@@ -163,6 +169,20 @@ public final class GitHookInstaller {
             }
             return "Git hooks still need attention: " + after.issueSummary() + ".";
         }
+
+        /** Folds per-root results into one: success only when every root succeeded. */
+        static HookRepairResult aggregate(@NotNull List<HookRepairResult> results) {
+            if (results.isEmpty()) {
+                HookInspectionResult unresolved = new HookInspectionResult(null, null, null, null,
+                    List.of(HookIssue.HOOKS_DIRECTORY_UNRESOLVED));
+                return new HookRepairResult(false, unresolved, unresolved,
+                    "no Git repository was found for this project");
+            }
+            for (HookRepairResult result : results) {
+                if (!result.isSuccess()) return result;
+            }
+            return results.get(0);
+        }
     }
 
     private static final class HookPaths {
@@ -194,27 +214,55 @@ public final class GitHookInstaller {
         touchGlobalMarker();
         // The bypass switch always starts off; drop any token left by a previous session.
         BypassController.getInstance(project).resetOnStartup();
+        // Git repositories are usually not registered yet this early, so this pass is
+        // best-effort and silent. The authoritative pass runs once VCS has initialised.
+        installForProject(project, false);
+    }
 
-        String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank()) {
-            return;
-        }
+    /**
+     * Installs/repairs the hook in every Git root of the project: each registered Git
+     * repository plus the project base path when it is itself inside a Git work tree.
+     *
+     * @param notify when {@code true}, a failed or missing hook raises the
+     *               "Install Pre-Push Hook" notification, and a healthy result clears it
+     */
+    static List<HookRepairResult> installForProject(@NotNull Project project, boolean notify) {
+        if (project.isDisposed()) return List.of();
+        touchGlobalMarker();
 
         LinkedHashSet<String> roots = new LinkedHashSet<>();
-        roots.add(basePath);
+        String basePath = project.getBasePath();
+        if (basePath != null && !basePath.isBlank() && resolveHooksDirectory(basePath) != null) {
+            roots.add(basePath);
+        }
         for (git4idea.repo.GitRepository repository
                 : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
             roots.add(repository.getRoot().getPath());
         }
+
+        List<HookRepairResult> results = new ArrayList<>();
+        List<HookRepairResult> failures = new ArrayList<>();
         for (String root : roots) {
+            if (project.isDisposed()) return results;
             PrePushCheckerSettings.syncSettingsFile(project, root);
             HookRepairResult result = repair(root);
+            results.add(result);
             if (result.isSuccess()) {
-                LOG.info(result.statusText());
+                LOG.info(root + ": " + result.statusText());
             } else {
-                LOG.warn(result.statusText());
+                failures.add(result);
+                LOG.warn(root + ": " + result.statusText());
             }
         }
+
+        if (notify) {
+            if (!failures.isEmpty()) {
+                HookNotifier.showNotInstalled(project, failures);
+            } else if (!results.isEmpty()) {
+                HookNotifier.clear(project);
+            }
+        }
+        return results;
     }
 
     static HookInspectionResult inspect(@NotNull Project project) {
@@ -292,16 +340,41 @@ public final class GitHookInstaller {
             paths.coreHooksPath, issues);
     }
 
+    /**
+     * Explicit repair from the tool window: repairs every Git root of the project and returns
+     * the first failure, if any. The caller reports failures itself; success clears any
+     * outstanding "hook not installed" notification.
+     */
     static HookRepairResult repair(@NotNull Project project) {
-        touchGlobalMarker();
-        PrePushCheckerSettings.syncSettingsFile(project);
-        return repair(project.getBasePath());
+        HookRepairResult result = HookRepairResult.aggregate(installForProject(project, false));
+        if (result.isSuccess()) HookNotifier.clear(project);
+        return result;
     }
 
     static HookRepairResult repair(@Nullable String basePath) {
-        HookInspectionResult before = inspect(basePath);
-        if (basePath == null || basePath.isBlank() || before.hooksDirectory() == null) {
+        if (basePath == null || basePath.isBlank()) {
+            HookInspectionResult before = inspect(basePath);
             return new HookRepairResult(false, before, before, before.statusText());
+        }
+        synchronized (lockFor(basePath)) {
+            return repairLocked(basePath);
+        }
+    }
+
+    private static Object lockFor(@NotNull String basePath) {
+        String key = normalizePath(basePath);
+        return ROOT_LOCKS.computeIfAbsent(key == null ? basePath : key, ignored -> new Object());
+    }
+
+    private static HookRepairResult repairLocked(@NotNull String basePath) {
+        HookInspectionResult before = inspect(basePath);
+        if (before.hooksDirectory() == null) {
+            return new HookRepairResult(false, before, before, before.statusText());
+        }
+        if (before.isHealthy()) {
+            // Runs on every repository change; avoid rewriting healthy hooks.
+            trackRepo(basePath);
+            return new HookRepairResult(true, before, before, null);
         }
 
         Path hooksDirectory = before.hooksDirectory();
@@ -310,7 +383,7 @@ public final class GitHookInstaller {
             Files.createDirectories(hooksDirectory);
 
             Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
-            Files.writeString(managedHook, buildManagedHookScript(), StandardCharsets.UTF_8);
+            writeAtomically(managedHook, buildManagedHookScript());
             makeExecutable(managedHook.toFile());
 
             Path mainHook = hooksDirectory.resolve("pre-push");
@@ -318,10 +391,10 @@ public final class GitHookInstaller {
                 String content = Files.readString(mainHook, StandardCharsets.UTF_8);
                 String repaired = buildRepairedMainHookContent(content);
                 if (!content.equals(repaired)) {
-                    Files.writeString(mainHook, repaired, StandardCharsets.UTF_8);
+                    writeAtomically(mainHook, repaired);
                 }
             } else {
-                Files.writeString(mainHook, buildWrapperHookScript(), StandardCharsets.UTF_8);
+                writeAtomically(mainHook, buildWrapperHookScript());
             }
             makeExecutable(mainHook.toFile());
 
@@ -332,9 +405,32 @@ public final class GitHookInstaller {
             HookInspectionResult after = inspect(basePath);
             return new HookRepairResult(after.isHealthy(), before, after, null);
         } catch (IOException ioException) {
-            LOG.error("Failed to repair the pre-push hook.", ioException);
+            LOG.warn("Failed to repair the pre-push hook in " + basePath, ioException);
             HookInspectionResult after = inspect(basePath);
             return new HookRepairResult(false, before, after, ioException.getMessage());
+        }
+    }
+
+    /**
+     * Writes via a sibling temp file and a rename so git (or a concurrent inspection)
+     * never sees a half-written hook.
+     */
+    private static void writeAtomically(@NotNull Path target, @NotNull String content) throws IOException {
+        if (Files.isSymbolicLink(target)) {
+            // Keep a user's symlinked hook intact; a rename would replace the link itself.
+            Files.writeString(target, content, StandardCharsets.UTF_8);
+            return;
+        }
+        Path temp = Files.createTempFile(target.getParent(), "." + target.getFileName() + ".", ".tmp");
+        try {
+            Files.writeString(temp, content, StandardCharsets.UTF_8);
+            try {
+                Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+            } catch (AtomicMoveNotSupportedException unsupported) {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temp);
         }
     }
 
@@ -382,7 +478,12 @@ public final class GitHookInstaller {
      */
     static void uninstall(String basePath) {
         if (basePath == null || basePath.isBlank()) return;
+        synchronized (lockFor(basePath)) {
+            uninstallLocked(basePath);
+        }
+    }
 
+    private static void uninstallLocked(@NotNull String basePath) {
         HookPaths paths = resolveHookPaths(basePath);
         if (paths.hooksDirectory != null) {
             removeManagedHookArtifacts(paths.hooksDirectory);
@@ -740,25 +841,50 @@ public final class GitHookInstaller {
             return dotGit.resolve("hooks");
         }
 
-        // ".git" is a file pointing to the real gitdir (worktree / submodule).
-        if (Files.isRegularFile(dotGit)) {
-            try {
-                for (String line : Files.readAllLines(dotGit, StandardCharsets.UTF_8)) {
-                    String trimmed = line.trim();
-                    if (trimmed.startsWith("gitdir:")) {
-                        String target = trimmed.substring("gitdir:".length()).trim();
-                        Path resolved = Path.of(target);
-                        if (!resolved.isAbsolute()) {
-                            resolved = Path.of(basePath).resolve(target).normalize();
-                        }
-                        return resolved.resolve("hooks");
+        Path gitDir = resolveGitDirFromFile(dotGit);
+        return gitDir != null ? resolveCommonDir(gitDir).resolve("hooks") : null;
+    }
+
+    /** Reads the {@code gitdir:} pointer of a worktree / submodule {@code .git} file. */
+    @Nullable
+    private static Path resolveGitDirFromFile(Path dotGit) {
+        if (!Files.isRegularFile(dotGit)) return null;
+        try {
+            for (String line : Files.readAllLines(dotGit, StandardCharsets.UTF_8)) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("gitdir:")) {
+                    String target = trimmed.substring("gitdir:".length()).trim();
+                    Path resolved = Path.of(target);
+                    if (!resolved.isAbsolute()) {
+                        resolved = dotGit.getParent().resolve(target);
                     }
+                    return resolved.normalize();
                 }
-            } catch (IOException ignored) {
+            }
+        } catch (IOException | RuntimeException ignored) {
+            // fall through
+        }
+        return null;
+    }
+
+    /**
+     * Linked worktrees keep a {@code commondir} file pointing at the main repository's
+     * git dir; git reads hooks, config and info/exclude from there, not the worktree dir.
+     */
+    private static Path resolveCommonDir(Path gitDir) {
+        Path commonDirFile = gitDir.resolve("commondir");
+        if (Files.isRegularFile(commonDirFile)) {
+            try {
+                String value = Files.readString(commonDirFile, StandardCharsets.UTF_8).trim();
+                if (!value.isEmpty()) {
+                    Path common = Path.of(value);
+                    return (common.isAbsolute() ? common : gitDir.resolve(common)).normalize();
+                }
+            } catch (IOException | RuntimeException ignored) {
                 // fall through
             }
         }
-        return null;
+        return gitDir;
     }
 
     @Nullable
@@ -794,7 +920,9 @@ public final class GitHookInstaller {
         Path gitDir = queryGit(basePath, "rev-parse", "--git-common-dir");
         if (gitDir != null) return gitDir;
         Path fallback = Path.of(basePath, ".git");
-        return Files.isDirectory(fallback) ? fallback : null;
+        if (Files.isDirectory(fallback)) return fallback;
+        Path fromFile = resolveGitDirFromFile(fallback);
+        return fromFile != null ? resolveCommonDir(fromFile) : null;
     }
 
     @Nullable
@@ -808,10 +936,30 @@ public final class GitHookInstaller {
         return candidate;
     }
 
+    /**
+     * Prefers the Git executable configured/detected by Git4Idea. A Dock-launched IDE on
+     * macOS has a minimal PATH, where a bare {@code git} may be missing or an Xcode shim.
+     */
+    private static String resolveGitExecutable() {
+        var application = ApplicationManager.getApplication();
+        // Detection may spawn a process; never do that on the EDT.
+        if (application == null || application.isDispatchThread()) return "git";
+        try {
+            // Git4Idea caches its detection result, so this is cheap after the first call.
+            String fromIde = git4idea.config.GitExecutableManager.getInstance().getPathToGit();
+            if (fromIde != null && !fromIde.isBlank()) return fromIde;
+        } catch (com.intellij.openapi.progress.ProcessCanceledException cancelled) {
+            throw cancelled;
+        } catch (Throwable failure) {
+            LOG.debug("Falling back to git on PATH", failure);
+        }
+        return "git";
+    }
+
     @Nullable
     private static String queryGitOutput(String basePath, String... args) {
         String[] cmd = new String[args.length + 1];
-        cmd[0] = "git";
+        cmd[0] = resolveGitExecutable();
         System.arraycopy(args, 0, cmd, 1, args.length);
         try {
             Process process = new ProcessBuilder(cmd)

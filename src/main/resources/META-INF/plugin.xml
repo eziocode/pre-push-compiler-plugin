@@ -65,6 +65,22 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.3.2 — Reliable hook install on first install</h3>
+        <ul>
+            <li>The pre-push hook is installed reliably right after the plugin is installed:
+                installation waits for IntelliJ to register the project's Git repositories,
+                so nested and multi-root repositories are no longer skipped.</li>
+            <li>New <b>Pre-push hook not installed</b> notification with an
+                <b>Install Pre-Push Hook</b> button when the hook could not be installed.</li>
+            <li>Concurrent repairs are serialised and hook files are written atomically,
+                preventing half-written or duplicated hooks.</li>
+            <li>Git queries use IntelliJ's configured Git executable, so
+                <code>core.hooksPath</code> is honoured when the IDE has a minimal PATH.</li>
+            <li>Linked worktrees fall back to the main repository's hooks directory.</li>
+            <li>"Recheck / Repair Git Hooks" covers every Git root of the project.</li>
+            <li>Healthy hooks are no longer rewritten on every repository change.</li>
+        </ul>
+
         <h3>2.3.1 — Process timeout and cancellation fixes</h3>
         <ul>
             <li>Subprocess timeouts include stdin writes, preventing hangs when a command

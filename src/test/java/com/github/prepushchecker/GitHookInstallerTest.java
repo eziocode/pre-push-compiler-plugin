@@ -1,5 +1,7 @@
 package com.github.prepushchecker;
 
+import com.intellij.openapi.util.io.FileUtil;
+import com.intellij.testFramework.PlatformTestUtil;
 import com.intellij.testFramework.fixtures.BasePlatformTestCase;
 
 import java.io.File;
@@ -7,8 +9,14 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
 public class GitHookInstallerTest extends BasePlatformTestCase {
@@ -415,6 +423,116 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         } finally {
             GitHookInstaller.uninstall(projectDir.getAbsolutePath());
         }
+    }
+
+    public void testRepairLeavesHealthyHooksUntouched() throws Exception {
+        File repo = createTempDir("prepushchecker-repair-healthy");
+        Path hooksDir = repo.toPath().resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+
+        try {
+            assertTrue(GitHookInstaller.repair(repo.getAbsolutePath()).isSuccess());
+            Path mainHook = hooksDir.resolve("pre-push");
+            Path managedHook = hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+            FileTime past = FileTime.fromMillis(System.currentTimeMillis() - 60_000);
+            Files.setLastModifiedTime(mainHook, past);
+            Files.setLastModifiedTime(managedHook, past);
+
+            GitHookInstaller.HookRepairResult second = GitHookInstaller.repair(repo.getAbsolutePath());
+
+            assertTrue(second.statusText(), second.isSuccess());
+            assertTrue(second.before().isHealthy());
+            assertEquals(past, Files.getLastModifiedTime(mainHook));
+            assertEquals(past, Files.getLastModifiedTime(managedHook));
+        } finally {
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
+    }
+
+    public void testConcurrentRepairsInstallExactlyOneSnippet() throws Exception {
+        File repo = createTempDir("prepushchecker-repair-concurrent");
+        Path hooksDir = repo.toPath().resolve(".git").resolve("hooks");
+        Files.createDirectories(hooksDir);
+        Path mainHook = hooksDir.resolve("pre-push");
+        Files.writeString(mainHook, "#!/usr/bin/env sh\necho \"user-hook\"\n", StandardCharsets.UTF_8);
+
+        ExecutorService pool = Executors.newFixedThreadPool(6);
+        try {
+            List<Future<GitHookInstaller.HookRepairResult>> futures = new ArrayList<>();
+            for (int i = 0; i < 6; i++) {
+                futures.add(pool.submit(() -> GitHookInstaller.repair(repo.getAbsolutePath())));
+            }
+            for (Future<GitHookInstaller.HookRepairResult> future : futures) {
+                GitHookInstaller.HookRepairResult result = future.get(30, TimeUnit.SECONDS);
+                assertTrue(result.statusText(), result.isSuccess());
+            }
+
+            String content = Files.readString(mainHook, StandardCharsets.UTF_8);
+            assertTrue(content.contains("echo \"user-hook\""));
+            assertEquals(1, GitHookInstaller.countMarkerOccurrences(content));
+            assertTrue(GitHookInstaller.inspect(repo.getAbsolutePath()).isHealthy());
+        } finally {
+            pool.shutdownNow();
+            GitHookInstaller.uninstall(repo.getAbsolutePath());
+        }
+    }
+
+    public void testWorktreeFallbackUsesCommonGitDirHooks() throws Exception {
+        // Not a real repository, so git queries fail and the .git-file fallback is exercised.
+        File root = createTempDir("prepushchecker-worktree-fallback");
+        Path commonGitDir = root.toPath().resolve("main-git");
+        Path worktreeGitDir = commonGitDir.resolve("worktrees").resolve("wt");
+        Files.createDirectories(worktreeGitDir);
+        Files.writeString(worktreeGitDir.resolve("commondir"), "../..\n", StandardCharsets.UTF_8);
+        Path worktree = root.toPath().resolve("wt");
+        Files.createDirectories(worktree);
+        Files.writeString(worktree.resolve(".git"), "gitdir: " + worktreeGitDir + "\n", StandardCharsets.UTF_8);
+
+        assertEquals(commonGitDir.resolve("hooks").normalize(),
+            GitHookInstaller.resolveHooksDirectory(worktree.toString()));
+    }
+
+    public void testInstallForProjectNotifiesWhenHookCannotBeWritten() throws Exception {
+        File projectDir = new File(getProject().getBasePath());
+        Path gitDir = projectDir.toPath().resolve(".git");
+        Path hooksDir = gitDir.resolve("hooks");
+        Files.createDirectories(hooksDir);
+        Files.setPosixFilePermissions(hooksDir, PosixFilePermissions.fromString("r-xr-xr-x"));
+
+        try {
+            List<GitHookInstaller.HookRepairResult> results =
+                GitHookInstaller.installForProject(getProject(), true);
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+
+            assertFalse(results.isEmpty());
+            assertFalse(results.get(0).isSuccess());
+            assertTrue(HookNotifier.hasActiveNotification(getProject()));
+
+            Files.setPosixFilePermissions(hooksDir, PosixFilePermissions.fromString("rwxr-xr-x"));
+            results = GitHookInstaller.installForProject(getProject(), true);
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+
+            assertTrue(results.get(0).statusText(), results.get(0).isSuccess());
+            assertTrue(Files.exists(hooksDir.resolve("pre-push")));
+            assertFalse(HookNotifier.hasActiveNotification(getProject()));
+        } finally {
+            Files.setPosixFilePermissions(hooksDir, PosixFilePermissions.fromString("rwxr-xr-x"));
+            HookNotifier.clear(getProject());
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+            GitHookInstaller.uninstall(projectDir.getAbsolutePath());
+            FileUtil.delete(gitDir.toFile());
+        }
+    }
+
+    public void testInstallForProjectSkipsNonGitProjectSilently() {
+        // Other tests in this class may leave a .git directory in the shared light project.
+        FileUtil.delete(new File(getProject().getBasePath(), ".git"));
+        List<GitHookInstaller.HookRepairResult> results =
+            GitHookInstaller.installForProject(getProject(), true);
+        PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+
+        assertTrue(results.isEmpty());
+        assertFalse(HookNotifier.hasActiveNotification(getProject()));
     }
 
     public void testManagedHookBlocksMixedGeneratedAndRealErrors() throws Exception {

@@ -24,9 +24,9 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
     public void pluginLoaded(@NotNull IdeaPluginDescriptor descriptor) {
         if (!isOurPlugin(descriptor)) return;
 
-        // A ProjectActivity runs when a project opens, but is not reliably replayed when a
-        // plugin is installed dynamically into an already-open IDE. Mark the plugin installed
-        // immediately, then repair every open project off the UI/write-action thread.
+        // Newer IDEs replay ProjectActivities on dynamic load, older ones not reliably. Install
+        // here as well so the hook is in place right away; GitHookInstaller serialises repairs
+        // per root, so overlapping with a replayed activity is harmless.
         GitHookInstaller.touchGlobalMarker();
         ApplicationManager.getApplication().executeOnPooledThread(this::installHooksForOpenProjects);
     }
@@ -58,10 +58,11 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
         for (Project project : ProjectManager.getInstance().getOpenProjects()) {
             if (project.isDisposed()) continue;
             try {
-                GitHookInstaller.runStartup(project);
+                // Listen for repository changes first, then install the hook before anything else.
+                RepositoryStateMonitor.runStartup(project);
+                GitHookInstaller.installForProject(project, true);
                 PrePushLocalServer.runStartup(project);
                 ExternalPushErrorLoader.runStartup(project);
-                RepositoryStateMonitor.runStartup(project);
             } catch (Throwable t) {
                 LOG.warn("Hook installation failed for project " + project.getName(), t);
             }

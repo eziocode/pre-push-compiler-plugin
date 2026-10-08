@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.3.2] - 2026-10-08
+
+### Fixed
+
+- The pre-push hook is now installed reliably on first plugin install. Previously the
+  install ran before IntelliJ had registered the project's Git repositories, so nested
+  and multi-root repositories were skipped and the failure was only logged.
+- Hook installation now waits for VCS initialisation and listens for repository
+  registration before doing any other startup work.
+- Concurrent repairs of the same repository (project startup, dynamic plugin load and
+  repository change events) are serialised, and hook files are written atomically, so
+  a push can no longer see a half-written or duplicated hook.
+- Git queries use the Git executable configured in IntelliJ instead of whatever `git`
+  is on the IDE's PATH, so `core.hooksPath` is honoured when the IDE is started from
+  the macOS Dock.
+- Linked worktrees without a working `git` binary now get the hook in the main
+  repository's hooks directory, where git actually reads it.
+- "Recheck / Repair Git Hooks" now repairs every Git root of the project, not just the
+  project base directory.
+
+### Added
+
+- A **Pre-push hook not installed** notification with an **Install Pre-Push Hook**
+  button appears when the hook could not be installed for a project.
+
+### Performance
+
+- Healthy hooks are no longer rewritten on every repository change.
+
 ## [2.3.1] - 2026-10-04
 
 ### Fixed

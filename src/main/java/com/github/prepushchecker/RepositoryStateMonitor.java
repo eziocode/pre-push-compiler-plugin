@@ -7,6 +7,7 @@ import com.intellij.openapi.project.Project;
 import git4idea.repo.GitRepository;
 import org.jetbrains.annotations.NotNull;
 
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -37,8 +38,12 @@ public final class RepositoryStateMonitor {
                 ExternalPushErrorLoader.watchRepository(project, root);
                 ApplicationManager.getApplication().executeOnPooledThread(() -> {
                     try {
+                        if (project.isDisposed()) return;
                         PrePushCheckerSettings.syncSettingsFile(project, root);
-                        GitHookInstaller.repair(root);
+                        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(root);
+                        if (!result.isSuccess()) {
+                            HookNotifier.showNotInstalled(project, List.of(result));
+                        }
                     } catch (Throwable failure) {
                         LOG.warn("Could not refresh pre-push integration for " + root, failure);
                     }

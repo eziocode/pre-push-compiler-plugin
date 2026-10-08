@@ -1,6 +1,8 @@
 package com.github.prepushchecker
 
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.vcs.ProjectLevelVcsManager
 import com.intellij.openapi.startup.ProjectActivity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,8 +20,18 @@ class PrePushProjectActivities {
 
     class GitHookInstallerActivity : ProjectActivity {
         override suspend fun execute(project: Project) {
+            // Subscribe to repository events before anything slow runs, so a Git root
+            // registered while the hook is being installed is still picked up.
+            RepositoryStateMonitor.runStartup(project)
             withContext(Dispatchers.IO) {
                 GitHookInstaller.runStartup(project)
+            }
+            // Repositories are only registered once VCS mappings are initialised; this is the
+            // pass that tells the user (with an install button) if the hook is still missing.
+            ProjectLevelVcsManager.getInstance(project).runAfterInitialization {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    GitHookInstaller.installForProject(project, true)
+                }
             }
         }
     }
