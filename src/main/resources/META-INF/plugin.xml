@@ -65,6 +65,14 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.3.3 — Hook broken-pipe and tool window layout fixes</h3>
+        <ul>
+            <li>The pre-push hook no longer prints <code>printf: write error: Broken pipe</code>
+                on pushes with large change lists.</li>
+            <li>Tool window settings rows no longer wrap and overlap in narrow windows.</li>
+            <li>Toolbar, bypass bar and footer no longer stretch or overlap; long text is clipped.</li>
+        </ul>
+
         <h3>2.3.2 — Reliable hook install on first install</h3>
         <ul>
             <li>The pre-push hook is installed reliably right after the plugin is installed:

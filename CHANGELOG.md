@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.3.3] - 2026-10-09
+
+### Fixed
+
+- The generated pre-push hook no longer prints `printf: write error: Broken pipe` on
+  pushes with large change lists. The source/build-change detection now greps the
+  temporary changed-files list instead of piping into `grep -q`, which exited early.
+- Tool window layout: settings rows (help icon, SHA format and trigger radio buttons)
+  no longer wrap onto the next row and overlap it in narrow tool windows, and row
+  heights follow the live preferred size.
+- The toolbar and bypass bar are no longer stretched or squashed vertically, and long
+  bypass and status text is clipped instead of overlapping the switch or timestamp.
+
 ## [2.3.2] - 2026-10-08
 
 ### Fixed

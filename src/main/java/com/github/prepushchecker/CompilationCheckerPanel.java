@@ -116,15 +116,12 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             .createActionToolbar("CompilationCheckerToolbar", group, true);
         toolbar.setTargetComponent(this);
 
-        JPanel header = new JPanel();
-        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
+        // BorderLayout (not BoxLayout) so neither row is stretched or squashed vertically.
+        JPanel header = new JPanel(new BorderLayout());
         JComponent toolbarComponent = toolbar.getComponent();
         toolbarComponent.setBorder(JBUI.Borders.customLineBottom(JBColor.border()));
-        toolbarComponent.setAlignmentX(Component.LEFT_ALIGNMENT);
-        header.add(toolbarComponent);
-        JComponent bar = createBypassBar();
-        bar.setAlignmentX(Component.LEFT_ALIGNMENT);
-        header.add(bar);
+        header.add(toolbarComponent, BorderLayout.NORTH);
+        header.add(createBypassBar(), BorderLayout.CENTER);
         add(header, BorderLayout.NORTH);
 
         // ── Settings / results split ─────────────────────────────────────────
@@ -174,9 +171,12 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         switchHolder.setOpaque(false);
         switchHolder.add(bypassSwitch);
 
+        // Let the text shrink/clip instead of pushing the switch out of the bar.
+        text.setMinimumSize(new Dimension(0, 0));
+        bypassTitle.setMinimumSize(new Dimension(0, 0));
+        bypassSubtitle.setMinimumSize(new Dimension(0, 0));
         bypassBar.add(text, BorderLayout.CENTER);
         bypassBar.add(switchHolder, BorderLayout.EAST);
-        bypassBar.setMaximumSize(new Dimension(Integer.MAX_VALUE, Integer.MAX_VALUE));
         return bypassBar;
     }
 
@@ -272,6 +272,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         footer.setBorder(JBUI.Borders.compound(
             JBUI.Borders.customLineTop(JBColor.border()),
             JBUI.Borders.empty(3, 8)));
+        statusLabel.setMinimumSize(new Dimension(0, 0)); // clip rather than overlap the timestamp
         footer.add(statusLabel, BorderLayout.CENTER);
         footer.add(updatedLabel, BorderLayout.EAST);
 
@@ -450,25 +451,41 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
         wrapped.setAlignmentX(Component.LEFT_ALIGNMENT);
         if (!(row instanceof JPanel && ((JPanel) row).getClientProperty("grow") != null)) {
-            wrapped.setMaximumSize(new Dimension(Integer.MAX_VALUE, wrapped.getPreferredSize().height));
+            // Wrap in a holder whose max height tracks the live preferred height, so rows
+            // never keep a stale height captured before fonts/insets were final.
+            JPanel fixed = new JPanel(new BorderLayout()) {
+                @Override
+                public Dimension getMaximumSize() {
+                    return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+                }
+            };
+            fixed.setAlignmentX(Component.LEFT_ALIGNMENT);
+            fixed.add(wrapped, BorderLayout.CENTER);
+            wrapped = fixed;
         }
         container.add(wrapped);
     }
 
     private static JComponent withHelp(JComponent component, String help) {
-        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
-        row.add(component);
-        row.add(Box.createHorizontalStrut(JBUI.scale(4)));
-        row.add(ContextHelpLabel.create(help));
+        // Help icon pinned east; the control clips instead of wrapping onto the next row.
+        JPanel row = new JPanel(new BorderLayout(JBUI.scale(4), 0));
+        component.setMinimumSize(new Dimension(0, 0));
+        row.add(component, BorderLayout.CENTER);
+        row.add(ContextHelpLabel.create(help), BorderLayout.EAST);
         return row;
     }
 
     private static JComponent labeledRow(String label, JComponent... controls) {
-        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(4), 0));
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
         JBLabel title = new JBLabel(label);
         title.setForeground(UIUtil.getContextHelpForeground());
         row.add(title);
-        for (JComponent control : controls) row.add(control);
+        for (JComponent control : controls) {
+            row.add(Box.createHorizontalStrut(JBUI.scale(8)));
+            row.add(control);
+        }
+        row.add(Box.createHorizontalGlue());
         return row;
     }
 
