@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.3.3-blue)
+![Version](https://img.shields.io/badge/version-2.4.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -19,8 +19,9 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **One push guard everywhere** — IntelliJ, terminal, Sublime Merge, and other Git clients use the same managed `pre-push` hook
 - **Smart compile scope** — compiles modules containing changed files plus dependent modules; automatically falls back to a full project build when build files (`build.gradle`, `pom.xml`, etc.) or file deletions are involved
 - **False-error recovery** — every failed incremental IntelliJ check gets one clean project rebuild; only the rebuild result can block a push
-- **Push-only compilation** — edits, Git changes, and project startup never trigger a build; compilation runs only for explicit builds and pre-push validation
-- **In-flight-only sharing** — concurrent identical pushes share one compiler run; later pushes always ask the incremental compiler again
+- **Smart background build** *(on by default, can be turned off)* — once the IDE has been idle for a while (or after a short pause in a long editing session), changed sources are compiled incrementally in the background. Never runs on a timer, while debugging, indexing, in power save mode, or during another build
+- **Per-branch build snapshots** — verdicts are keyed by working-tree content and kept per branch until the branch is deleted. Switching back to a branch restores its errors without a build, commits keep the verdict, and a push of already cleanly compiled sources skips the compile (clean verdicts only, max. 24 h old)
+- **In-flight sharing** — concurrent identical pushes share one compiler run
 - **Symbolic A/B detection** — parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans HEAD content of pushed files for word-boundary references; blocks the push instantly when the pushed commit references a symbol defined only in an unpushed local edit (no compile required)
 - **Non-modal IntelliJ flow** — normal validation stays inside IntelliJ's native background Git task and never obscures the editor
 - **Failure-only UI** — confirmed errors block the push and produce one notification with an action to open navigable errors
@@ -198,4 +199,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.3.3**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.4.0**.

@@ -20,6 +20,8 @@ final class PrePushCheckerSettings {
         "prepushchecker.strictSnapshotGuard.stashFallback.enabled";
     private static final String DISABLE_BUILD_TOOL_FALLBACK_KEY =
         "prepushchecker.buildToolFallback.disabled";
+    private static final String SMART_BUILD_ENABLED_KEY =
+        "prepushchecker.smartBuild.enabled";
     private static final String COPY_SHA_ENABLED_KEY =
         "prepushchecker.copyCommitSha.enabled";
     private static final String COPY_SHA_FORMAT_KEY =
@@ -67,6 +69,17 @@ final class PrePushCheckerSettings {
     static void setBuildToolFallbackDisabled(@NotNull Project project, boolean disabled) {
         PropertiesComponent.getInstance(project)
             .setValue(DISABLE_BUILD_TOOL_FALLBACK_KEY, disabled, false);
+    }
+
+    /** Background builds while the IDE is idle (default {@code true}). */
+    static boolean isSmartBuildEnabled(@NotNull Project project) {
+        return PropertiesComponent.getInstance(project)
+            .getBoolean(SMART_BUILD_ENABLED_KEY, true);
+    }
+
+    static void setSmartBuildEnabled(@NotNull Project project, boolean enabled) {
+        PropertiesComponent.getInstance(project)
+            .setValue(SMART_BUILD_ENABLED_KEY, enabled, true);
     }
 
     /** Returns {@code true} if the auto-copy-SHA feature is active (default {@code true}). */

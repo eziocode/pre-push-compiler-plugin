@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.4.0] - 2026-10-16
+
+### Added
+
+- **Smart background build** (enabled by default; "Smart background build" in the tool
+  window's Validation settings). Changed sources are compiled incrementally once the IDE
+  has been idle for 90 s, or after a 20 s pause once sources have been unverified for
+  15 min of continuous editing. At most one smart build every 5 min, never on a timer.
+  Skipped while debugging, indexing, in power save mode, during another build, a push
+  check, or a merge/rebase. Timings are tunable via `prepushchecker.smartBuild.*`
+  registry keys.
+- **Per-branch build snapshots** stored in the workspace file. Verdicts are keyed by a
+  content fingerprint of the working tree (index blob ids plus working-tree and unsaved
+  edits, module/SDK/dependency names), not by commit, so committing keeps the verdict.
+  Every project-wide IDE build (the user's own, automake, push checks, smart builds) is
+  recorded. Snapshots are dropped only when their branch is deleted (last 3 per branch,
+  5 detached HEADs, 64 total).
+- Switching branches restores that branch's last errors instantly instead of clearing
+  the list; unknown states still clear it.
+- Pushes whose exact sources already compiled cleanly within 24 h skip the compile.
+  Error snapshots are never reused, so a stale failure can never block a push.
+- Footer shows the smart build state (up to date, waiting for idle, running).
+
+### Fixed
+
+- The bypass warning no longer covers the whole tool window stripe icon; it is now a
+  small corner badge (regression from 2.3.x `LayeredIcon` change).
+- Added dark theme and New UI (20×20) variants of the tool window icon.
+- "Report Issue" uses the GitHub icon instead of a warning glyph that looked like a
+  second bypass warning; "Show Settings" uses the standard settings gear.
+
 ## [2.3.3] - 2026-10-09
 
 ### Fixed

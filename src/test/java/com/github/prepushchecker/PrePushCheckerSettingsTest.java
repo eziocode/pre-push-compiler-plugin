@@ -34,4 +34,26 @@ public class PrePushCheckerSettingsTest extends BasePlatformTestCase {
             PrePushCheckerSettings.setStashSnapshotFallbackEnabled(getProject(), false);
         }
     }
+
+    public void testSmartBuildDefaultsToEnabled() {
+        assertTrue(PrePushCheckerSettings.isSmartBuildEnabled(getProject()));
+    }
+
+    public void testSmartBuildCanBeDisabled() {
+        try {
+            PrePushCheckerSettings.setSmartBuildEnabled(getProject(), false);
+            assertFalse(PrePushCheckerSettings.isSmartBuildEnabled(getProject()));
+        } finally {
+            PrePushCheckerSettings.setSmartBuildEnabled(getProject(), true);
+        }
+    }
+
+    public void testCompileRelevanceFilter() {
+        assertTrue(SmartBuildService.isCompileRelevant("/p/src/main/java/A.java"));
+        assertTrue(SmartBuildService.isCompileRelevant("/p/module/pom.xml"));
+        assertFalse(SmartBuildService.isCompileRelevant("/p/target/generated-sources/A.java"));
+        assertFalse(SmartBuildService.isCompileRelevant("/p/build/classes/A.java"));
+        assertFalse(SmartBuildService.isCompileRelevant("/p/.idea/workspace.xml"));
+        assertFalse(SmartBuildService.isCompileRelevant("/p/README.md"));
+    }
 }

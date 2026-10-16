@@ -184,6 +184,13 @@ public final class PrePushValidationCoordinator implements Disposable {
         }
     }
 
+    /** {@code true} while a push validation is queued or running. */
+    boolean hasPendingWork() {
+        synchronized (flights) {
+            return !flights.isEmpty();
+        }
+    }
+
     int requestCountForTest(@NotNull String key) {
         synchronized (flights) {
             Flight flight = flights.get(key);

@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Clears branch-specific diagnostics and keeps hook/server metadata current when
+ * Swaps branch-specific diagnostics (via {@link SmartBuildService} snapshots) and keeps hook/server metadata current when
  * IntelliJ reports repository changes.
  */
 @Service(Service.Level.PROJECT)
@@ -30,8 +30,9 @@ public final class RepositoryStateMonitor {
         project.getMessageBus().connect(project).subscribe(
             GitRepository.GIT_REPO_CHANGE,
             repository -> {
-                CompilationErrorService.getInstance(project).clearErrors();
                 if (project.isDisposed()) return;
+                // Restores the snapshot verdict of the new state, or clears stale errors.
+                SmartBuildService.getInstance(project).repositoryChanged();
                 String root = repository.getRoot().getPath();
                 PrePushLocalServer server = project.getService(PrePushLocalServer.class);
                 if (server != null) server.publishPortFile(root);

@@ -55,6 +55,7 @@ class PrePushProjectActivities {
     class RepositoryStateMonitorActivity : ProjectActivity {
         override suspend fun execute(project: Project) {
             RepositoryStateMonitor.runStartup(project)
+            SmartBuildService.runStartup(project)
         }
     }
 

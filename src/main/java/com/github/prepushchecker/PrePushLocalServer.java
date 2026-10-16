@@ -366,7 +366,14 @@ public final class PrePushLocalServer implements Disposable {
 
         return PrePushValidationCoordinator.getInstance(project).request(
             requestKey,
-            () -> null,
+            () -> {
+                // Same content already compiled cleanly (smart build, user build, earlier push).
+                if (!request.expectedHead().isBlank()
+                        && !request.expectedHead().equals(before.actualHead())) {
+                    return null;
+                }
+                return SmartBuildService.getInstance(project).cachedCleanVerdict();
+            },
             () -> {
                 if (!snapshotMatches(normalizedRequest, before)) {
                     throw new PrePushValidationCoordinator.StaleSnapshotException(

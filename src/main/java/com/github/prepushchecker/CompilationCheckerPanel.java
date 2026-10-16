@@ -34,7 +34,7 @@ import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.psi.PsiFile;
 import com.intellij.ui.CheckBoxList;
 import com.intellij.ui.ContextHelpLabel;
-import com.intellij.ui.LayeredIcon;
+import com.intellij.ui.BadgeIconSupplier;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.OnePixelSplitter;
 import com.intellij.ui.TitledSeparator;
@@ -79,6 +79,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final CheckBoxList<String> ignoredFilesList = new IgnoredFilesList();
     private final Runnable serviceListener = this::onServiceUpdate;
     private final Runnable bypassListener = this::onBypassUpdate;
+    private final Runnable smartBuildListener = this::updateStatus;
     private final OnePixelSplitter splitter =
         new OnePixelSplitter(true, SPLITTER_PROPORTION_KEY, 0.45f);
     private final JComponent settingsComponent;
@@ -100,6 +101,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
 
         CompilationErrorService.getInstance(project).addListener(serviceListener);
         BypassController.getInstance(project).addListener(bypassListener);
+        SmartBuildService.getInstance(project).addListener(smartBuildListener);
 
         // ── Toolbar ──────────────────────────────────────────────────────────
         DefaultActionGroup group = new DefaultActionGroup();
@@ -142,6 +144,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         countdownTimer.stop();
         CompilationErrorService.getInstance(project).removeListener(serviceListener);
         BypassController.getInstance(project).removeListener(bypassListener);
+        SmartBuildService.getInstance(project).removeListener(smartBuildListener);
     }
 
     // ── Bypass switch ─────────────────────────────────────────────────────────
@@ -203,8 +206,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             countdownTimer.stop();
         }
         if (toolWindow != null && baseToolWindowIcon != null) {
+            // Corner badge on top of the original icon; a full-size overlay would hide it.
             toolWindow.setIcon(active
-                ? LayeredIcon.create(baseToolWindowIcon, AllIcons.General.Warning)
+                ? new BadgeIconSupplier(baseToolWindowIcon).getWarningIcon()
                 : baseToolWindowIcon);
         }
         bypassBar.revalidate();
@@ -309,6 +313,10 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         if (BypassController.getInstance(project).isActive()) {
             text += " \u00b7 bypass on";
         }
+        String smartText = smartBuildStatusText(SmartBuildService.getInstance(project).getStatus());
+        if (!smartText.isBlank()) {
+            text += " \u00b7 " + smartText;
+        }
         if (!hookStatusText.isBlank()) {
             text += " \u00b7 " + hookStatusText;
         }
@@ -319,6 +327,17 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         long changed = service.getLastChangedMillis();
         updatedLabel.setText(changed == 0 ? ""
             : "Updated " + new SimpleDateFormat("HH:mm").format(new Date(changed)));
+    }
+
+    static @NotNull String smartBuildStatusText(@NotNull SmartBuildService.Status status) {
+        String branch = status.branch().isBlank() ? "" : " (" + status.branch() + ")";
+        return switch (status.phase()) {
+            case DISABLED, IDLE -> "";
+            case UP_TO_DATE -> "build up to date" + branch;
+            case STALE -> "sources changed";
+            case WAITING -> "smart build " + status.detail();
+            case BUILDING -> "smart build running" + branch;
+        };
     }
 
     // ── Settings ──────────────────────────────────────────────────────────────
@@ -337,6 +356,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JBCheckBox stashFallback = new JBCheckBox("Allow stash fallback");
         stashFallback.setSelected(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(project));
         stashFallback.setEnabled(strictGuard.isSelected());
+
+        JBCheckBox smartBuild = new JBCheckBox("Smart background build");
+        smartBuild.setSelected(PrePushCheckerSettings.isSmartBuildEnabled(project));
 
         JBCheckBox disableFallback = new JBCheckBox("Skip check when IDE is closed");
         disableFallback.setSelected(PrePushCheckerSettings.isBuildToolFallbackDisabled(project));
@@ -384,6 +406,10 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         });
         stashFallback.addActionListener(event ->
             PrePushCheckerSettings.setStashSnapshotFallbackEnabled(project, stashFallback.isSelected()));
+        smartBuild.addActionListener(event -> {
+            PrePushCheckerSettings.setSmartBuildEnabled(project, smartBuild.isSelected());
+            SmartBuildService.getInstance(project).settingChanged();
+        });
         disableFallback.addActionListener(event -> {
             PrePushCheckerSettings.setBuildToolFallbackDisabled(project, disableFallback.isSelected());
             PrePushCheckerSettings.syncSettingsFile(project);
@@ -413,6 +439,11 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             "Used only when a snapshot worktree cannot be created: stashes local changes, "
                 + "compiles HEAD, then restores them. Off by default because worktree "
                 + "validation is safer."), 20);
+        addRow(options, withHelp(smartBuild,
+            "Compiles changed sources in the background once the IDE has been idle for a while "
+                + "(or after a short pause in a long editing session). Never runs while debugging, "
+                + "indexing, in power save mode or during another build. Results are kept per "
+                + "branch, so pushing already-compiled sources skips the compile."), 0);
         addRow(options, withHelp(disableFallback,
             "Pushes from a terminal or another Git client are allowed without a check when "
                 + "the IDE is not running, instead of falling back to Maven/Gradle. Avoids "
@@ -679,7 +710,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final class ToggleSettingsAction extends ToggleAction {
 
         ToggleSettingsAction() {
-            super("Show Settings", "Show or hide the settings section", AllIcons.General.GearPlain);
+            super("Show Settings", "Show or hide the settings section", AllIcons.General.Settings);
         }
 
         @Override
@@ -811,8 +842,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             "https://github.com/eziocode/IntelliJ-Plugins/issues/new";
 
         ReportAction() {
+            // Not a warning glyph: it sat next to the bypass warning and read as a status icon.
             super("Report Issue", "Open a new GitHub issue for this plugin",
-                AllIcons.General.BalloonWarning);
+                AllIcons.Vcs.Vendors.Github);
         }
 
         @Override
