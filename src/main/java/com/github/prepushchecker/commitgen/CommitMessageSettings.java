@@ -31,13 +31,22 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
         // Non-secret provider config
         public String ollamaBaseUrl  = "http://localhost:11434";
         public String codexCliPath      = "";   // blank = auto-detect
-        public String codexExtraArgs    = "";   // blank = use default (--approval-policy full-auto)
+        public String codexModel        = "";   // blank = codex default model
+        public String codexExtraArgs    = "";   // extra args appended to `codex exec`
         public String ghCliPath      = "";   // blank = auto-detect (for GH_COPILOT)
+        public String ghModel        = "";   // blank = gpt-4o
         public String llmCliPath     = "";   // blank = auto-detect
         public String llmModel       = "";   // blank = llm default model
         public String claudeCliPath  = "";   // blank = auto-detect
         public String claudeModel    = "";   // blank = CLI default model
-        public String claudeExtraArgs = ""; // blank = --print
+        public String claudeExtraArgs = ""; // extra args appended to `claude -p`
+
+        // Other local CLI (sahaa, gemini, cursor-agent, …)
+        public String customCliBinary     = "sahaa"; // binary name used for auto-detect
+        public String customCliPath       = "";      // blank = auto-detect customCliBinary
+        public String customCliArgs       = "--chat {model?-m {model}} {prompt}"; // prompt on stdin unless {prompt} used
+        public String customCliModel      = "";
+        public String customCliModelsArgs = "";      // args that list models, one per line
 
         // Commit message rules
         public boolean useConventionalCommits = true;

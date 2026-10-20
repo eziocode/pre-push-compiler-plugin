@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.4.0-blue)
+![Version](https://img.shields.io/badge/version-2.5.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -49,7 +49,14 @@ Generate a ready-to-use git commit message from your staged changes with a singl
 | **Anthropic** | API key | Calls Claude 3.5 Sonnet |
 | **Google Gemini** | API key | Calls Gemini 1.5 Flash |
 | **Ollama** | None | Local model — `ollama serve` must be running |
-| **Codex CLI** | ChatGPT OAuth / API key | Run `codex auth` once, then the plugin calls `codex -q` |
+| **Codex CLI** | `codex login` | Runs `codex exec --sandbox read-only` with the prompt on stdin |
+| **Claude Code CLI** | `claude` login | Runs `claude -p --output-format text` with the prompt on stdin |
+| **GitHub Copilot** | `gh auth login` | Uses the `gh` token against the Copilot API |
+| **llm CLI** | `llm keys set …` | Runs Simon Willison's `llm` |
+| **Other local CLI** | CLI's own login | sahaa, Gemini CLI, Cursor Agent, Copilot CLI, opencode — editable args template (`{model}`, `{model?…}`, `{prompt}`) |
+
+Local CLIs are auto-detected from their binary (shell PATH, Homebrew, npm/nvm/bun/volta, `~/.local/bin`, `~/.claude/local`).
+Use **Detect Installed CLIs…** in Settings to scan all of them, or the per-provider **Auto-detect** button; if a CLI is not found you can browse to its executable. The **⟳ Models** button fills the model dropdown from the CLI.
 
 ### Usage
 
@@ -199,4 +206,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.4.0**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.5.0**.

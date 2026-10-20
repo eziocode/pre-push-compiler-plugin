@@ -5,7 +5,6 @@ import com.intellij.ide.PowerSaveMode;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.compiler.CompilationStatusListener;
 import com.intellij.openapi.compiler.CompileContext;
 import com.intellij.openapi.compiler.CompileScope;
@@ -416,7 +415,7 @@ public final class SmartBuildService implements Disposable {
         if (context.isRebuild()) return true;
         CompileScope scope = context.getCompileScope();
         if (scope == null) return false;
-        return ReadAction.compute(() -> {
+        return ReadActions.compute(() -> {
             int all = ModuleManager.getInstance(project).getModules().length;
             return all > 0 && scope.getAffectedModules().length >= all;
         });

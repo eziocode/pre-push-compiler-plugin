@@ -20,7 +20,6 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.concurrent.TimeUnit;
 
 /**
  * Manages ChatGPT authentication for the Codex provider.
@@ -72,7 +71,7 @@ public final class ChatGPTOAuthFlow {
     @NotNull
     public static String getStatusText() {
         // 1. Try codex login status (fast, no blocking)
-        String codexPath = CliPathResolver.resolve(null, "codex");
+        String codexPath = resolveCodexPath();
         if (codexPath != null) {
             try {
                 ProcessBuilder pb = new ProcessBuilder(codexPath, "login", "status");
@@ -83,7 +82,7 @@ public final class ChatGPTOAuthFlow {
                 if (result.timedOut()) {
                     LOG.debug("Timed out checking Codex login status.");
                 }
-                if (!out.isBlank()) return out; // e.g. "Logged in using ChatGPT"
+                if (result.isSuccess() && !out.isBlank()) return out; // e.g. "Logged in using ChatGPT"
             } catch (IOException e) {
                 LOG.debug("Could not check Codex login status.", e);
             } catch (InterruptedException e) {
@@ -108,9 +107,9 @@ public final class ChatGPTOAuthFlow {
      */
     public static void startSignIn(@NotNull Runnable onDone) {
         new Thread(() -> {
-            String codexPath = CliPathResolver.resolve(null, "codex");
+            String codexPath = resolveCodexPath();
 
-            if (codexPath == null || !Files.isExecutable(Path.of(codexPath))) {
+            if (codexPath == null) {
                 ApplicationManager.getApplication().invokeLater(() -> {
                     showNoCodexDialog();
                     onDone.run();
@@ -143,16 +142,27 @@ public final class ChatGPTOAuthFlow {
 
         // Also attempt `codex logout` non-interactively
         new Thread(() -> {
-            String codexPath = CliPathResolver.resolve(null, "codex");
+            String codexPath = resolveCodexPath();
             if (codexPath == null) return;
             try {
                 ProcessBuilder pb = new ProcessBuilder(codexPath, "logout");
                 pb.redirectErrorStream(true);
                 CliPathResolver.injectAugmentedPath(pb);
-                Process proc = pb.start();
-                proc.waitFor(10, TimeUnit.SECONDS);
-            } catch (Exception ignored) {}
+                ProcessExecution.run(pb, Duration.ofSeconds(10));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (IOException e) {
+                LOG.debug("Could not run codex logout.", e);
+            }
         }, "ChatGPT-Logout").start();
+    }
+
+    /** Resolves the codex binary honouring the configured path, or {@code null}. */
+    @Nullable
+    public static String resolveCodexPath() {
+        String configured = ApplicationManager.getApplication() == null
+            ? null : CommitMessageSettings.getInstance().settings().codexCliPath;
+        return CliPathResolver.resolveOrNull(configured, "codex");
     }
 
     /** Stores a manual API key in PasswordSafe. */
@@ -179,7 +189,7 @@ public final class ChatGPTOAuthFlow {
     }
 
     @Nullable
-    private static String loadManualKey() {
+    public static String loadManualKey() {
         Credentials c = PasswordSafe.getInstance().get(
             new CredentialAttributes(CRED_SERVICE, CRED_KEY));
         return c == null ? null : c.getPasswordAsString();

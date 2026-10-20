@@ -1,6 +1,15 @@
 package com.github.prepushchecker.commitgen;
 
+import com.github.prepushchecker.commitgen.cli.AiCli;
+import com.github.prepushchecker.commitgen.cli.AiCliDetector;
+import com.github.prepushchecker.commitgen.cli.AiCliModels;
+import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
+import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
+import com.intellij.openapi.progress.ProgressManager;
+import com.intellij.openapi.ui.ComboBox;
+import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.ui.table.JBTable;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
@@ -22,6 +31,8 @@ import javax.swing.*;
 import javax.swing.text.JTextComponent;
 import java.awt.*;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Configurable that appears under Settings → Tools → AI Commit Message Generator.
@@ -47,16 +58,29 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
     private JBTextField     geminiModelField;
     private JBTextField     ollamaUrlField;
     private JBTextField     ollamaModelField;
-    private JPasswordField  codexKeyField;   // fallback only — PTY path preferred
-    private JBTextField     codexCliPathField;
+    private JPasswordField  codexKeyField;   // fallback only — exported as OPENAI_API_KEY
+    private TextFieldWithBrowseButton codexCliPathField;
+    private ComboBox<String> codexModelCombo;
+    private JBTextField     codexExtraArgsField;
     private JBLabel         codexEnvStatusLabel;
-    private JBTextField     ghCliPathField;
+    private JBLabel         codexPathStatusLabel;
+    private TextFieldWithBrowseButton ghCliPathField;
+    private ComboBox<String> ghModelCombo;
     private JBLabel         ghStatusLabel;
-    private JBTextField     llmCliPathField;
-    private JBTextField     llmModelField;
+    private TextFieldWithBrowseButton llmCliPathField;
+    private ComboBox<String> llmModelCombo;
+    private JBLabel         llmStatusLabel;
     private JPasswordField  claudeKeyField;
-    private JBTextField     claudeModelField;
+    private TextFieldWithBrowseButton claudeCliPathField;
+    private ComboBox<String> claudeModelCombo;
+    private JBTextField     claudeExtraArgsField;
     private JBLabel         claudeEnvStatusLabel;
+    private JBTextField     customBinaryField;
+    private TextFieldWithBrowseButton customCliPathField;
+    private JBTextField     customArgsField;
+    private ComboBox<String> customModelCombo;
+    private JBTextField     customModelsArgsField;
+    private JBLabel         customStatusLabel;
     private JBLabel         intellijAiStatusLabel;
 
     // Rules
@@ -101,6 +125,11 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         JButton testBtn = new JButton("Test Connection");
         testBtn.addActionListener(ev -> onTestConnection());
         selectorRow.add(testBtn);
+        JButton detectAllBtn = new JButton("Detect Installed CLIs…");
+        detectAllBtn.setToolTipText(
+            "Scan for claude, codex, gh, llm, sahaa, gemini, cursor-agent, copilot and opencode");
+        detectAllBtn.addActionListener(ev -> onDetectAllClis());
+        selectorRow.add(detectAllBtn);
         panel.add(selectorRow, BorderLayout.NORTH);
 
         // Auth card panel (switches when provider changes)
@@ -114,6 +143,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         authPanel.add(buildGhCopilotCard(),  CommitMessageProvider.Id.GH_COPILOT.name());
         authPanel.add(buildLlmCliCard(),     CommitMessageProvider.Id.LLM_CLI.name());
         authPanel.add(buildClaudeCliCard(),  CommitMessageProvider.Id.CLAUDE_CLI.name());
+        authPanel.add(buildCustomCliCard(),  CommitMessageProvider.Id.CUSTOM_CLI.name());
         authPanel.add(buildIntelliJAiCard(), CommitMessageProvider.Id.INTELLIJ_AI.name());
         panel.add(authPanel, BorderLayout.CENTER);
 
@@ -212,12 +242,183 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         return card;
     }
 
-    private @NotNull JPanel buildCodexCliCard() {
-        codexEnvStatusLabel = new JBLabel("<html><i>Checking sign-in status…</i></html>");
-        codexKeyField       = new JPasswordField(30); // optional manual API-key fallback
-        codexCliPathField   = new JBTextField(1);     // kept for settings state, hidden
+    // ── Local CLI cards (claude, codex, gh, llm, custom) ──────────────────────
 
-        // Defer I/O to background — do NOT call refreshCodexAuthStatus() here on EDT
+    /** Small GridBag helper: label | component | optional trailing button. */
+    private static final class CardBuilder {
+        final JPanel card = new JPanel(new GridBagLayout());
+        private int row = 0;
+
+        CardBuilder row(@Nullable String label, @NotNull JComponent field, @Nullable JComponent trailing) {
+            GridBagConstraints g = base();
+            g.gridx = 0; g.gridy = row;
+            if (label != null) card.add(new JBLabel(label), g);
+            g.gridx = 1; g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
+            g.gridwidth = trailing == null ? 2 : 1;
+            card.add(field, g);
+            if (trailing != null) {
+                GridBagConstraints t = base();
+                t.gridx = 2; t.gridy = row;
+                card.add(trailing, t);
+            }
+            row++;
+            return this;
+        }
+
+        CardBuilder full(@NotNull JComponent component) {
+            GridBagConstraints g = base();
+            g.gridx = 0; g.gridy = row++; g.gridwidth = 3;
+            g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
+            card.add(component, g);
+            return this;
+        }
+
+        CardBuilder hint(@NotNull String html) {
+            JBLabel hint = new JBLabel("<html><i>" + html + "</i></html>");
+            hint.setForeground(UIManager.getColor("Label.disabledForeground"));
+            return full(hint);
+        }
+
+        private static GridBagConstraints base() {
+            GridBagConstraints g = new GridBagConstraints();
+            g.insets = new Insets(3, 0, 3, 6);
+            g.anchor = GridBagConstraints.WEST;
+            return g;
+        }
+    }
+
+    private static @NotNull TextFieldWithBrowseButton newCliPathField() {
+        JBTextField text = new JBTextField(30);
+        text.getEmptyText().setText("blank = auto-detect from PATH");
+        TextFieldWithBrowseButton field = new TextFieldWithBrowseButton(text);
+        field.addBrowseFolderListener(new TextBrowseFolderListener(
+            FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor()
+                .withTitle("Select CLI Executable")));
+        return field;
+    }
+
+    private static @NotNull ComboBox<String> newModelCombo(@NotNull List<String> initial,
+                                                           @NotNull String tooltip) {
+        ComboBox<String> combo = new ComboBox<>(new DefaultComboBoxModel<>(initial.toArray(new String[0])));
+        combo.setEditable(true);
+        combo.setToolTipText(tooltip);
+        setComboText(combo, "");
+        return combo;
+    }
+
+    private static @NotNull JBTextField newArgsField(@NotNull String emptyText) {
+        JBTextField f = new JBTextField(30);
+        f.getEmptyText().setText(emptyText);
+        return f;
+    }
+
+    private static void setStatus(@NotNull JBLabel label, @NotNull String text) {
+        boolean ok = text.startsWith("✓");
+        boolean bad = text.startsWith("✗");
+        String color = ok ? "green" : bad ? "#cc4444" : "gray";
+        label.setText("<html><b style='color:" + color + "'>" + escapeHtml(text) + "</b></html>");
+    }
+
+    private static @NotNull String escapeHtml(@NotNull String s) {
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /** Builds the "Auto-detect" button for a CLI card. */
+    private @NotNull JButton detectButton(@NotNull Supplier<AiCli> cli,
+                                          @NotNull Supplier<String> binary,
+                                          @NotNull TextFieldWithBrowseButton pathField,
+                                          @NotNull JBLabel status) {
+        JButton btn = new JButton("Auto-detect");
+        btn.addActionListener(ev -> autoDetect(cli.get(), binary.get(), pathField, status));
+        return btn;
+    }
+
+    /**
+     * Detects one CLI off the EDT (modal progress). When it is not found, offers
+     * to browse for the binary so the user can point at it manually.
+     */
+    private void autoDetect(@Nullable AiCli cli, @NotNull String binary,
+                            @NotNull TextFieldWithBrowseButton pathField, @NotNull JBLabel status) {
+        String configured = pathField.getText().trim();
+        AiCliDetector.DetectedCli result = ProgressManager.getInstance().runProcessWithProgressSynchronously(
+            () -> cli != null
+                ? AiCliDetector.detect(cli, configured)
+                : detectUnknown(binary, configured),
+            "Detecting " + binary + "…", true, null);
+        if (result != null && result.found()) {
+            pathField.setText(result.path());
+            String version = result.version().isBlank() ? "" : " (" + result.version() + ")";
+            setStatus(status, "✓ Found " + result.path() + version + " — " + result.auth());
+            return;
+        }
+        String install = cli != null ? "\n\nInstall: " + cli.installHint() : "";
+        setStatus(status, "✗ " + binary + " not found on PATH");
+        int choice = Messages.showYesNoDialog(
+            "'" + binary + "' was not found on PATH or in common install locations." + install
+                + "\n\nBrowse for the executable now?",
+            binary + " Not Found", "Browse…", "Cancel", Messages.getWarningIcon());
+        if (choice != Messages.YES) return;
+        VirtualFile chosen = FileChooser.chooseFile(
+            FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor()
+                .withTitle("Select " + binary + " Executable"),
+            pathField, null, null);
+        if (chosen != null) {
+            pathField.setText(chosen.getPath());
+            setStatus(status, java.nio.file.Files.isExecutable(Path.of(chosen.getPath()))
+                ? "✓ Using " + chosen.getPath()
+                : "✗ " + chosen.getPath() + " is not executable");
+        }
+    }
+
+    private static @NotNull AiCliDetector.DetectedCli detectUnknown(@NotNull String binary,
+                                                                   @NotNull String configured) {
+        String path = CliPathResolver.resolveOrNull(configured, binary);
+        return new AiCliDetector.DetectedCli(AiCli.SAHAA, path,
+            path == null ? "" : AiCliDetector.version(path),
+            path == null ? "not installed" : "? Uses the CLI's own login");
+    }
+
+    /** Builds the ⟳ button that fills {@code combo} with the models the CLI reports. */
+    private @NotNull JButton refreshModelsButton(@NotNull Supplier<AiCli> cli,
+                                                 @NotNull Supplier<String> binary,
+                                                 @NotNull TextFieldWithBrowseButton pathField,
+                                                 @NotNull ComboBox<String> combo,
+                                                 @NotNull JBLabel status,
+                                                 @Nullable Supplier<String> customListArgs) {
+        JButton btn = new JButton("⟳ Models");
+        btn.setToolTipText("Fetch the models this CLI can use");
+        btn.addActionListener(ev -> {
+            AiCli target = cli.get();
+            String bin = binary.get();
+            String configured = pathField.getText().trim();
+            String listArgs = customListArgs == null ? null : customListArgs.get();
+            List<String> models = ProgressManager.getInstance().runProcessWithProgressSynchronously(
+                () -> AiCliModels.list(target, CliPathResolver.resolveOrNull(configured, bin), listArgs),
+                "Fetching " + bin + " models…", true, null);
+            String current = comboText(combo);
+            if (models == null || models.isEmpty()) {
+                setStatus(status, customListArgs != null && (listArgs == null || listArgs.isBlank())
+                    ? "? Set 'List models args' to fetch models — or type a model name"
+                    : "✗ No models reported — type a model name");
+                return;
+            }
+            combo.setModel(new DefaultComboBoxModel<>(models.toArray(new String[0])));
+            setComboText(combo, current);
+            setStatus(status, "✓ " + models.size() + " models available");
+        });
+        return btn;
+    }
+
+    private @NotNull JPanel buildCodexCliCard() {
+        codexEnvStatusLabel  = new JBLabel("<html><i>Checking sign-in status…</i></html>");
+        codexPathStatusLabel = new JBLabel(" ");
+        codexKeyField        = new JPasswordField(30); // optional manual API-key fallback
+        codexCliPathField    = newCliPathField();
+        codexModelCombo      = newModelCombo(AiCliModels.staticModels(AiCli.CODEX),
+            "Blank = codex default model (from ~/.codex/config.toml)");
+        codexExtraArgsField  = newArgsField("extra args for codex exec, e.g. -c model_reasoning_effort=low");
+
+        // Defer I/O to background — do NOT call the status check here on EDT
         scheduleCodexAuthRefresh();
 
         JButton signInBtn  = new JButton("Sign in with ChatGPT");
@@ -225,8 +426,9 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         JButton refreshBtn = new JButton("Refresh Status");
 
         signInBtn.addActionListener(ev -> {
+            apply(); // persist the path so the login flow uses it
             signInBtn.setEnabled(false);
-            signInBtn.setText("Opening browser…");
+            signInBtn.setText("Opening terminal…");
             com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.startSignIn(() -> {
                 scheduleCodexAuthRefresh();
                 signInBtn.setText("Sign in with ChatGPT");
@@ -239,41 +441,31 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         });
         refreshBtn.addActionListener(ev -> scheduleCodexAuthRefresh());
 
-        JPanel card = new JPanel(new GridBagLayout());
-        GridBagConstraints g = new GridBagConstraints();
-        g.insets = new Insets(5, 0, 5, 6);
-        g.anchor = GridBagConstraints.WEST;
-
-        g.gridx = 0; g.gridy = 0; g.gridwidth = 3; g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
-        card.add(new JBLabel("<html><b>ChatGPT Account — Browser Sign-in</b></html>"), g);
-
-        g.gridy = 1;
-        card.add(codexEnvStatusLabel, g);
-
         JPanel btnRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         btnRow.add(signInBtn);
         btnRow.add(signOutBtn);
         btnRow.add(refreshBtn);
-        g.gridy = 2; g.fill = GridBagConstraints.NONE; g.weightx = 0;
-        card.add(btnRow, g);
 
-        g.gridy = 3; g.gridwidth = 1; g.weightx = 0;
-        card.add(new JBLabel("API key (fallback):"), g);
-        g.gridx = 1; g.gridwidth = 2; g.fill = GridBagConstraints.HORIZONTAL; g.weightx = 1;
-        card.add(codexKeyField, g);
-
-        g.gridx = 0; g.gridy = 4; g.gridwidth = 3; g.fill = GridBagConstraints.NONE; g.weightx = 0;
-        JBLabel hint = new JBLabel("<html><i>"
-            + "Uses OAuth 2.0 Device Code flow — browser opens automatically, enter the one-time code.<br>"
-            + "No API key required. Tokens stored in IntelliJ PasswordSafe.<br>"
-            + "Fallback: Codex desktop app session (<code>~/.codex/auth.json</code>)."
-            + "</i></html>");
-        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
-        card.add(hint, g);
-        return card;
+        Supplier<AiCli> cli = () -> AiCli.CODEX;
+        Supplier<String> bin = () -> "codex";
+        return new CardBuilder()
+            .row("codex CLI path:", codexCliPathField,
+                detectButton(cli, bin, codexCliPathField, codexPathStatusLabel))
+            .full(codexPathStatusLabel)
+            .row("Model:", codexModelCombo,
+                refreshModelsButton(cli, bin, codexCliPathField, codexModelCombo, codexPathStatusLabel, null))
+            .row("Extra args:", codexExtraArgsField, null)
+            .full(new JBLabel("<html><b>ChatGPT account</b></html>"))
+            .full(codexEnvStatusLabel)
+            .full(btnRow)
+            .row("API key (fallback):", codexKeyField, null)
+            .hint("Runs <code>codex exec --sandbox read-only</code> in a temp dir with the prompt on stdin, "
+                + "using your <code>codex login</code> session.<br>"
+                + "The fallback key is exported as <code>OPENAI_API_KEY</code> for the CLI.")
+            .card;
     }
 
-    /** Runs the auth file/PasswordSafe check off the EDT, then updates the label on EDT. */
+    /** Runs the sign-in status check off the EDT, then updates the label on EDT. */
     private void scheduleCodexAuthRefresh() {
         if (codexEnvStatusLabel == null) return;
         codexEnvStatusLabel.setText("<html><i>Checking…</i></html>");
@@ -282,169 +474,209 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             String status = com.github.prepushchecker.commitgen.ChatGPTOAuthFlow.getStatusText();
             SwingUtilities.invokeLater(() -> {
                 if (codexEnvStatusLabel == null) return;
-                if (status != null) {
-                    codexEnvStatusLabel.setText(
-                        "<html><b style='color:green'>✓ " + status + "</b></html>");
-                } else {
-                    codexEnvStatusLabel.setText(
-                        "<html><b style='color:#cc4444'>✗ Not signed in — click \"Sign in with ChatGPT\"</b></html>");
-                }
+                setStatus(codexEnvStatusLabel, status != null
+                    ? "✓ " + status
+                    : "✗ Not signed in — click \"Sign in with ChatGPT\" (runs codex login)");
             });
         }, "CommitGen-CodexAuthCheck").start();
     }
 
-    private void refreshCodexAuthStatus() {
-        scheduleCodexAuthRefresh();
-    }
-
     private @NotNull JPanel buildGhCopilotCard() {
-        ghCliPathField  = new JBTextField(30);
-        ghCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
-        ghStatusLabel   = new JBLabel(" ");
+        ghCliPathField = newCliPathField();
+        ghModelCombo   = newModelCombo(AiCliModels.staticModels(AiCli.GH), "Blank = gpt-4o");
+        ghStatusLabel  = new JBLabel(" ");
 
-        JButton detectBtn = new JButton("Auto-detect gh");
-        detectBtn.addActionListener(ev -> {
-            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("gh");
-            if (found != null) {
-                ghCliPathField.setText(found);
-                // Check auth status
-                String token = com.github.prepushchecker.commitgen.providers.GhCopilotProvider
-                    .getGhToken(found);
-                ghStatusLabel.setText(token != null
-                    ? "✓ Signed in to GitHub CLI"
-                    : "✗ Not signed in — run: gh auth login");
-            } else {
-                ghCliPathField.setText("");
-                ghStatusLabel.setText("✗ gh not found — install from cli.github.com");
-            }
-        });
-
-        JPanel card = new JPanel(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(3, 0, 3, 6);
-        gbc.anchor = GridBagConstraints.WEST;
-
-        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("gh CLI path:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(ghCliPathField, gbc);
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        card.add(detectBtn, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 3;
-        card.add(ghStatusLabel, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
-        JBLabel hint = new JBLabel("<html><i>"
-            + "Requires GitHub CLI + active Copilot subscription. "
-            + "Auth: <code>gh auth login</code> &nbsp;|&nbsp; "
-            + "Scope: <code>gh auth refresh -s copilot</code>"
-            + "</i></html>");
-        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
-        card.add(hint, gbc);
-        return card;
+        Supplier<AiCli> cli = () -> AiCli.GH;
+        Supplier<String> bin = () -> "gh";
+        return new CardBuilder()
+            .row("gh CLI path:", ghCliPathField, detectButton(cli, bin, ghCliPathField, ghStatusLabel))
+            .full(ghStatusLabel)
+            .row("Model:", ghModelCombo,
+                refreshModelsButton(cli, bin, ghCliPathField, ghModelCombo, ghStatusLabel, null))
+            .hint("Requires GitHub CLI + active Copilot subscription. "
+                + "Auth: <code>gh auth login</code> &nbsp;|&nbsp; "
+                + "Scope: <code>gh auth refresh -s copilot</code>")
+            .card;
     }
 
     private @NotNull JPanel buildLlmCliCard() {
-        llmCliPathField = new JBTextField(30);
-        llmCliPathField.getEmptyText().setText("blank = auto-detect from PATH");
-        llmModelField   = new JBTextField(20);
-        llmModelField.getEmptyText().setText("e.g. gpt-4o, claude-3-5-sonnet, gemini-1.5-flash");
+        llmCliPathField = newCliPathField();
+        llmModelCombo   = newModelCombo(List.of(), "Blank = llm default model");
+        llmStatusLabel  = new JBLabel(" ");
 
-        JButton detectBtn = new JButton("Auto-detect");
-        detectBtn.addActionListener(ev -> {
-            String found = com.github.prepushchecker.commitgen.CliPathResolver.whichViaShell("llm");
-            if (found != null) {
-                llmCliPathField.setText(found);
-            } else {
-                llmCliPathField.setText("");
-                Messages.showInfoMessage(
-                    "llm not found on PATH.\n\n"
-                        + "Install:   pip install llm\n"
-                        + "Docs:      https://llm.datasette.io\n"
-                        + "Add keys:  llm keys set openai",
-                    "llm CLI Not Found");
-            }
-        });
-
-        JPanel card = new JPanel(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(3, 0, 3, 6);
-        gbc.anchor = GridBagConstraints.WEST;
-
-        gbc.gridx = 0; gbc.gridy = 0; card.add(new JBLabel("CLI path:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(llmCliPathField, gbc);
-        gbc.gridx = 2; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        card.add(detectBtn, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        gbc.fill = GridBagConstraints.NONE;
-        card.add(new JBLabel("Model:"), gbc);
-        gbc.gridx = 1; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(llmModelField, gbc);
-
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 3;
-        JBLabel hint = new JBLabel("<html><i>"
-            + "Supports 60+ models via plugins. "
-            + "Install: <code>pip install llm</code> &nbsp;|&nbsp; "
-            + "Add provider: <code>llm install llm-anthropic</code> &nbsp;|&nbsp; "
-            + "List models: <code>llm models</code>"
-            + "</i></html>");
-        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
-        card.add(hint, gbc);
-        return card;
+        Supplier<AiCli> cli = () -> AiCli.LLM;
+        Supplier<String> bin = () -> "llm";
+        return new CardBuilder()
+            .row("CLI path:", llmCliPathField, detectButton(cli, bin, llmCliPathField, llmStatusLabel))
+            .full(llmStatusLabel)
+            .row("Model:", llmModelCombo,
+                refreshModelsButton(cli, bin, llmCliPathField, llmModelCombo, llmStatusLabel, null))
+            .hint("Supports 60+ models via plugins. "
+                + "Install: <code>pip install llm</code> &nbsp;|&nbsp; "
+                + "Add provider: <code>llm install llm-anthropic</code> &nbsp;|&nbsp; "
+                + "List models: <code>llm models</code>")
+            .card;
     }
 
     private @NotNull JPanel buildClaudeCliCard() {
-        claudeKeyField = new JPasswordField(30);
-        claudeModelField = new JBTextField(20);
-        claudeModelField.getEmptyText().setText("e.g. claude-opus-4-5 (blank = claude-3-5-sonnet)");
-        claudeEnvStatusLabel = new JBLabel();
+        claudeKeyField       = new JPasswordField(30);
+        claudeCliPathField   = newCliPathField();
+        claudeModelCombo     = newModelCombo(AiCliModels.staticModels(AiCli.CLAUDE),
+            "Alias (sonnet, opus, haiku) or full model ID. Blank = CLI default");
+        claudeExtraArgsField = newArgsField("extra args for claude -p, e.g. --max-turns 1");
+        claudeEnvStatusLabel = new JBLabel(" ");
 
-        JButton checkEnvBtn = new JButton("Check ANTHROPIC_API_KEY");
-        checkEnvBtn.addActionListener(ev -> {
-            String val = com.github.prepushchecker.commitgen.CliPathResolver.resolveEnvVar("ANTHROPIC_API_KEY");
-            if (val != null && !val.isBlank()) {
-                claudeEnvStatusLabel.setText("✓ ANTHROPIC_API_KEY found in shell environment");
-                claudeEnvStatusLabel.setForeground(UIManager.getColor("Label.foreground"));
-            } else {
-                claudeEnvStatusLabel.setText("✗ ANTHROPIC_API_KEY not set — see instructions below");
-                claudeEnvStatusLabel.setForeground(UIManager.getColor("Component.errorFocusColor") != null
-                    ? UIManager.getColor("Component.errorFocusColor") : java.awt.Color.RED.darker());
-            }
+        Supplier<AiCli> cli = () -> AiCli.CLAUDE;
+        Supplier<String> bin = () -> "claude";
+        return new CardBuilder()
+            .row("claude CLI path:", claudeCliPathField,
+                detectButton(cli, bin, claudeCliPathField, claudeEnvStatusLabel))
+            .full(claudeEnvStatusLabel)
+            .row("Model:", claudeModelCombo,
+                refreshModelsButton(cli, bin, claudeCliPathField, claudeModelCombo, claudeEnvStatusLabel, null))
+            .row("Extra args:", claudeExtraArgsField, null)
+            .row("API key (fallback):", claudeKeyField, null)
+            .hint("Runs <code>claude -p --output-format text</code> with the prompt on stdin, "
+                + "using your Claude Code login (subscription or API key).<br>"
+                + "Sign in once with <code>claude</code> in a terminal. "
+                + "The fallback key is exported as <code>ANTHROPIC_API_KEY</code> for the CLI.")
+            .card;
+    }
+
+    private @NotNull JPanel buildCustomCliCard() {
+        customBinaryField     = newArgsField("binary name, e.g. sahaa, gemini, cursor-agent");
+        customCliPathField    = newCliPathField();
+        customArgsField       = newArgsField("e.g. --chat {model?-m {model}} {prompt}");
+        customModelCombo      = newModelCombo(List.of(), "Substituted into {model}");
+        customModelsArgsField = newArgsField("args that print one model per line, e.g. models");
+        customStatusLabel     = new JBLabel(" ");
+
+        Supplier<String> bin = () -> {
+            String b = customBinaryField.getText().trim();
+            return b.isEmpty() ? AiCli.SAHAA.binaryName() : b;
+        };
+        Supplier<AiCli> cli = () -> AiCli.byBinary(bin.get());
+
+        JComboBox<AiCli> presetCombo = new JComboBox<>(
+            java.util.Arrays.stream(AiCli.values()).filter(AiCli::isCustom).toArray(AiCli[]::new));
+        presetCombo.setSelectedItem(null);
+        presetCombo.setToolTipText("Fill binary name and args template for a known CLI");
+        presetCombo.addActionListener(ev -> {
+            AiCli preset = (AiCli) presetCombo.getSelectedItem();
+            if (preset == null) return;
+            customBinaryField.setText(preset.binaryName());
+            customArgsField.setText(preset.defaultArgsTemplate());
+            customCliPathField.setText("");
+            setStatus(customStatusLabel, "? Preset applied — click Auto-detect");
         });
 
-        JPanel card = new JPanel(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.insets = new Insets(3, 0, 3, 6);
-        gbc.anchor = GridBagConstraints.WEST;
+        Supplier<AiCli> modelCli = () -> {
+            AiCli known = cli.get();
+            return known != null ? known : AiCli.SAHAA;
+        };
+        return new CardBuilder()
+            .row("Preset:", presetCombo, null)
+            .row("Binary name:", customBinaryField, null)
+            .row("CLI path:", customCliPathField,
+                detectButton(cli, bin, customCliPathField, customStatusLabel))
+            .full(customStatusLabel)
+            .row("Args template:", customArgsField, null)
+            .row("Model:", customModelCombo,
+                refreshModelsButton(modelCli, bin, customCliPathField, customModelCombo, customStatusLabel,
+                    () -> customModelsArgsField.getText().trim()))
+            .row("List models args:", customModelsArgsField, null)
+            .hint("Placeholders: <code>{model}</code>, <code>{model?…}</code> (kept only when a model is set), "
+                + "<code>{prompt}</code>. Without <code>{prompt}</code> the prompt is sent on stdin.<br>"
+                + "Uses the CLI's own login. Runs in an empty temp directory with a 120 s timeout.")
+            .card;
+    }
 
-        gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = 3;
-        card.add(claudeEnvStatusLabel, gbc);
+    // ── Detect all installed CLIs ─────────────────────────────────────────────
 
-        gbc.gridx = 0; gbc.gridy = 1; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(checkEnvBtn, gbc);
+    private void onDetectAllClis() {
+        apply(); // scan honours the paths currently typed in the cards
+        CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
+        List<AiCliDetector.DetectedCli> found = ProgressManager.getInstance().runProcessWithProgressSynchronously(
+            () -> AiCliDetector.scanAll(s), "Detecting installed AI CLIs…", true, null);
+        if (found == null) return;
+        DetectedClisDialog dialog = new DetectedClisDialog(found);
+        if (!dialog.showAndGet()) return;
+        AiCliDetector.DetectedCli chosen = dialog.selected();
+        if (chosen == null || !chosen.found()) return;
+        useDetectedCli(chosen);
+    }
 
-        gbc.gridx = 0; gbc.gridy = 2; gbc.gridwidth = 1; gbc.weightx = 0;
-        card.add(new JBLabel("API key (fallback):"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(claudeKeyField, gbc);
+    private void useDetectedCli(@NotNull AiCliDetector.DetectedCli d) {
+        String path = d.path();
+        String status = "✓ Found " + path
+            + (d.version().isBlank() ? "" : " (" + d.version() + ")") + " — " + d.auth();
+        switch (d.cli()) {
+            case CLAUDE -> { claudeCliPathField.setText(path); setStatus(claudeEnvStatusLabel, status); }
+            case CODEX  -> { codexCliPathField.setText(path); setStatus(codexPathStatusLabel, status); }
+            case GH     -> { ghCliPathField.setText(path); setStatus(ghStatusLabel, status); }
+            case LLM    -> { llmCliPathField.setText(path); setStatus(llmStatusLabel, status); }
+            default -> {
+                if (!d.cli().binaryName().equals(customBinaryField.getText().trim())) {
+                    customArgsField.setText(d.cli().defaultArgsTemplate());
+                }
+                customBinaryField.setText(d.cli().binaryName());
+                customCliPathField.setText(path);
+                setStatus(customStatusLabel, status);
+            }
+        }
+        providerCombo.setSelectedItem(d.cli().providerId());
+        showSelectedProviderCard(d.cli().providerId());
+    }
 
-        gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 1; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
-        card.add(new JBLabel("Model:"), gbc);
-        gbc.gridx = 1; gbc.gridwidth = 2; gbc.fill = GridBagConstraints.HORIZONTAL; gbc.weightx = 1;
-        card.add(claudeModelField, gbc);
+    /** Table of every known CLI with path / version / sign-in state. */
+    private static final class DetectedClisDialog extends DialogWrapper {
+        private final List<AiCliDetector.DetectedCli> rows;
+        private JBTable table;
 
-        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 3; gbc.fill = GridBagConstraints.NONE; gbc.weightx = 0;
-        JBLabel hint = new JBLabel("<html><i>"
-            + "<b>Uses ANTHROPIC_API_KEY from your shell environment</b> — same key as claude auth.<br>"
-            + "Auth: run <code>claude</code> in a terminal, or:<br>"
-            + "Add <code>export ANTHROPIC_API_KEY=sk-ant-...</code> to your <code>.zshrc</code> / <code>.bashrc</code><br>"
-            + "Or enter the key above (stored in PasswordSafe, used as fallback)."
-            + "</i></html>");
-        hint.setForeground(UIManager.getColor("Label.disabledForeground"));
-        card.add(hint, gbc);
-        return card;
+        DetectedClisDialog(@NotNull List<AiCliDetector.DetectedCli> rows) {
+            super(true);
+            this.rows = rows;
+            setTitle("Installed AI CLIs");
+            setOKButtonText("Use Selected");
+            init();
+        }
+
+        @Override
+        protected @Nullable JComponent createCenterPanel() {
+            String[] cols = {"CLI", "Found", "Path", "Version", "Sign-in"};
+            Object[][] data = new Object[rows.size()][];
+            int firstFound = -1;
+            for (int i = 0; i < rows.size(); i++) {
+                AiCliDetector.DetectedCli d = rows.get(i);
+                if (firstFound < 0 && d.found()) firstFound = i;
+                data[i] = new Object[]{
+                    d.cli().displayName() + " (" + d.cli().binaryName() + ")",
+                    d.found() ? "✓" : "✗",
+                    d.found() ? d.path() : "—",
+                    d.version(),
+                    d.found() ? d.auth() : d.cli().installHint()
+                };
+            }
+            table = new JBTable(new javax.swing.table.DefaultTableModel(data, cols) {
+                @Override public boolean isCellEditable(int r, int c) { return false; }
+            });
+            table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+            table.getColumnModel().getColumn(1).setMaxWidth(50);
+            if (firstFound >= 0) table.setRowSelectionInterval(firstFound, firstFound);
+            JBScrollPane scroll = new JBScrollPane(table);
+            scroll.setPreferredSize(new Dimension(900, 260));
+            JPanel panel = new JPanel(new BorderLayout(0, 6));
+            panel.add(scroll, BorderLayout.CENTER);
+            panel.add(new JBLabel("<html><i>Select an installed CLI and click <b>Use Selected</b> to "
+                + "fill its path and switch the provider. Not found? Set the path manually in its card."
+                + "</i></html>"), BorderLayout.SOUTH);
+            return panel;
+        }
+
+        @Nullable AiCliDetector.DetectedCli selected() {
+            int r = table == null ? -1 : table.getSelectedRow();
+            return r < 0 ? null : rows.get(r);
+        }
     }
 
     private @NotNull JPanel buildIntelliJAiCard() {
@@ -643,11 +875,21 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         if (!trimmedTextEquals(geminiModelField, s.geminiModel)) return true;
         if (!trimmedTextEquals(ollamaUrlField, s.ollamaBaseUrl)) return true;
         if (!trimmedTextEquals(ollamaModelField, s.ollamaModel)) return true;
-        if (!trimmedTextEquals(codexCliPathField, s.codexCliPath)) return true;
-        if (!trimmedTextEquals(ghCliPathField, s.ghCliPath)) return true;
-        if (!trimmedTextEquals(llmCliPathField, s.llmCliPath)) return true;
-        if (!trimmedTextEquals(llmModelField, s.llmModel)) return true;
-        if (!trimmedTextEquals(claudeModelField, s.claudeModel)) return true;
+        if (!trimmedTextEquals(codexCliPathField.getTextField(), s.codexCliPath)) return true;
+        if (!comboTextEquals(codexModelCombo, s.codexModel)) return true;
+        if (!trimmedTextEquals(codexExtraArgsField, s.codexExtraArgs)) return true;
+        if (!trimmedTextEquals(ghCliPathField.getTextField(), s.ghCliPath)) return true;
+        if (!comboTextEquals(ghModelCombo, s.ghModel)) return true;
+        if (!trimmedTextEquals(llmCliPathField.getTextField(), s.llmCliPath)) return true;
+        if (!comboTextEquals(llmModelCombo, s.llmModel)) return true;
+        if (!trimmedTextEquals(claudeCliPathField.getTextField(), s.claudeCliPath)) return true;
+        if (!comboTextEquals(claudeModelCombo, s.claudeModel)) return true;
+        if (!trimmedTextEquals(claudeExtraArgsField, s.claudeExtraArgs)) return true;
+        if (!trimmedTextEquals(customBinaryField, s.customCliBinary)) return true;
+        if (!trimmedTextEquals(customCliPathField.getTextField(), s.customCliPath)) return true;
+        if (!trimmedTextEquals(customArgsField, s.customCliArgs)) return true;
+        if (!comboTextEquals(customModelCombo, s.customCliModel)) return true;
+        if (!trimmedTextEquals(customModelsArgsField, s.customCliModelsArgs)) return true;
         if (conventionalCommitsCheck.isSelected() != s.useConventionalCommits) return true;
         if ((int) maxLengthSpinner.getValue() != s.maxSubjectLength) return true;
         if (!prefixTemplateField.getText().equals(s.prefixTemplate)) return true;
@@ -665,6 +907,21 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
     private static boolean trimmedTextEquals(@NotNull JTextComponent field, @Nullable String expected) {
         return field.getText().trim().equals(expected == null ? "" : expected);
+    }
+
+    private static boolean comboTextEquals(@NotNull ComboBox<String> combo, @Nullable String expected) {
+        return comboText(combo).equals(expected == null ? "" : expected);
+    }
+
+    private static @NotNull String comboText(@NotNull ComboBox<String> combo) {
+        Object item = combo.isEditable() ? combo.getEditor().getItem() : combo.getSelectedItem();
+        return item == null ? "" : item.toString().trim();
+    }
+
+    private static void setComboText(@NotNull ComboBox<String> combo, @Nullable String value) {
+        String v = value == null ? "" : value;
+        combo.setSelectedItem(v);
+        combo.getEditor().setItem(v);
     }
 
     private static void saveApiKeyIfPresent(
@@ -692,10 +949,20 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         s.ollamaBaseUrl  = ollamaUrlField.getText().trim();
         s.ollamaModel    = ollamaModelField.getText().trim();
         s.codexCliPath   = codexCliPathField.getText().trim();
+        s.codexModel     = comboText(codexModelCombo);
+        s.codexExtraArgs = codexExtraArgsField.getText().trim();
         s.ghCliPath      = ghCliPathField.getText().trim();
+        s.ghModel        = comboText(ghModelCombo);
         s.llmCliPath     = llmCliPathField.getText().trim();
-        s.llmModel       = llmModelField.getText().trim();
-        s.claudeModel    = claudeModelField.getText().trim();
+        s.llmModel       = comboText(llmModelCombo);
+        s.claudeCliPath  = claudeCliPathField.getText().trim();
+        s.claudeModel    = comboText(claudeModelCombo);
+        s.claudeExtraArgs = claudeExtraArgsField.getText().trim();
+        s.customCliBinary     = customBinaryField.getText().trim();
+        s.customCliPath       = customCliPathField.getText().trim();
+        s.customCliArgs       = customArgsField.getText().trim();
+        s.customCliModel      = comboText(customModelCombo);
+        s.customCliModelsArgs = customModelsArgsField.getText().trim();
 
         s.useConventionalCommits = conventionalCommitsCheck.isSelected();
         s.maxSubjectLength       = (int) maxLengthSpinner.getValue();
@@ -738,10 +1005,20 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
         ollamaUrlField.setText(s.ollamaBaseUrl);
         ollamaModelField.setText(s.ollamaModel);
         codexCliPathField.setText(s.codexCliPath);
+        setComboText(codexModelCombo, s.codexModel);
+        codexExtraArgsField.setText(s.codexExtraArgs);
         ghCliPathField.setText(s.ghCliPath);
+        setComboText(ghModelCombo, s.ghModel);
         llmCliPathField.setText(s.llmCliPath);
-        llmModelField.setText(s.llmModel);
-        claudeModelField.setText(s.claudeModel);
+        setComboText(llmModelCombo, s.llmModel);
+        claudeCliPathField.setText(s.claudeCliPath);
+        setComboText(claudeModelCombo, s.claudeModel);
+        claudeExtraArgsField.setText(s.claudeExtraArgs);
+        customBinaryField.setText(s.customCliBinary);
+        customCliPathField.setText(s.customCliPath);
+        customArgsField.setText(s.customCliArgs);
+        setComboText(customModelCombo, s.customCliModel);
+        customModelsArgsField.setText(s.customCliModelsArgs);
 
         // Never pre-fill key fields — show placeholder text only
         openAiKeyField.setText("");
@@ -919,6 +1196,7 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
             case GH_COPILOT  -> new com.github.prepushchecker.commitgen.providers.GhCopilotProvider();
             case LLM_CLI     -> new com.github.prepushchecker.commitgen.providers.LlmCliProvider();
             case CLAUDE_CLI  -> new com.github.prepushchecker.commitgen.providers.ClaudeCliProvider();
+            case CUSTOM_CLI  -> new com.github.prepushchecker.commitgen.providers.CustomCliProvider();
         };
     }
 

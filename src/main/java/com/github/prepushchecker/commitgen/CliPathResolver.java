@@ -35,20 +35,44 @@ public final class CliPathResolver {
         ".bash_profile", ".bashrc", ".profile"
     );
 
-    private static final List<String> EXTRA_PATH_DIRS = List.of(
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/opt/local/bin",
-        "/usr/bin",
-        "/bin",
-        System.getProperty("user.home") + "/.local/bin",
-        System.getProperty("user.home") + "/.npm-global/bin",
-        System.getProperty("user.home") + "/.cargo/bin",
-        System.getProperty("user.home") + "/.asdf/shims",
-        System.getProperty("user.home") + "/go/bin",
-        "/usr/local/npm/bin",
-        "/usr/local/share/npm/bin"
-    );
+    private static final List<String> EXTRA_PATH_DIRS = buildExtraPathDirs();
+
+    private static List<String> buildExtraPathDirs() {
+        String home = System.getProperty("user.home");
+        List<String> dirs = new ArrayList<>(List.of(
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            "/opt/local/bin",
+            "/usr/bin",
+            "/bin",
+            home + "/.local/bin",
+            home + "/.npm-global/bin",
+            home + "/.claude/local",
+            home + "/.bun/bin",
+            home + "/.volta/bin",
+            home + "/.yarn/bin",
+            home + "/Library/pnpm",
+            home + "/.local/share/pnpm",
+            home + "/.cargo/bin",
+            home + "/.asdf/shims",
+            home + "/go/bin",
+            "/usr/local/npm/bin",
+            "/usr/local/share/npm/bin"
+        ));
+        // nvm installs every Node version under its own bin dir; npm-installed
+        // CLIs (claude, codex, gemini, …) land there. Newest version first.
+        Path nvm = Path.of(home, ".nvm", "versions", "node");
+        if (Files.isDirectory(nvm)) {
+            try (var stream = Files.list(nvm)) {
+                stream.map(v -> v.resolve("bin"))
+                    .filter(Files::isDirectory)
+                    .map(Path::toString)
+                    .sorted(java.util.Comparator.reverseOrder())
+                    .forEach(dirs::add);
+            } catch (Exception ignored) {}
+        }
+        return List.copyOf(dirs);
+    }
 
     private CliPathResolver() {}
 
@@ -64,12 +88,24 @@ public final class CliPathResolver {
     /** Resolves the absolute path to {@code cliName}, or returns the bare name. */
     @NotNull
     public static String resolve(@Nullable String configured, @NotNull String cliName) {
+        String found = resolveOrNull(configured, cliName);
+        return found != null ? found : cliName;
+    }
+
+    /**
+     * Resolves the absolute path to {@code cliName}, or {@code null} when it
+     * cannot be found. Order: configured absolute path → configured bare name
+     * via the user's shell → {@code cliName} via the user's shell → well-known
+     * install directories.
+     */
+    @Nullable
+    public static String resolveOrNull(@Nullable String configured, @NotNull String cliName) {
         if (configured != null && !configured.isBlank()) {
-            Path p = Path.of(configured.trim());
+            String trimmed = configured.trim();
+            Path p = Path.of(trimmed);
             // Absolute path: use as-is if executable (no shell involved)
             if (p.isAbsolute() && Files.isExecutable(p)) return p.toString();
             // Bare name override: only pass to shell if it contains no shell-special chars
-            String trimmed = configured.trim();
             if (isSafeBareNameForShell(trimmed)) {
                 String shellResult = whichViaShell(trimmed);
                 if (shellResult != null) return shellResult;
@@ -77,11 +113,18 @@ public final class CliPathResolver {
         }
         String shellResult = whichViaShell(cliName);
         if (shellResult != null) return shellResult;
+        return findInExtraDirs(cliName);
+    }
+
+    /** Looks for {@code cliName} in the well-known install directories only. */
+    @Nullable
+    static String findInExtraDirs(@NotNull String cliName) {
+        if (!isSafeBareNameForShell(cliName)) return null;
         for (String dir : EXTRA_PATH_DIRS) {
             Path candidate = Path.of(dir, cliName);
             if (Files.isExecutable(candidate)) return candidate.toString();
         }
-        return cliName;
+        return null;
     }
 
     /** Returns {@code true} when the CLI can be found and is executable. */

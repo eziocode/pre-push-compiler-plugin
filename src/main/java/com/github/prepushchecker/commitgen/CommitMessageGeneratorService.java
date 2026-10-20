@@ -73,6 +73,7 @@ public final class CommitMessageGeneratorService {
             case GH_COPILOT  -> new GhCopilotProvider();
             case LLM_CLI     -> new LlmCliProvider();
             case CLAUDE_CLI  -> new ClaudeCliProvider();
+            case CUSTOM_CLI  -> new CustomCliProvider();
         };
     }
 }

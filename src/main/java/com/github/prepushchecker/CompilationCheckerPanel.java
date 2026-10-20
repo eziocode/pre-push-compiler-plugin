@@ -34,7 +34,7 @@ import com.intellij.openapi.wm.ToolWindow;
 import com.intellij.psi.PsiFile;
 import com.intellij.ui.CheckBoxList;
 import com.intellij.ui.ContextHelpLabel;
-import com.intellij.ui.BadgeIconSupplier;
+import com.intellij.ui.LayeredIcon;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.OnePixelSplitter;
 import com.intellij.ui.TitledSeparator;
@@ -208,7 +208,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         if (toolWindow != null && baseToolWindowIcon != null) {
             // Corner badge on top of the original icon; a full-size overlay would hide it.
             toolWindow.setIcon(active
-                ? new BadgeIconSupplier(baseToolWindowIcon).getWarningIcon()
+                ? LayeredIcon.layeredIcon(new Icon[] {baseToolWindowIcon, AllIcons.General.WarningDecorator})
                 : baseToolWindowIcon);
         }
         bypassBar.revalidate();

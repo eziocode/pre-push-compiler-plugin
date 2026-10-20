@@ -51,7 +51,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         }
 
         String body = "{"
-            + "\"model\":\"gpt-4o\","
+            + "\"model\":" + JsonUtil.quoted(s.ghModel == null || s.ghModel.isBlank() ? "gpt-4o" : s.ghModel.trim()) + ","
             + "\"max_tokens\":300,"
             + "\"messages\":["
             + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"

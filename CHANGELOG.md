@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.5.0] - 2026-10-20
+
+### Added
+
+- **Local AI CLI providers, auto-detected like `gh`.** The Claude and Codex commit-message
+  providers now run the installed CLI (`claude -p`, `codex exec`) with the prompt on stdin and
+  use the CLI's own login. Binaries are found via the shell PATH and common install
+  directories (Homebrew, npm/nvm, bun, volta, pnpm, `~/.local/bin`, `~/.claude/local`).
+- **Other local CLI** provider with presets for sahaa, Gemini CLI, Cursor Agent, Copilot CLI
+  and opencode, and an editable args template (`{model}`, `{model?...}`, `{prompt}`).
+- **Detect Installed CLIs...** in settings: scans all known CLIs and shows path, version and
+  sign-in state; "Use Selected" fills the path and switches provider.
+- Per-CLI path field with Auto-detect (browse when not found), model dropdown with a
+  refresh button that fetches the CLI's models, and extra-args fields.
+- Separate model setting for GitHub Copilot (`gh`).
+
+### Changed
+
+- Claude CLI and Codex CLI providers no longer call the Anthropic/OpenAI HTTP APIs; saved API
+  keys are passed to the CLI as `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`.
+- Codex sign-in, sign-out and status honour the configured codex path.
+
+### Fixed
+
+- `codex login status` failures were shown as signed in.
+- gh Auto-detect no longer runs subprocesses on the UI thread.
+
+---
+
 ## [2.4.0] - 2026-10-16
 
 ### Added

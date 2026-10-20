@@ -1,6 +1,5 @@
 package com.github.prepushchecker;
 
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
@@ -254,7 +253,7 @@ final class BuildFingerprint {
      * therefore yields a new fingerprint even when no tracked file changed.
      */
     private static @NotNull String configurationSalt(@NotNull Project project) {
-        return ReadAction.compute(() -> {
+        return ReadActions.compute(() -> {
             if (project.isDisposed()) return "";
             StringBuilder salt = new StringBuilder("sdk=")
                 .append(ProjectRootManager.getInstance(project).getProjectSdkName()).append('\n');
@@ -272,7 +271,7 @@ final class BuildFingerprint {
     }
 
     private static @NotNull Map<String, String> unsavedDocumentHashes() {
-        return ReadAction.compute(() -> {
+        return ReadActions.compute(() -> {
             Map<String, String> hashes = new TreeMap<>();
             FileDocumentManager manager = FileDocumentManager.getInstance();
             for (Document document : manager.getUnsavedDocuments()) {

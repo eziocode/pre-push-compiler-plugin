@@ -15,10 +15,11 @@ public interface CommitMessageProvider {
         ANTHROPIC("Anthropic (Claude)"),
         GEMINI("Google Gemini"),
         OLLAMA("Ollama (Local)"),
-        CODEX_CLI("Codex (ChatGPT Account — ~/.codex/auth.json)"),
+        CODEX_CLI("Codex CLI (codex exec — uses codex login)"),
         GH_COPILOT("GitHub Copilot (gh auth)"),
         LLM_CLI("llm CLI (multi-provider)"),
-        CLAUDE_CLI("Anthropic Claude CLI");
+        CLAUDE_CLI("Claude Code CLI (claude -p — uses claude login)"),
+        CUSTOM_CLI("Other local CLI (sahaa, gemini, cursor-agent, …)");
 
         private final String displayName;
 
