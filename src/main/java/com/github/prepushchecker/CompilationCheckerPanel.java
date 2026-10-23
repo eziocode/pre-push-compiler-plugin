@@ -18,7 +18,13 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.ide.util.gotoByName.ChooseByNamePopup;
 import com.intellij.ide.util.gotoByName.GotoFileModel;
+import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.compiler.CompilerManager;
+import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.openapi.util.text.StringUtil;
+import com.intellij.openapi.vfs.VfsUtil;
 import com.intellij.openapi.fileChooser.FileChooser;
 import com.intellij.openapi.fileChooser.FileChooserDescriptor;
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
@@ -363,6 +369,18 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JBCheckBox disableFallback = new JBCheckBox("Skip check when IDE is closed");
         disableFallback.setSelected(PrePushCheckerSettings.isBuildToolFallbackDisabled(project));
 
+        JBCheckBox layerCheck = new JBCheckBox("Cross-layer import check");
+        layerCheck.setSelected(PrePushCheckerSettings.isLayerCheckEnabled(project));
+        JButton runLayerCheck = new JButton("Run Now");
+        runLayerCheck.addActionListener(event -> runLayerCheckNow());
+        JButton generateLayers = new JButton("Generate from build.xml…");
+        generateLayers.addActionListener(event -> generateLayerRules());
+        layerCheck.addActionListener(event -> {
+            PrePushCheckerSettings.setLayerCheckEnabled(project, layerCheck.isSelected());
+            runLayerCheck.setEnabled(layerCheck.isSelected());
+        });
+        runLayerCheck.setEnabled(layerCheck.isSelected());
+
         // ── Clipboard SHA settings ────────────────────────────────────────────
         JBCheckBox copySha = new JBCheckBox("Copy commit SHA automatically");
         copySha.setSelected(PrePushCheckerSettings.isCopyCommitShaEnabled(project));
@@ -449,6 +467,13 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                 + "the IDE is not running, instead of falling back to Maven/Gradle. Avoids "
                 + "false errors from annotation processors (e.g. Lombok) that the build tool "
                 + "cannot resolve without the IDE's setup."), 0);
+        addRow(options, withHelp(layerCheck,
+            "Blocks pushes where a file imports in-repo source from a later build layer, e.g. a "
+                + "core file importing a class only a later Ant <javac> target compiles. The IDE "
+                + "compiles everything as one module and misses this. Layers come from "
+                + LayerRules.FILE_NAME + " at the repository root; without it the check does "
+                + "nothing. Not run when the IDE is closed."), 0);
+        addRow(options, labeledRow("Layers:", runLayerCheck, generateLayers), 20);
 
         addRow(options, new TitledSeparator("Commit SHA"), 0);
         addRow(options, withHelp(copySha,
@@ -470,6 +495,104 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
         scroll.setBorder(JBUI.Borders.empty());
         return scroll;
+    }
+
+    /** Repository root holding the rules file, else the first project root. */
+    private @Nullable String layerRepositoryRoot() {
+        java.util.Set<String> roots = DiagnosticPathMatcher.roots(project);
+        for (String root : roots) {
+            if (CrossLayerImportCheck.hasRulesFile(root)) return root;
+        }
+        return roots.isEmpty() ? null : roots.iterator().next();
+    }
+
+    private void runLayerCheckNow() {
+        String root = layerRepositoryRoot();
+        if (root == null || !CrossLayerImportCheck.hasRulesFile(root)) {
+            Messages.showInfoMessage(project,
+                "No " + LayerRules.FILE_NAME + " found at the repository root. "
+                    + "Use \"Generate from build.xml…\" or write one by hand.",
+                "Cross-Layer Import Check");
+            return;
+        }
+        ProgressManager.getInstance().run(
+            new Task.Backgroundable(project, "Checking Cross-Layer Imports", true) {
+                @Override
+                public void run(@NotNull ProgressIndicator indicator) {
+                    List<String> raw = CrossLayerImportCheck.scanAll(project, root);
+                    List<String> errors = DiagnosticPathMatcher.filterIgnored(project, raw);
+                    ApplicationManager.getApplication().invokeLater(() -> {
+                        if (project.isDisposed()) return;
+                        // Keep existing compile results unless there is something to show.
+                        if (!errors.isEmpty()) CompilationErrorService.getInstance(project).setErrors(raw);
+                        NotificationGroupManager.getInstance()
+                            .getNotificationGroup("Pre-Push Compilation Checker")
+                            .createNotification("Cross-layer import check",
+                                errors.isEmpty() ? "No layer violations at HEAD."
+                                    : errors.size() + " layer violation(s) at HEAD.",
+                                errors.isEmpty() ? NotificationType.INFORMATION : NotificationType.WARNING)
+                            .notify(project);
+                    }, ModalityState.defaultModalityState());
+                }
+            });
+    }
+
+    private void generateLayerRules() {
+        String root = layerRepositoryRoot();
+        if (root == null) return;
+        VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
+        FileChooserDescriptor descriptor = FileChooserDescriptorFactory
+            .createSingleFileDescriptor("xml")
+            .withTitle("Select Ant Build File")
+            .withDescription("One layer is generated per target containing <javac>, in depends order");
+        VirtualFile chosen = FileChooser.chooseFile(descriptor, project, rootFile);
+        if (chosen == null) return;
+
+        String text;
+        try {
+            AntLayerImporter.Result result = AntLayerImporter.importFile(
+                java.nio.file.Path.of(chosen.getPath()), java.nio.file.Path.of(root));
+            text = AntLayerImporter.render(result);
+        } catch (java.io.IOException e) {
+            Messages.showErrorDialog(project, e.getMessage(), "Generate Layer Rules");
+            return;
+        }
+
+        if (rootFile == null) return;
+        JTextArea preview = new JTextArea(text, 24, 80);
+        preview.setFont(JBUI.Fonts.create(java.awt.Font.MONOSPACED, preview.getFont().getSize()));
+        boolean exists = rootFile.findChild(LayerRules.FILE_NAME) != null;
+        DialogWrapper dialog = new DialogWrapper(project) {
+            {
+                setTitle((exists ? "Overwrite " : "Write ") + LayerRules.FILE_NAME);
+                init();
+            }
+
+            @Override
+            protected JComponent createCenterPanel() {
+                return new JBScrollPane(preview);
+            }
+        };
+        if (!dialog.showAndGet()) return;
+        String content = preview.getText();
+        try {
+            // Through the document, so an open editor with unsaved edits doesn't conflict.
+            WriteCommandAction.writeCommandAction(project)
+                .withName("Generate Layer Rules")
+                .run(() -> {
+                    VirtualFile file = rootFile.findChild(LayerRules.FILE_NAME);
+                    if (file == null) file = rootFile.createChildData(this, LayerRules.FILE_NAME);
+                    Document document = FileDocumentManager.getInstance().getDocument(file);
+                    if (document == null) {
+                        VfsUtil.saveText(file, content);
+                        return;
+                    }
+                    document.setText(StringUtil.convertLineSeparators(content));
+                    FileDocumentManager.getInstance().saveDocument(document);
+                });
+        } catch (java.io.IOException e) {
+            Messages.showErrorDialog(project, e.getMessage(), "Generate Layer Rules");
+        }
     }
 
     private static void addRow(JPanel container, JComponent row, int indent) {

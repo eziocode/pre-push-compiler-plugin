@@ -372,6 +372,16 @@ public final class PrePushLocalServer implements Disposable {
                         && !request.expectedHead().equals(before.actualHead())) {
                     return null;
                 }
+                // A clean IDE build says nothing about Ant layer order, so this runs first.
+                List<String> layerErrors = runLayerCheck(normalizedRequest);
+                if (!layerErrors.isEmpty()) {
+                    if (!snapshotMatches(normalizedRequest, before)) {
+                        CompilationErrorService.getInstance(project).clearErrors();
+                        throw new PrePushValidationCoordinator.StaleSnapshotException(
+                            "repository changed during validation; retry push");
+                    }
+                    return layerErrors;
+                }
                 return SmartBuildService.getInstance(project).cachedCleanVerdict();
             },
             () -> {
@@ -390,6 +400,24 @@ public final class PrePushLocalServer implements Disposable {
             null,
             COMPILE_TIMEOUT_SECONDS,
             TimeUnit.SECONDS);
+    }
+
+    /** Cross-layer import violations for the pushed snapshot; empty when disabled or clean. */
+    private List<String> runLayerCheck(ValidationRequest request) {
+        if (!PrePushCheckerSettings.isLayerCheckEnabled(project)
+                || !CrossLayerImportCheck.hasRulesFile(request.repositoryRoot())) {
+            return Collections.emptyList();
+        }
+        List<String> raw = CrossLayerImportCheck.detect(
+            project, request.repositoryRoot(), request.requestedPaths());
+        List<String> blocking = DiagnosticPathMatcher.filterIgnored(project, raw);
+        if (blocking.isEmpty()) return Collections.emptyList();
+        ApplicationManager.getApplication().invokeAndWait(() -> {
+            if (!project.isDisposed()) {
+                CompilationErrorService.getInstance(project).setErrors(raw);
+            }
+        }, ModalityState.defaultModalityState());
+        return blocking;
     }
 
     /** Drops requested paths that are not inside the project or one of its git roots (defense in depth). */
@@ -429,8 +457,21 @@ public final class PrePushLocalServer implements Disposable {
         key.append("ignored=")
             .append(new TreeSet<>(IgnoredCompilationFiles.getInstance(project).enabledPaths()))
             .append('\n');
+        key.append("layers=").append(layerRulesStamp(request.repositoryRoot())).append('\n');
         key.append(snapshot.fingerprint());
         return key.toString();
+    }
+
+    private String layerRulesStamp(String repositoryRoot) {
+        if (!PrePushCheckerSettings.isLayerCheckEnabled(project)) return "off";
+        if (repositoryRoot.isBlank()) return "none";
+        try {
+            Path rules = Path.of(repositoryRoot, LayerRules.FILE_NAME);
+            if (!Files.isRegularFile(rules)) return "none";
+            return Files.getLastModifiedTime(rules).toMillis() + ":" + Files.size(rules);
+        } catch (IOException | RuntimeException ignored) {
+            return "unreadable";
+        }
     }
 
     private String normalizedProjectRoot() {

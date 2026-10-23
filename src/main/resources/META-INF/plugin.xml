@@ -39,6 +39,8 @@
             <li>Compilation Checker tool window — side panel showing errors with file navigation</li>
             <li>Gradle (wrapper or system) and Maven (wrapper or system) support</li>
             <li>Optional stash fallback for strict A/B validation when detached worktrees are unavailable</li>
+            <li>Cross-layer import check — blocks imports from a later Ant build layer, defined in
+                <code>.prepush-layers</code> or generated from <code>build.xml</code></li>
             <li>Respects <code>PRE_PUSH_CHECKER_COMMAND</code> env variable for custom check commands</li>
         </ul>
 
@@ -66,6 +68,20 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.6.0 — Cross-layer import check for layered Ant builds</h3>
+        <ul>
+            <li><b>Cross-layer import check</b> (on by default, active only with a <code>.prepush-layers</code>
+                file): blocks pushes where a file imports in-repo source that only a later Ant
+                <code>&lt;javac&gt;</code> target compiles, e.g. a core file importing a CRM-layer class.
+                The IDE compiles everything as one module and never saw these. Runs before the compile
+                and before reused build snapshots, reading the pushed HEAD, not the working tree.</li>
+            <li><b>Generate from build.xml…</b> in the tool window creates the rules file: one layer per
+                <code>&lt;javac&gt;</code> target in <code>depends</code> order, with <code># TODO</code> lines
+                for anything it can't resolve. <b>Run Now</b> scans every layered file at HEAD.</li>
+            <li>Pushes that only change <code>build.xml</code> or <code>.prepush-layers</code> are no longer
+                skipped by the hook.</li>
+        </ul>
+
         <h3>2.5.0 — Local AI CLI providers</h3>
         <ul>
             <li><b>Local AI CLIs, auto-detected like <code>gh</code></b>: the Claude and Codex commit-message

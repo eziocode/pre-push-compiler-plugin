@@ -22,6 +22,8 @@ final class PrePushCheckerSettings {
         "prepushchecker.buildToolFallback.disabled";
     private static final String SMART_BUILD_ENABLED_KEY =
         "prepushchecker.smartBuild.enabled";
+    private static final String LAYER_CHECK_ENABLED_KEY =
+        "prepushchecker.layerCheck.enabled";
     private static final String COPY_SHA_ENABLED_KEY =
         "prepushchecker.copyCommitSha.enabled";
     private static final String COPY_SHA_FORMAT_KEY =
@@ -80,6 +82,17 @@ final class PrePushCheckerSettings {
     static void setSmartBuildEnabled(@NotNull Project project, boolean enabled) {
         PropertiesComponent.getInstance(project)
             .setValue(SMART_BUILD_ENABLED_KEY, enabled, true);
+    }
+
+    /** Cross-layer import check from {@code .prepush-layers} (default {@code true}; no-op without the file). */
+    static boolean isLayerCheckEnabled(@NotNull Project project) {
+        return PropertiesComponent.getInstance(project)
+            .getBoolean(LAYER_CHECK_ENABLED_KEY, true);
+    }
+
+    static void setLayerCheckEnabled(@NotNull Project project, boolean enabled) {
+        PropertiesComponent.getInstance(project)
+            .setValue(LAYER_CHECK_ENABLED_KEY, enabled, true);
     }
 
     /** Returns {@code true} if the auto-copy-SHA feature is active (default {@code true}). */

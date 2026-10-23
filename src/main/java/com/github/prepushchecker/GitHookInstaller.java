@@ -1427,7 +1427,7 @@ public final class GitHookInstaller {
             "trap 'rm -f \"$CHANGED_SET_FILE\" 2>/dev/null || true' EXIT INT TERM HUP",
             "",
             "# grep the temp file instead of piping: grep -q exits early and a pipe gives printf EPIPE.",
-            "if ! grep -Eq '(^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|gradlew|mvnw)$|(\\.java|\\.kt|\\.groovy|\\.scala)$' \"$CHANGED_SET_FILE\" 2>/dev/null; then",
+            "if ! grep -Eq '(^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|gradlew|mvnw|build\\.xml|\\.prepush-layers)$|(\\.java|\\.kt|\\.groovy|\\.scala)$' \"$CHANGED_SET_FILE\" 2>/dev/null; then",
             "  log \"[pre-push] No source or build changes detected. Skipping compilation check.\"",
             "  printf '[pre-push-checker] exit=0\\n' >> \"$LOG_FILE\" 2>/dev/null || true",
             "  exit 0",

@@ -15,6 +15,8 @@ final class PushValidationPaths {
         "gradlew",
         "mvnw"
     );
+    /** Relevant to the push check but not a reason for a project-wide compile. */
+    private static final Set<String> CONFIG_FILE_NAMES = Set.of(LayerRules.FILE_NAME, "build.xml");
 
     private PushValidationPaths() {
     }
@@ -24,7 +26,8 @@ final class PushValidationPaths {
             return false;
         }
         String fileName = fileName(path);
-        return BUILD_FILE_NAMES.contains(fileName) || hasSourceExtension(fileName);
+        return BUILD_FILE_NAMES.contains(fileName) || CONFIG_FILE_NAMES.contains(fileName)
+            || hasSourceExtension(fileName);
     }
 
     static boolean isBuildFile(String path) {

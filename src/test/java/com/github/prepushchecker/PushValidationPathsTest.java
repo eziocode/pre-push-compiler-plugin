@@ -18,4 +18,12 @@ public class PushValidationPathsTest extends BasePlatformTestCase {
         assertFalse(PushValidationPaths.isCompilableSource("build.gradle.kts"));
         assertTrue(PushValidationPaths.isCompilableSource("modules/service/App.kt"));
     }
+
+    public void testLayerConfigFilesAreRelevantButNotBuildFiles() {
+        assertTrue(PushValidationPaths.isRelevantPath(".prepush-layers"));
+        assertTrue(PushValidationPaths.isRelevantPath("crm/build.xml"));
+        assertFalse(PushValidationPaths.isBuildFile(".prepush-layers"));
+        assertFalse(PushValidationPaths.isBuildFile("build.xml"));
+        assertFalse(PushValidationPaths.isCompilableSource("build.xml"));
+    }
 }

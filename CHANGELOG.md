@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.6.0] - 2026-10-23
+
+### Added
+
+- **Cross-layer import check.** Blocks pushes where a file in an earlier-compiled Ant layer imports
+  in-repo source that only a later `<javac>` target compiles (for example a `crmcore` file importing
+  a CRM-layer constants class). IntelliJ compiles the whole source tree as one module, so these
+  compile locally and break only the layered build. Layers are read from `.prepush-layers` at the
+  repository root (`root`, then `layer` blocks with Ant-style `include`/`exclude` patterns, in
+  compile order). Imports of jar packages are ignored. On by default; does nothing without the file.
+- The check reads the pushed HEAD (not the working tree), scans only changed files, and scans every
+  layered file when the rules file changes or a Java file is deleted or moved. It runs before the
+  compile and before reused clean build snapshots.
+- **Generate from build.xml…** in the tool window: one layer per `<javac>` target in `depends`
+  order, with property expansion, `includes`/`excludes`, nested patterns and `patternset refid`.
+  Anything unresolved (`<import>`, unknown `${props}`) becomes a `# TODO` line. Preview before write.
+- **Run Now** scans every layered file at HEAD.
+
+### Changed
+
+- The pre-push hook no longer skips pushes that only change `build.xml` or `.prepush-layers`.
+
+### Known limitations
+
+- The layer check needs the IDE; it does not run in the Gradle/Maven fallback when the IDE is closed.
+- Fully-qualified class references without an `import` are not detected.
+
+---
+
 ## [2.5.0] - 2026-10-20
 
 ### Added
