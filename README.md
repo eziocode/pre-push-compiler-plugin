@@ -115,7 +115,7 @@ A starter template is included at `.github/commit-instructions.md` in this repos
 
 ### From Disk
 
-1. Download the latest `.zip` from [Releases](https://github.com/eziocode/IntelliJ-Plugins/releases)
+1. Download the latest `.zip` from [Releases](https://plugins.jetbrains.com/plugin/31297-pre-push-compilation-checker/versions)
 2. Open **Settings → Plugins → ⚙ → Install Plugin from Disk…**
 3. Select the downloaded `.zip` and restart
 
