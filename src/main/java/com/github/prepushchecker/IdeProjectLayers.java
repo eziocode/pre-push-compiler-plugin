@@ -1,6 +1,5 @@
 package com.github.prepushchecker;
 
-import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.project.Project;
@@ -41,7 +40,7 @@ final class IdeProjectLayers {
     }
 
     static @NotNull Snapshot read(@NotNull Project project, @NotNull String repositoryRoot) {
-        return ReadAction.compute(() -> readInReadAction(project, repositoryRoot));
+        return ReadActions.compute(() -> readInReadAction(project, repositoryRoot));
     }
 
     private static Snapshot readInReadAction(Project project, String repositoryRoot) {
