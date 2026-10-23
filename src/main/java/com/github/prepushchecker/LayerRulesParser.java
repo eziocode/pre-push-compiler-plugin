@@ -15,6 +15,7 @@ import java.util.Set;
  * layer crmcore                       # layers in compile order
  *   include source/com/zoho/crm/core/**
  *   exclude source/com/zoho/crm/core/ui/**
+ *   lib lib/core/*.jar                  # jars on this layer's classpath (inherited by later layers)
  * layer crm
  *   include source/**
  * </pre>
@@ -48,6 +49,7 @@ final class LayerRulesParser {
         int currentLine = 0;
         List<AntPathPattern> includes = new ArrayList<>();
         List<AntPathPattern> excludes = new ArrayList<>();
+        List<AntPathPattern> libs = new ArrayList<>();
 
         String[] lines = text.split("\r?\n", -1);
         for (int i = 0; i < lines.length; i++) {
@@ -67,7 +69,7 @@ final class LayerRulesParser {
                 case "root" -> roots.add(argument.isEmpty() ? "." : argument);
                 case "layer" -> {
                     if (currentName != null) {
-                        addLayer(layers, currentName, currentLine, includes, excludes, problems);
+                        addLayer(layers, currentName, currentLine, includes, excludes, libs, problems);
                     }
                     if (!names.add(argument)) {
                         problems.add(new Problem(lineNo, "duplicate layer '" + argument + "'"));
@@ -76,21 +78,24 @@ final class LayerRulesParser {
                     currentLine = lineNo;
                     includes = new ArrayList<>();
                     excludes = new ArrayList<>();
+                    libs = new ArrayList<>();
                 }
-                case "include", "exclude" -> {
+                case "include", "exclude", "lib" -> {
                     if (currentName == null) {
                         problems.add(new Problem(lineNo, "'" + directive + "' before any 'layer'"));
                     } else if (directive.equals("include")) {
                         includes.add(AntPathPattern.compile(argument));
-                    } else {
+                    } else if (directive.equals("exclude")) {
                         excludes.add(AntPathPattern.compile(argument));
+                    } else {
+                        libs.add(AntPathPattern.compile(argument));
                     }
                 }
                 default -> problems.add(new Problem(lineNo, "unknown directive '" + directive + "'"));
             }
         }
         if (currentName != null) {
-            addLayer(layers, currentName, currentLine, includes, excludes, problems);
+            addLayer(layers, currentName, currentLine, includes, excludes, libs, problems);
         }
 
         if (roots.isEmpty()) problems.add(new Problem(1, "no 'root' declared"));
@@ -105,12 +110,13 @@ final class LayerRulesParser {
         int line,
         List<AntPathPattern> includes,
         List<AntPathPattern> excludes,
+        List<AntPathPattern> libs,
         List<Problem> problems
     ) {
         if (includes.isEmpty()) {
             problems.add(new Problem(line, "layer '" + name + "' has no 'include'"));
         }
-        layers.add(new LayerRules.Layer(name, layers.size(), includes, excludes));
+        layers.add(new LayerRules.Layer(name, layers.size(), includes, excludes, libs));
     }
 
     private static String stripComment(String line) {

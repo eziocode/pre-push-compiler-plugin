@@ -88,4 +88,55 @@ public class AntLayerImporterTest extends TestCase {
         AntLayerImporter.Result result = AntLayerImporter.importXml(xml, REPO, REPO);
         assertEquals(1, result.targets().size());
     }
+
+    private static final String CLASSPATH_XML = String.join("\n",
+        "<project basedir=\".\">",
+        "  <path id=\"core.cp\"><fileset dir=\"lib/core\" includes=\"*.jar\"/></path>",
+        "  <target name=\"core\"><javac srcdir=\"source\" destdir=\"build/core\">",
+        "    <classpath refid=\"core.cp\"/></javac></target>",
+        "  <target name=\"crm\" depends=\"core\"><javac srcdir=\"source\" destdir=\"build/crm\">",
+        "    <classpath>",
+        "      <path refid=\"core.cp\"/>",
+        "      <pathelement location=\"lib/crm/c.jar\"/>",
+        "      <pathelement location=\"build/core\"/>",
+        "    </classpath></javac></target>",
+        "</project>");
+
+    public void testClasspathJarsBelongToFirstLayerListingThem() throws Exception {
+        AntLayerImporter.Result result = AntLayerImporter.importXml(CLASSPATH_XML, REPO, REPO);
+        assertEquals(List.of("lib/core/*.jar"), result.targets().get(0).libs());
+        // core.cp is inherited from layer 0; the class directory build/core is not a jar.
+        assertEquals(List.of("lib/crm/c.jar"), result.targets().get(1).libs());
+        assertTrue(result.todos().toString(), result.todos().isEmpty());
+
+        LayerRules rules = LayerRulesParser.parse(AntLayerImporter.render(result)).rules();
+        assertTrue(rules.hasLibs());
+        assertTrue(rules.layers().get(0).libs().get(0).matches("lib/core/a.jar"));
+    }
+
+    public void testClasspathAttributeAndBareFilesetDefaultToJars() throws Exception {
+        String xml = String.join("\n",
+            "<project basedir=\".\">",
+            "  <target name=\"t\"><javac srcdir=\"source\" classpath=\"lib/a.jar:lib/b.jar:build/classes\">",
+            "    <classpath><fileset dir=\"ext\"/></classpath></javac></target>",
+            "</project>");
+        List<String> libs = AntLayerImporter.importXml(xml, REPO, REPO).targets().get(0).libs();
+        assertEquals(List.of("lib/a.jar", "lib/b.jar", "ext/**/*.jar"), libs);
+    }
+
+    public void testJarDiffBetweenIdeAndAnt() throws Exception {
+        java.nio.file.Path repo = java.nio.file.Files.createTempDirectory("ant-diff");
+        try {
+            TestFiles.jar(repo, "lib/core/a.jar", "a/A.class");
+            TestFiles.jar(repo, "lib/core/b.jar", "b/B.class");
+            TestFiles.jar(repo, "lib/crm/c.jar", "c/C.class");
+            AntLayerImporter.Result ant = AntLayerImporter.importXml(CLASSPATH_XML, repo, repo);
+            AntLayerImporter.JarDiff diff = AntLayerImporter.diffJars(repo,
+                java.util.Set.of("lib/core/a.jar", "lib/crm/c.jar", "lib/extra.jar"), ant);
+            assertEquals(java.util.Set.of("lib/extra.jar"), diff.ideOnly());
+            assertEquals(java.util.Set.of("lib/core/b.jar"), diff.antOnly());
+        } finally {
+            TestFiles.delete(repo);
+        }
+    }
 }

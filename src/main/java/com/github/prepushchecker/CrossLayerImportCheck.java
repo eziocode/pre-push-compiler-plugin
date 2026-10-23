@@ -46,6 +46,16 @@ final class CrossLayerImportCheck {
             + "(?:(?:public|protected|private|static|final|abstract|sealed|non-sealed|strictfp)\\s+)*"
             + "(?:class|interface|enum|record|@interface)\\b");
 
+    /** A known jar containing an imported class or package, and the layer that first lists it. */
+    record JarHit(@NotNull String jarPath, int layerIndex) {
+    }
+
+    interface JarLookup {
+        @NotNull List<JarHit> classHits(@NotNull String fqn);
+
+        @NotNull List<JarHit> packageHits(@NotNull String pkg);
+    }
+
     private CrossLayerImportCheck() {
     }
 
@@ -107,7 +117,10 @@ final class CrossLayerImportCheck {
         List<String> targets = selectTargets(rules, headFiles, changedRelativePaths, forceFullScan);
         if (targets.isEmpty()) return List.of();
         Map<String, String> contents = readHeadContents(repositoryRoot, targets);
-        return analyze(rules, headFiles, contents);
+        if (!rules.hasLibs()) return analyze(rules, headFiles, contents);
+        try (JarClassIndex jars = new JarClassIndex(LayerJars.resolve(repositoryRoot, rules))) {
+            return analyze(rules, headFiles, contents, jars);
+        }
     }
 
     /**
@@ -122,7 +135,7 @@ final class CrossLayerImportCheck {
     ) {
         boolean full = forceFullScan;
         for (String path : changedRelativePaths) {
-            if (LayerRules.isRulesFile(path)) full = true;
+            if (LayerRules.isRulesFile(path) || path.endsWith(".jar")) full = true;
             else if (path.endsWith(".java") && !headFiles.contains(path)) full = true;
         }
         Collection<String> candidates = full ? headFiles : changedRelativePaths;
@@ -141,6 +154,16 @@ final class CrossLayerImportCheck {
         @NotNull Set<String> headFiles,
         @NotNull Map<String, String> contentsByPath
     ) {
+        return analyze(rules, headFiles, contentsByPath, null);
+    }
+
+    /** As above; with {@code jars} also flags jar classes that only a later layer's classpath has. */
+    static @NotNull List<String> analyze(
+        @NotNull LayerRules rules,
+        @NotNull Set<String> headFiles,
+        @NotNull Map<String, String> contentsByPath,
+        @Nullable JarLookup jars
+    ) {
         PackageIndex index = PackageIndex.build(rules, headFiles);
         List<String> messages = new ArrayList<>();
         for (Map.Entry<String, String> entry : contentsByPath.entrySet()) {
@@ -149,7 +172,18 @@ final class CrossLayerImportCheck {
             if (layer == null) continue;
             for (ImportLine imp : parseImports(entry.getValue())) {
                 Violation violation = index.resolve(rules, imp);
-                if (violation == null || violation.layer().index() <= layer.index()) continue;
+                if (violation == null) {
+                    JarHit jar = jars == null ? null : earliestJar(jars, imp);
+                    if (jar == null || jar.layerIndex() <= layer.index()) continue;
+                    messages.add(String.format(
+                        "[%s (%d:1)] Layer violation: '%s' file imports %s, found only in jar %s of later"
+                            + " layer '%s'; the '%s' build step's classpath does not include it",
+                        path, imp.line(), layer.name(), imp.name(), jar.jarPath(),
+                        rules.layers().get(jar.layerIndex()).name(), layer.name()));
+                    if (messages.size() >= MAX_MESSAGES) return List.copyOf(messages);
+                    continue;
+                }
+                if (violation.layer().index() <= layer.index()) continue;
                 messages.add(String.format(
                     "[%s (%d:1)] Layer violation: '%s' file imports %s from later layer '%s' (%s);"
                         + " the '%s' build step cannot see it",
@@ -159,6 +193,21 @@ final class CrossLayerImportCheck {
             }
         }
         return List.copyOf(messages);
+    }
+
+    /** Earliest-layer jar holding the import: longest class prefix first, then the wildcard package. */
+    private static @Nullable JarHit earliestJar(@NotNull JarLookup jars, @NotNull ImportLine imp) {
+        String[] parts = imp.name().split("\\.");
+        List<JarHit> hits = List.of();
+        for (int end = parts.length; end >= 1 && hits.isEmpty(); end--) {
+            hits = jars.classHits(String.join(".", java.util.Arrays.copyOfRange(parts, 0, end)));
+        }
+        if (hits.isEmpty() && imp.wildcard()) hits = jars.packageHits(imp.name());
+        JarHit best = null;
+        for (JarHit hit : hits) {
+            if (best == null || hit.layerIndex() < best.layerIndex()) best = hit;
+        }
+        return best;
     }
 
     record ImportLine(int line, @NotNull String name, boolean isStatic, boolean wildcard) {

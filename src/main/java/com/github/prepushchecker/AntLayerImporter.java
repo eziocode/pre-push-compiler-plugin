@@ -39,7 +39,8 @@ final class AntLayerImporter {
         @NotNull String name,
         @NotNull List<String> srcDirs,
         @NotNull List<String> includes,
-        @NotNull List<String> excludes
+        @NotNull List<String> excludes,
+        @NotNull List<String> libs
     ) {
     }
 
@@ -70,8 +71,13 @@ final class AntLayerImporter {
         Map<String, String> properties = new HashMap<>();
         properties.put("basedir", antBase.toString());
         Map<String, Element> patternSets = new HashMap<>();
+        Map<String, Element> paths = new HashMap<>();
         for (Element child : children(project)) {
             switch (child.getTagName()) {
+                case "path" -> {
+                    String id = child.getAttribute("id");
+                    if (!id.isBlank()) paths.put(id, child);
+                }
                 case "property" -> readProperty(child, antBase, properties, todos);
                 case "patternset" -> {
                     String id = child.getAttribute("id");
@@ -99,42 +105,66 @@ final class AntLayerImporter {
             for (int i = 0; i < javacs.size(); i++) {
                 String layerName = javacs.size() == 1 ? name : name + "-" + (i + 1);
                 result.add(toJavacTarget(layerName, javacs.get(i), antBase, repositoryRoot,
-                    properties, patternSets, todos));
+                    properties, patternSets, paths, todos));
             }
         }
         if (result.isEmpty()) todos.add("no <javac> found in any target");
-        return new Result(result, todos);
+        return new Result(firstLayerOnlyLibs(result), todos);
+    }
+
+    /** A jar belongs to the first layer whose classpath lists it; later layers inherit it. */
+    private static List<JavacTarget> firstLayerOnlyLibs(List<JavacTarget> targets) {
+        Set<String> seen = new HashSet<>();
+        List<JavacTarget> result = new ArrayList<>();
+        for (JavacTarget target : targets) {
+            List<String> libs = new ArrayList<>();
+            for (String lib : target.libs()) {
+                if (seen.add(lib)) libs.add(lib);
+            }
+            result.add(new JavacTarget(target.name(), target.srcDirs(), target.includes(), target.excludes(), libs));
+        }
+        return result;
+    }
+
+    /** Rules-file draft for the Layers dialog: one layer per javac target, in compile order. */
+    static @NotNull List<LayerDraft> toDrafts(@NotNull Result result) {
+        List<LayerDraft> drafts = new ArrayList<>();
+        for (JavacTarget target : result.targets()) {
+            LayerDraft draft = new LayerDraft(target.name());
+            draft.roots.addAll(target.srcDirs());
+            for (String srcDir : target.srcDirs()) {
+                String prefix = srcDir.isEmpty() ? "" : srcDir + "/";
+                if (target.includes().isEmpty()) draft.includes.add(prefix + "**");
+                for (String include : target.includes()) draft.includes.add(prefix + include);
+                for (String exclude : target.excludes()) draft.excludes.add(prefix + exclude);
+            }
+            draft.libs.addAll(target.libs());
+            drafts.add(draft);
+        }
+        return drafts;
     }
 
     /** Renders the result as rules-file text. */
     static @NotNull String render(@NotNull Result result) {
-        StringBuilder out = new StringBuilder();
-        out.append("# Generated from Ant build.xml by Pre-Push Compilation Checker.\n");
-        out.append("# Layers are in compile order: a file may import only from its own or earlier layers.\n");
-        out.append("# Review before committing; first matching layer wins.\n");
-        for (String todo : result.todos()) out.append("# TODO ").append(todo).append('\n');
-        out.append('\n');
+        List<String> headers = new ArrayList<>();
+        headers.add("Generated from Ant build.xml by Pre-Push Compilation Checker. Review before committing.");
+        for (String todo : result.todos()) headers.add("TODO " + todo);
+        return LayerRulesWriter.render(List.of(), toDrafts(result), headers);
+    }
 
-        Set<String> roots = new java.util.LinkedHashSet<>();
-        for (JavacTarget target : result.targets()) roots.addAll(target.srcDirs());
-        for (String root : roots) out.append("root ").append(root.isEmpty() ? "." : root).append('\n');
+    /** Jars the IDE knows but Ant's classpaths lack, and the reverse; both repo-relative. */
+    record JarDiff(@NotNull Set<String> ideOnly, @NotNull Set<String> antOnly) {
+    }
 
-        for (JavacTarget target : result.targets()) {
-            out.append('\n').append("layer ").append(target.name()).append('\n');
-            for (String srcDir : target.srcDirs()) {
-                String prefix = srcDir.isEmpty() ? "" : srcDir + "/";
-                if (target.includes().isEmpty()) {
-                    out.append("  include ").append(prefix).append("**\n");
-                }
-                for (String include : target.includes()) {
-                    out.append("  include ").append(prefix).append(include).append('\n');
-                }
-                for (String exclude : target.excludes()) {
-                    out.append("  exclude ").append(prefix).append(exclude).append('\n');
-                }
-            }
-        }
-        return out.toString();
+    static @NotNull JarDiff diffJars(@NotNull Path repositoryRoot, @NotNull Set<String> ideJars, @NotNull Result ant) {
+        List<String> patterns = new ArrayList<>();
+        for (JavacTarget target : ant.targets()) patterns.addAll(target.libs());
+        Set<String> antJars = LayerJars.expand(repositoryRoot, patterns);
+        Set<String> ideOnly = new java.util.TreeSet<>(ideJars);
+        ideOnly.removeAll(antJars);
+        Set<String> antOnly = new java.util.TreeSet<>(antJars);
+        antOnly.removeAll(ideJars);
+        return new JarDiff(ideOnly, antOnly);
     }
 
     private static JavacTarget toJavacTarget(
@@ -144,11 +174,13 @@ final class AntLayerImporter {
         Path repositoryRoot,
         Map<String, String> properties,
         Map<String, Element> patternSets,
+        Map<String, Element> paths,
         List<String> todos
     ) {
         List<String> srcDirs = new ArrayList<>();
         List<String> includes = new ArrayList<>();
         List<String> excludes = new ArrayList<>();
+        List<String> libs = new ArrayList<>();
 
         for (String dir : splitPathList(javac.getAttribute("srcdir"))) {
             addSrcDir(dir, name, antBase, repositoryRoot, properties, srcDirs, todos);
@@ -166,7 +198,100 @@ final class AntLayerImporter {
         if (srcDirs.isEmpty()) todos.add("target '" + name + "': javac has no resolvable srcdir");
 
         collectPatterns(javac, name, properties, patternSets, includes, excludes, todos);
-        return new JavacTarget(name, srcDirs, includes, excludes);
+        for (String entry : splitPathList(javac.getAttribute("classpath"))) {
+            addLib(entry, null, antBase, repositoryRoot, properties, libs, name, todos);
+        }
+        String classpathRef = javac.getAttribute("classpathref");
+        if (!classpathRef.isBlank()) {
+            collectClasspath(paths.get(classpathRef), antBase, repositoryRoot, properties, paths, libs, name, todos, 0);
+        }
+        for (Element child : children(javac)) {
+            if (child.getTagName().equals("classpath")) {
+                collectClasspath(child, antBase, repositoryRoot, properties, paths, libs, name, todos, 0);
+            }
+        }
+        return new JavacTarget(name, srcDirs, includes, excludes, libs);
+    }
+
+    /** {@code <classpath>}/{@code <path>}: pathelement, fileset and refid entries, jars only. */
+    private static void collectClasspath(
+        @Nullable Element element,
+        Path antBase,
+        Path repositoryRoot,
+        Map<String, String> properties,
+        Map<String, Element> paths,
+        List<String> libs,
+        String targetName,
+        List<String> todos,
+        int depth
+    ) {
+        if (element == null || depth > 10) return;
+        String refid = element.getAttribute("refid");
+        if (!refid.isBlank()) {
+            Element referenced = paths.get(refid);
+            if (referenced == null) todos.add("target '" + targetName + "': path refid '" + refid + "' not found");
+            collectClasspath(referenced, antBase, repositoryRoot, properties, paths, libs, targetName, todos, depth + 1);
+        }
+        for (String entry : splitPathList(element.getAttribute("path"))) {
+            addLib(entry, null, antBase, repositoryRoot, properties, libs, targetName, todos);
+        }
+        for (Element child : children(element)) {
+            switch (child.getTagName()) {
+                case "pathelement" -> {
+                    String location = child.getAttribute("location");
+                    if (!location.isBlank()) {
+                        addLib(location, null, antBase, repositoryRoot, properties, libs, targetName, todos);
+                    }
+                    for (String entry : splitPathList(child.getAttribute("path"))) {
+                        addLib(entry, null, antBase, repositoryRoot, properties, libs, targetName, todos);
+                    }
+                }
+                case "fileset" -> {
+                    String dir = child.getAttribute("dir");
+                    List<String> includes = new ArrayList<>(splitPatterns(child.getAttribute("includes")));
+                    for (Element include : children(child)) {
+                        if (include.getTagName().equals("include")) includes.add(include.getAttribute("name"));
+                    }
+                    if (includes.isEmpty()) includes.add("**/*.jar");
+                    for (String include : includes) {
+                        addLib(dir, include, antBase, repositoryRoot, properties, libs, targetName, todos);
+                    }
+                }
+                case "path", "classpath" ->
+                    collectClasspath(child, antBase, repositoryRoot, properties, paths, libs, targetName, todos, depth + 1);
+                default -> { }
+            }
+        }
+    }
+
+    /** Adds {@code dir[/pattern]} as a repo-relative jar pattern; class directories are skipped. */
+    private static void addLib(
+        String rawDir,
+        @Nullable String pattern,
+        Path antBase,
+        Path repositoryRoot,
+        Map<String, String> properties,
+        List<String> libs,
+        String targetName,
+        List<String> todos
+    ) {
+        if (rawDir == null || rawDir.isBlank()) return;
+        String expanded = expand(rawDir, properties, targetName, todos);
+        if (PROPERTY_REF.matcher(expanded).find()) return;
+        String suffix = pattern == null ? "" : "/" + expand(pattern, properties, targetName, todos);
+        String relative;
+        try {
+            relative = repositoryRoot.normalize().relativize(antBase.resolve(expanded).normalize())
+                .toString().replace('\\', '/');
+        } catch (IllegalArgumentException e) {
+            return;
+        }
+        if (relative.startsWith("..")) {
+            todos.add("target '" + targetName + "': classpath entry " + expanded + " is outside the repository");
+            return;
+        }
+        String lib = relative.isEmpty() ? suffix.substring(Math.min(1, suffix.length())) : relative + suffix;
+        if (lib.toLowerCase(java.util.Locale.ROOT).endsWith(".jar") && !libs.contains(lib)) libs.add(lib);
     }
 
     private static void collectPatterns(

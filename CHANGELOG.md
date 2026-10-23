@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Layers dialog** (tool window → Layers → *Edit Layers…*): builds the layer model the cross-layer
+  check enforces from IntelliJ's modules (source roots) and library jars, without touching the IDE's
+  own module hierarchy. Assign items to ordered layers, reorder, rename; load from IntelliJ modules,
+  from `build.xml`, or from the existing `.prepush-layers`. The resulting file is previewed live and
+  written through the editor. OK is disabled until the rules are valid.
+- **Jar classpath enforcement.** `lib <pattern>` lines list the jars on a layer's classpath (inherited
+  by later layers). A file importing a class that exists only in a jar of a *later* layer is blocked.
+  Jars are indexed by package, cached per jar (path, size, mtime). Only jars matched by a `lib` line
+  take part; other jars are ignored. Jar patterns are repo-relative; jars outside the repository are
+  not offered.
+- **Compare jars with build.xml…**: lists jars IntelliJ has that Ant's `<classpath>` entries lack, and
+  the reverse. The importer now also reads `<classpath>`, `classpath=`/`classpathref=`, `<path>`,
+  `<pathelement>` and `<fileset>` into `lib` lines (first layer to list a jar owns it).
+
+### Changed
+
+- The pre-push hook now also runs when a push changes a `.jar`, and a jar change triggers a full
+  layer scan (a removed or swapped jar can break files that were not touched).
+
+---
+
 ## [2.6.0] - 2026-10-23
 
 ### Added

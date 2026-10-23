@@ -375,6 +375,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         runLayerCheck.addActionListener(event -> runLayerCheckNow());
         JButton generateLayers = new JButton("Generate from build.xml…");
         generateLayers.addActionListener(event -> generateLayerRules());
+        JButton editLayers = new JButton("Edit Layers…");
+        editLayers.addActionListener(event -> editLayerRules());
         layerCheck.addActionListener(event -> {
             PrePushCheckerSettings.setLayerCheckEnabled(project, layerCheck.isSelected());
             runLayerCheck.setEnabled(layerCheck.isSelected());
@@ -473,7 +475,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                 + "compiles everything as one module and misses this. Layers come from "
                 + LayerRules.FILE_NAME + " at the repository root; without it the check does "
                 + "nothing. Not run when the IDE is closed."), 0);
-        addRow(options, labeledRow("Layers:", runLayerCheck, generateLayers), 20);
+        addRow(options, labeledRow("Layers:", editLayers, runLayerCheck, generateLayers), 20);
 
         addRow(options, new TitledSeparator("Commit SHA"), 0);
         addRow(options, withHelp(copySha,
@@ -574,24 +576,36 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             }
         };
         if (!dialog.showAndGet()) return;
-        String content = preview.getText();
+        writeRulesFile(rootFile, preview.getText());
+    }
+
+    /** Opens the Layers dialog over IntelliJ's modules and jars; OK writes the rules file. */
+    private void editLayerRules() {
+        String root = layerRepositoryRoot();
+        if (root == null) return;
+        VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
+        if (rootFile == null) return;
+        List<LayerDraft> initial = new java.util.ArrayList<>();
+        java.nio.file.Path existing = java.nio.file.Path.of(root, LayerRules.FILE_NAME);
+        if (java.nio.file.Files.isRegularFile(existing)) {
+            try {
+                LayerRules rules = LayerRulesParser.parse(
+                    java.nio.file.Files.readString(existing, StandardCharsets.UTF_8)).rules();
+                if (rules != null) initial = LayerDraft.fromRules(rules);
+            } catch (java.io.IOException ignored) {
+                // Start empty; "Reload file" in the dialog reports the problem.
+            }
+        }
+        LayersEditorDialog dialog = new LayersEditorDialog(
+            project, root, IdeProjectLayers.read(project, root), initial);
+        if (dialog.showAndGet()) writeRulesFile(rootFile, dialog.getRulesText());
+    }
+
+    private void writeRulesFile(VirtualFile rootFile, String content) {
         try {
-            // Through the document, so an open editor with unsaved edits doesn't conflict.
-            WriteCommandAction.writeCommandAction(project)
-                .withName("Generate Layer Rules")
-                .run(() -> {
-                    VirtualFile file = rootFile.findChild(LayerRules.FILE_NAME);
-                    if (file == null) file = rootFile.createChildData(this, LayerRules.FILE_NAME);
-                    Document document = FileDocumentManager.getInstance().getDocument(file);
-                    if (document == null) {
-                        VfsUtil.saveText(file, content);
-                        return;
-                    }
-                    document.setText(StringUtil.convertLineSeparators(content));
-                    FileDocumentManager.getInstance().saveDocument(document);
-                });
+            LayerRulesFile.write(project, rootFile, content);
         } catch (java.io.IOException e) {
-            Messages.showErrorDialog(project, e.getMessage(), "Generate Layer Rules");
+            Messages.showErrorDialog(project, e.getMessage(), "Layer Rules");
         }
     }
 

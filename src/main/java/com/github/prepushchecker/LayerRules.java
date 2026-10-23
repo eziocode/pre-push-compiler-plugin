@@ -19,11 +19,13 @@ final class LayerRules {
         @NotNull String name,
         int index,
         @NotNull List<AntPathPattern> includes,
-        @NotNull List<AntPathPattern> excludes
+        @NotNull List<AntPathPattern> excludes,
+        @NotNull List<AntPathPattern> libs
     ) {
         Layer {
             includes = List.copyOf(includes);
             excludes = List.copyOf(excludes);
+            libs = List.copyOf(libs);
         }
 
         boolean contains(@NotNull String relativePath) {
@@ -73,6 +75,14 @@ final class LayerRules {
             }
         }
         return best;
+    }
+
+    /** {@code true} when any layer lists jars, which turns on jar classpath enforcement. */
+    boolean hasLibs() {
+        for (Layer layer : layers) {
+            if (!layer.libs().isEmpty()) return true;
+        }
+        return false;
     }
 
     /** {@code true} when some layer after {@code layer} exists, so its files can be violated. */

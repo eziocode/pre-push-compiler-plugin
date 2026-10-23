@@ -60,4 +60,15 @@ public class LayerRulesParserTest extends TestCase {
         LayerRulesParser.Result result = LayerRulesParser.parse("root .\nlayer a\nlayer b\n include **\n");
         assertTrue(result.problems().toString().contains("layer 'a' has no 'include'"));
     }
+
+    public void testLibLinesAreParsedPerLayer() {
+        LayerRules rules = LayerRulesParser.parse(String.join("\n",
+            "root source",
+            "layer a", "  include source/a/**", "  lib lib/core/*.jar  # core jars",
+            "layer b", "  include source/**", "")).rules();
+        assertEquals(1, rules.layers().get(0).libs().size());
+        assertTrue(rules.layers().get(0).libs().get(0).matches("lib/core/x.jar"));
+        assertTrue(rules.layers().get(1).libs().isEmpty());
+        assertTrue(rules.hasLibs());
+    }
 }
