@@ -6,6 +6,7 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.util.text.StringUtil;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.ui.components.JBCheckBox;
@@ -21,6 +22,7 @@ import javax.swing.*;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 import java.awt.*;
+import java.awt.event.MouseEvent;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -57,11 +59,11 @@ final class LayersEditorDialog extends DialogWrapper {
     private final IdeProjectLayers.Snapshot snapshot;
 
     private final DefaultListModel<LayerDraft> layerModel = new DefaultListModel<>();
-    private final JBList<LayerDraft> layerList = new JBList<>(layerModel);
+    private final JBList<LayerDraft> layerList = tooltipList(layerModel);
     private final DefaultListModel<Entry> entryModel = new DefaultListModel<>();
-    private final JBList<Entry> entryList = new JBList<>(entryModel);
+    private final JBList<Entry> entryList = tooltipList(entryModel);
     private final DefaultListModel<Item> itemModel = new DefaultListModel<>();
-    private final JBList<Item> itemList = new JBList<>(itemModel);
+    private final JBList<Item> itemList = tooltipList(itemModel);
     private final JBTextField filter = new JBTextField();
     private final JBCheckBox showModules = new JBCheckBox("Modules", true);
     private final JBCheckBox showJars = new JBCheckBox("Jars", true);
@@ -148,6 +150,10 @@ final class LayersEditorDialog extends DialogWrapper {
         root.add(top, BorderLayout.CENTER);
         root.add(bottom, BorderLayout.SOUTH);
 
+        layerList.getEmptyText().setText("No layers yet");
+        layerList.getEmptyText().appendLine("Use From IntelliJ modules or From build.xml\u2026 below");
+        entryList.getEmptyText().setText("Select a layer");
+        itemList.getEmptyText().setText("Nothing matches");
         layerList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         layerList.addListSelectionListener(event -> refreshEntries());
         itemList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
@@ -172,6 +178,20 @@ final class LayersEditorDialog extends DialogWrapper {
         return root;
     }
 
+    /** A list whose rows show their full text as a tooltip, since long paths get clipped. */
+    private static <T> JBList<T> tooltipList(DefaultListModel<T> model) {
+        JBList<T> list = new JBList<>(model) {
+            @Override
+            public String getToolTipText(MouseEvent event) {
+                int index = locationToIndex(event.getPoint());
+                if (index < 0 || !getCellBounds(index, index).contains(event.getPoint())) return null;
+                return String.valueOf(getModel().getElementAt(index));
+            }
+        };
+        ToolTipManager.sharedInstance().registerComponent(list);
+        return list;
+    }
+
     private static JButton button(String text, Runnable action) {
         JButton button = new JButton(text);
         button.addActionListener(event -> action.run());
@@ -180,7 +200,12 @@ final class LayersEditorDialog extends DialogWrapper {
 
     private static JComponent wrap(String title, JComponent list, JComponent buttons) {
         JPanel panel = new JPanel(new BorderLayout(0, JBUI.scale(4)));
-        panel.add(new JBScrollPane(list), BorderLayout.CENTER);
+        // A list's preferred width is its longest row; cap it so long names scroll instead of
+        // making the whole dialog wider.
+        JBScrollPane scroll = new JBScrollPane(list);
+        Dimension natural = scroll.getPreferredSize();
+        scroll.setPreferredSize(new Dimension(Math.min(natural.width, JBUI.scale(460)), natural.height));
+        panel.add(scroll, BorderLayout.CENTER);
         panel.add(buttons, BorderLayout.SOUTH);
         panel.setBorder(BorderFactory.createTitledBorder(title));
         return panel;
@@ -194,7 +219,8 @@ final class LayersEditorDialog extends DialogWrapper {
         if (showModules.isSelected()) {
             for (IdeProjectLayers.ModuleInfo module : snapshot.modules()) {
                 if (module.sourceRoots().isEmpty()) continue;
-                String label = "[module] " + module.name() + "  (" + module.sourceRoots().size() + " source roots)";
+                int roots = module.sourceRoots().size();
+                String label = "[module] " + module.name() + "  (" + roots + (roots == 1 ? " source root)" : " source roots)");
                 if (query.isEmpty() || label.toLowerCase(Locale.ROOT).contains(query)) {
                     itemModel.addElement(new Item(true, label, module, null));
                 }
@@ -423,7 +449,13 @@ final class LayersEditorDialog extends DialogWrapper {
         preview.setCaretPosition(0);
         String message = validationMessage();
         problem.setText(message == null ? " " : message);
+        problem.setToolTipText(message);
         setOKActionEnabled(message == null);
+    }
+
+    /** A layer name short enough for the one-line message; the full text is the label's tooltip. */
+    private static String shortName(String name) {
+        return StringUtil.shortenTextWithEllipsis(name, 40, 0);
     }
 
     /** {@code null} when the layers form a rules file the check accepts. */
@@ -432,9 +464,40 @@ final class LayersEditorDialog extends DialogWrapper {
         if (drafts.size() < 2) return "At least two layers are needed.";
         Set<String> names = new HashSet<>();
         for (LayerDraft draft : drafts) {
-            if (!names.add(draft.name)) return "Duplicate layer name '" + draft.name + "'.";
-            if (draft.includes.isEmpty()) return "Layer '" + draft.name + "' has no include or module yet.";
+            if (!names.add(draft.name)) return "Duplicate layer name '" + shortName(draft.name) + "'.";
+            if (draft.includes.isEmpty()) return "Layer '" + shortName(draft.name) + "' has no include or module yet.";
+        }
+        return roundTripProblem(drafts);
+    }
+
+    /** What is saved must read back as the same layers, so nothing is silently cut or changed. */
+    private @Nullable String roundTripProblem(List<LayerDraft> drafts) {
+        LayerRulesParser.Result parsed = LayerRulesParser.parse(getRulesText());
+        if (parsed.rules() == null) {
+            LayerRulesParser.Problem first = parsed.problems().get(0);
+            if (first.message().contains("no 'root'")) {
+                return "No source root yet: add a module to a layer (layers need a source root).";
+            }
+            return "Would not save as valid rules: " + shortName(first.message()) + " (line " + first.line() + ").";
+        }
+        List<LayerDraft> back = LayerDraft.fromRules(parsed.rules());
+        for (int i = 0; i < drafts.size(); i++) {
+            LayerDraft want = drafts.get(i);
+            LayerDraft got = i < back.size() ? back.get(i) : null;
+            if (got == null || !want.name.equals(got.name) || !same(want.includes, got.includes)
+                    || !same(want.excludes, got.excludes) || !same(want.libs, got.libs)) {
+                return "Layer '" + shortName(want.name) + "' would not read back the same after saving"
+                    + " (a ' #' starts a comment).";
+            }
         }
         return null;
+    }
+
+    private static boolean same(List<String> drafted, List<String> parsed) {
+        if (drafted.size() != parsed.size()) return false;
+        for (int i = 0; i < drafted.size(); i++) {
+            if (!AntPathPattern.compile(drafted.get(i)).source().equals(parsed.get(i))) return false;
+        }
+        return true;
     }
 }

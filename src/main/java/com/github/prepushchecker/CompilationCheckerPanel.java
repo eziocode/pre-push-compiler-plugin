@@ -475,7 +475,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                 + "compiles everything as one module and misses this. Layers come from "
                 + LayerRules.FILE_NAME + " at the repository root; without it the check does "
                 + "nothing. Not run when the IDE is closed."), 0);
-        addRow(options, labeledRow("Layers:", editLayers, runLayerCheck, generateLayers), 20);
+        // Two short rows: three buttons in one row needed 533 px and clipped in a narrow tool window.
+        addRow(options, buttonRow(editLayers, runLayerCheck), 20);
+        addRow(options, buttonRow(generateLayers), 20);
 
         addRow(options, new TitledSeparator("Commit SHA"), 0);
         addRow(options, withHelp(copySha,
@@ -579,26 +581,41 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         writeRulesFile(rootFile, preview.getText());
     }
 
-    /** Opens the Layers dialog over IntelliJ's modules and jars; OK writes the rules file. */
+    /**
+     * Opens the Layers dialog over IntelliJ's modules and jars; OK writes the rules file.
+     * Modules and jars are read in the background: a large project has thousands of library roots.
+     */
     private void editLayerRules() {
         String root = layerRepositoryRoot();
         if (root == null) return;
         VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
         if (rootFile == null) return;
-        List<LayerDraft> initial = new java.util.ArrayList<>();
-        java.nio.file.Path existing = java.nio.file.Path.of(root, LayerRules.FILE_NAME);
-        if (java.nio.file.Files.isRegularFile(existing)) {
-            try {
-                LayerRules rules = LayerRulesParser.parse(
-                    java.nio.file.Files.readString(existing, StandardCharsets.UTF_8)).rules();
-                if (rules != null) initial = LayerDraft.fromRules(rules);
-            } catch (java.io.IOException ignored) {
-                // Start empty; "Reload file" in the dialog reports the problem.
-            }
-        }
-        LayersEditorDialog dialog = new LayersEditorDialog(
-            project, root, IdeProjectLayers.read(project, root), initial);
-        if (dialog.showAndGet()) writeRulesFile(rootFile, dialog.getRulesText());
+        ProgressManager.getInstance().run(
+            new Task.Backgroundable(project, "Reading Modules and Jars", true) {
+                private IdeProjectLayers.Snapshot snapshot;
+                private List<LayerDraft> initial = new java.util.ArrayList<>();
+
+                @Override
+                public void run(@NotNull ProgressIndicator indicator) {
+                    snapshot = IdeProjectLayers.read(project, root);
+                    java.nio.file.Path existing = java.nio.file.Path.of(root, LayerRules.FILE_NAME);
+                    if (!java.nio.file.Files.isRegularFile(existing)) return;
+                    try {
+                        LayerRules rules = LayerRulesParser.parse(
+                            java.nio.file.Files.readString(existing, StandardCharsets.UTF_8)).rules();
+                        if (rules != null) initial = LayerDraft.fromRules(rules);
+                    } catch (java.io.IOException ignored) {
+                        // Start empty; "Reload file" in the dialog reports the problem.
+                    }
+                }
+
+                @Override
+                public void onSuccess() {
+                    if (project.isDisposed() || snapshot == null) return;
+                    LayersEditorDialog dialog = new LayersEditorDialog(project, root, snapshot, initial);
+                    if (dialog.showAndGet()) writeRulesFile(rootFile, dialog.getRulesText());
+                }
+            });
     }
 
     private void writeRulesFile(VirtualFile rootFile, String content) {
@@ -640,6 +657,17 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         component.setMinimumSize(new Dimension(0, 0));
         row.add(component, BorderLayout.CENTER);
         row.add(ContextHelpLabel.create(help), BorderLayout.EAST);
+        return row;
+    }
+
+    private static JComponent buttonRow(JComponent... controls) {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        for (int i = 0; i < controls.length; i++) {
+            if (i > 0) row.add(Box.createHorizontalStrut(JBUI.scale(8)));
+            row.add(controls[i]);
+        }
+        row.add(Box.createHorizontalGlue());
         return row;
     }
 

@@ -71,4 +71,17 @@ public class LayerRulesParserTest extends TestCase {
         assertTrue(rules.layers().get(1).libs().isEmpty());
         assertTrue(rules.hasLibs());
     }
+
+    public void testHashInsidePathsAndNamesIsNotAComment() {
+        LayerRules rules = LayerRulesParser.parse(String.join("\n",
+            "# whole-line comment",
+            "root source",
+            "layer stage#1   # trailing comment",
+            "  include source/C#/**",
+            "  lib lib/C#/interop.jar  # also a comment",
+            "layer b", "  include source/**", "")).rules();
+        assertEquals("stage#1", rules.layers().get(0).name());
+        assertEquals("source/C#/**", rules.layers().get(0).includes().get(0).source());
+        assertEquals("lib/C#/interop.jar", rules.layers().get(0).libs().get(0).source());
+    }
 }

@@ -19,7 +19,7 @@ import java.util.Set;
  * layer crm
  *   include source/**
  * </pre>
- * Indentation is optional; {@code #} starts a comment.
+ * Indentation is optional; {@code #} at the line start or after whitespace starts a comment.
  */
 final class LayerRulesParser {
 
@@ -119,9 +119,14 @@ final class LayerRulesParser {
         layers.add(new LayerRules.Layer(name, layers.size(), includes, excludes, libs));
     }
 
+    /** A {@code #} starts a comment only at the line start or after whitespace, so {@code C#} paths survive. */
     private static String stripComment(String line) {
-        int hash = line.indexOf('#');
-        return hash >= 0 ? line.substring(0, hash) : line;
+        for (int i = 0; i < line.length(); i++) {
+            if (line.charAt(i) == '#' && (i == 0 || Character.isWhitespace(line.charAt(i - 1)))) {
+                return line.substring(0, i);
+            }
+        }
+        return line;
     }
 
     private static int indexOfWhitespace(String line) {
