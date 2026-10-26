@@ -149,7 +149,7 @@ final class AntLayerImporter {
         List<String> headers = new ArrayList<>();
         headers.add("Generated from Ant build.xml by Pre-Push Compilation Checker. Review before committing.");
         for (String todo : result.todos()) headers.add("TODO " + todo);
-        return LayerRulesWriter.render(List.of(), toDrafts(result), headers);
+        return LayerRulesWriter.render(List.of(), List.of(), toDrafts(result), headers);
     }
 
     /** Jars the IDE knows but Ant's classpaths lack, and the reverse; both repo-relative. */

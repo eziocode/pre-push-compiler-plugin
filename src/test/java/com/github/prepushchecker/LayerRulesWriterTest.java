@@ -15,7 +15,7 @@ public class LayerRulesWriterTest extends TestCase {
         crm.roots.add("source");
         crm.includes.add("source/**");
 
-        String text = LayerRulesWriter.render(List.of(), List.of(core, crm), List.of("TODO check me"));
+        String text = LayerRulesWriter.render(List.of(), List.of(), List.of(core, crm), List.of("TODO check me"));
         assertTrue(text, text.contains("# TODO check me"));
         assertEquals(1, text.split("root source", -1).length - 1);
 
@@ -37,5 +37,19 @@ public class LayerRulesWriterTest extends TestCase {
     public void testRulesWithoutLibsKeepJarCheckOff() {
         LayerRules rules = LayerRulesParser.parse("root s\nlayer a\n include s/a/**\nlayer b\n include s/**\n").rules();
         assertFalse(rules.hasLibs());
+    }
+
+    public void testScanAndForbidRoundTrip() {
+        LayerDraft core = new LayerDraft("core");
+        core.roots.add("source");
+        core.includes.add("source/core/**");
+        core.forbids.add("**/old-*.jar");
+        LayerDraft app = new LayerDraft("app");
+        app.includes.add("source/**");
+        String text = LayerRulesWriter.render(List.of(), List.of("dist/TP.zip"), List.of(core, app), List.of());
+        assertTrue(text, text.contains("\nscan dist/TP.zip\n") && text.contains("  forbid **/old-*.jar\n"));
+        LayerRules back = LayerRulesParser.parse(text).rules();
+        assertEquals("dist/TP.zip", back.scans().get(0).source());
+        assertEquals(List.of("**/old-*.jar"), LayerDraft.fromRules(back).get(0).forbids);
     }
 }

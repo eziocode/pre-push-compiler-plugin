@@ -14,18 +14,30 @@ import java.util.List;
  */
 final class LayerRules {
     static final String FILE_NAME = ".prepush-layers";
+    /** Layer index of a jar known only through a {@code scan} line, not any layer's {@code lib}. */
+    static final int UNLISTED_LAYER = Integer.MAX_VALUE;
 
     record Layer(
         @NotNull String name,
         int index,
         @NotNull List<AntPathPattern> includes,
         @NotNull List<AntPathPattern> excludes,
-        @NotNull List<AntPathPattern> libs
+        @NotNull List<AntPathPattern> libs,
+        @NotNull List<AntPathPattern> forbids
     ) {
         Layer {
             includes = List.copyOf(includes);
             excludes = List.copyOf(excludes);
             libs = List.copyOf(libs);
+            forbids = List.copyOf(forbids);
+        }
+
+        /** {@code true} when a {@code forbid} line matches the jar's display path. */
+        boolean isForbidden(@NotNull String jarDisplayPath) {
+            for (AntPathPattern forbid : forbids) {
+                if (forbid.matches(jarDisplayPath)) return true;
+            }
+            return false;
         }
 
         boolean contains(@NotNull String relativePath) {
@@ -40,15 +52,22 @@ final class LayerRules {
     }
 
     private final List<String> roots;
+    private final List<AntPathPattern> scans;
     private final List<Layer> layers;
 
-    LayerRules(@NotNull List<String> roots, @NotNull List<Layer> layers) {
+    LayerRules(@NotNull List<String> roots, @NotNull List<AntPathPattern> scans, @NotNull List<Layer> layers) {
         this.roots = List.copyOf(roots);
+        this.scans = List.copyOf(scans);
         this.layers = List.copyOf(layers);
     }
 
     @NotNull List<String> roots() {
         return roots;
+    }
+
+    /** Where jars may be found besides {@code lib} lines; every scanned jar is allowed unless forbidden. */
+    @NotNull List<AntPathPattern> scans() {
+        return scans;
     }
 
     @NotNull List<Layer> layers() {
@@ -81,6 +100,15 @@ final class LayerRules {
     boolean hasLibs() {
         for (Layer layer : layers) {
             if (!layer.libs().isEmpty()) return true;
+        }
+        return false;
+    }
+
+    /** {@code true} when any jar rule ({@code lib}, {@code forbid} or {@code scan}) is present. */
+    boolean hasJarRules() {
+        if (hasLibs() || !scans.isEmpty()) return true;
+        for (Layer layer : layers) {
+            if (!layer.forbids().isEmpty()) return true;
         }
         return false;
     }

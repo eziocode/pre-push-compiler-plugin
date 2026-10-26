@@ -12,10 +12,12 @@ import java.util.Set;
  * Parses {@code .prepush-layers}:
  * <pre>
  * root source                         # source root(s) used to resolve import packages
+ * scan dist/TP_COMPONENTS.zip         # global: where jars may be found (jars inside a .zip too)
  * layer crmcore                       # layers in compile order
  *   include source/com/zoho/crm/core/**
  *   exclude source/com/zoho/crm/core/ui/**
  *   lib lib/core/*.jar                  # jars on this layer's classpath (inherited by later layers)
+ *   forbid **&#47;commons-collections-3*.jar # jars this layer must not use (not inherited)
  * layer crm
  *   include source/**
  * </pre>
@@ -42,6 +44,7 @@ final class LayerRulesParser {
     static @NotNull Result parse(@NotNull String text) {
         List<Problem> problems = new ArrayList<>();
         List<String> roots = new ArrayList<>();
+        List<AntPathPattern> scans = new ArrayList<>();
         List<LayerRules.Layer> layers = new ArrayList<>();
         Set<String> names = new HashSet<>();
 
@@ -50,6 +53,7 @@ final class LayerRulesParser {
         List<AntPathPattern> includes = new ArrayList<>();
         List<AntPathPattern> excludes = new ArrayList<>();
         List<AntPathPattern> libs = new ArrayList<>();
+        List<AntPathPattern> forbids = new ArrayList<>();
 
         String[] lines = text.split("\r?\n", -1);
         for (int i = 0; i < lines.length; i++) {
@@ -67,9 +71,10 @@ final class LayerRulesParser {
 
             switch (directive) {
                 case "root" -> roots.add(argument.isEmpty() ? "." : argument);
+                case "scan" -> scans.add(AntPathPattern.compile(argument));
                 case "layer" -> {
                     if (currentName != null) {
-                        addLayer(layers, currentName, currentLine, includes, excludes, libs, problems);
+                        addLayer(layers, currentName, currentLine, includes, excludes, libs, forbids, problems);
                     }
                     if (!names.add(argument)) {
                         problems.add(new Problem(lineNo, "duplicate layer '" + argument + "'"));
@@ -79,29 +84,32 @@ final class LayerRulesParser {
                     includes = new ArrayList<>();
                     excludes = new ArrayList<>();
                     libs = new ArrayList<>();
+                    forbids = new ArrayList<>();
                 }
-                case "include", "exclude", "lib" -> {
+                case "include", "exclude", "lib", "forbid" -> {
                     if (currentName == null) {
                         problems.add(new Problem(lineNo, "'" + directive + "' before any 'layer'"));
                     } else if (directive.equals("include")) {
                         includes.add(AntPathPattern.compile(argument));
                     } else if (directive.equals("exclude")) {
                         excludes.add(AntPathPattern.compile(argument));
-                    } else {
+                    } else if (directive.equals("lib")) {
                         libs.add(AntPathPattern.compile(argument));
+                    } else {
+                        forbids.add(AntPathPattern.compile(argument));
                     }
                 }
                 default -> problems.add(new Problem(lineNo, "unknown directive '" + directive + "'"));
             }
         }
         if (currentName != null) {
-            addLayer(layers, currentName, currentLine, includes, excludes, libs, problems);
+            addLayer(layers, currentName, currentLine, includes, excludes, libs, forbids, problems);
         }
 
         if (roots.isEmpty()) problems.add(new Problem(1, "no 'root' declared"));
         if (layers.size() < 2) problems.add(new Problem(1, "at least two layers are needed"));
         if (!problems.isEmpty()) return new Result(null, problems);
-        return new Result(new LayerRules(LayerRules.normalizeRoots(roots), layers), problems);
+        return new Result(new LayerRules(LayerRules.normalizeRoots(roots), scans, layers), problems);
     }
 
     private static void addLayer(
@@ -111,12 +119,13 @@ final class LayerRulesParser {
         List<AntPathPattern> includes,
         List<AntPathPattern> excludes,
         List<AntPathPattern> libs,
+        List<AntPathPattern> forbids,
         List<Problem> problems
     ) {
         if (includes.isEmpty()) {
             problems.add(new Problem(line, "layer '" + name + "' has no 'include'"));
         }
-        layers.add(new LayerRules.Layer(name, layers.size(), includes, excludes, libs));
+        layers.add(new LayerRules.Layer(name, layers.size(), includes, excludes, libs, forbids));
     }
 
     /** A {@code #} starts a comment only at the line start or after whitespace, so {@code C#} paths survive. */

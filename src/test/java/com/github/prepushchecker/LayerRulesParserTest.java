@@ -84,4 +84,29 @@ public class LayerRulesParserTest extends TestCase {
         assertEquals("source/C#/**", rules.layers().get(0).includes().get(0).source());
         assertEquals("lib/C#/interop.jar", rules.layers().get(0).libs().get(0).source());
     }
+
+    public void testScanIsGlobalAndForbidIsPerLayer() {
+        LayerRules rules = LayerRulesParser.parse(String.join("\n",
+            "root source", "scan dist/TP_COMPONENTS.zip",
+            "layer core", "  include source/core/**", "  forbid **/commons-collections-3*.jar",
+            "layer app", "  include source/**", "scan lib/**")).rules();
+        assertEquals(java.util.List.of("dist/TP_COMPONENTS.zip", "lib/**"),
+            rules.scans().stream().map(AntPathPattern::source).toList());
+        assertTrue(rules.layers().get(0).isForbidden("dist/TP_COMPONENTS.zip!/lib/commons-collections-3.2.jar"));
+        assertFalse(rules.layers().get(1).isForbidden("dist/TP_COMPONENTS.zip!/lib/commons-collections-3.2.jar"));
+        assertTrue(rules.hasJarRules());
+    }
+
+    public void testForbidBeforeLayerIsAProblem() {
+        LayerRulesParser.Result r = LayerRulesParser.parse(
+            "root s\nforbid x.jar\nlayer a\ninclude s/**\nlayer b\ninclude t/**");
+        assertFalse(r.ok());
+        assertEquals("'forbid' before any 'layer'", r.problems().get(0).message());
+    }
+
+    public void testRulesWithoutJarDirectivesHaveNoJarRules() {
+        LayerRules rules = LayerRulesParser.parse(RULES).rules();
+        assertTrue(rules.scans().isEmpty());
+        assertFalse(rules.hasJarRules());
+    }
 }

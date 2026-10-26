@@ -90,7 +90,7 @@ final class LayersEditorDialog extends DialogWrapper {
 
     /** The rules-file text for the current layers. */
     @NotNull String getRulesText() {
-        return LayerRulesWriter.render(List.of(), drafts(),
+        return LayerRulesWriter.render(List.of(), List.of(), drafts(),
             List.of("Edited with the Layers dialog."));
     }
 

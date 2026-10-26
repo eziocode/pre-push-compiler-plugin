@@ -161,7 +161,7 @@ public class LayersEditorIdeModelTest extends HeavyPlatformTestCase {
             getProject(), () -> document.setText("unsaved edit")));
         assertTrue(com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().isDocumentUnsaved(document));
 
-        String text = LayerRulesWriter.render(List.of(), IdeProjectLayers.draftFromModules(snapshot), List.of());
+        String text = LayerRulesWriter.render(List.of(), List.of(), IdeProjectLayers.draftFromModules(snapshot), List.of());
         LayerRulesFile.write(getProject(), root, text);
         assertEquals(text, Files.readString(file));
         assertEquals(text, document.getText());

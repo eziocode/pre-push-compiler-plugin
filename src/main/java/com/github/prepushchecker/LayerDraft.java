@@ -12,6 +12,7 @@ final class LayerDraft {
     final @NotNull List<String> includes = new ArrayList<>();
     final @NotNull List<String> excludes = new ArrayList<>();
     final @NotNull List<String> libs = new ArrayList<>();
+    final @NotNull List<String> forbids = new ArrayList<>();
 
     LayerDraft(@NotNull String name) {
         this.name = name;
@@ -24,6 +25,7 @@ final class LayerDraft {
             layer.includes().forEach(p -> draft.includes.add(p.source()));
             layer.excludes().forEach(p -> draft.excludes.add(p.source()));
             layer.libs().forEach(p -> draft.libs.add(p.source()));
+            layer.forbids().forEach(p -> draft.forbids.add(p.source()));
             drafts.add(draft);
         }
         return drafts;
