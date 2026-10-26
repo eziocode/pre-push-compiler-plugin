@@ -40,4 +40,12 @@ public class AntPathPatternTest extends TestCase {
     public void testDirectoryBoundaryIsRespected() {
         assertFalse(AntPathPattern.compile("source/core/**").matches("source/coreext/A.java"));
     }
+
+    public void testCharacterClass() {
+        AntPathPattern digit = AntPathPattern.compile("**/a-[0-9]*.jar");
+        assertTrue(digit.matches("lib/a-1.jar"));
+        assertFalse(digit.matches("lib/a-b.jar"));
+        assertTrue(AntPathPattern.compile("x[ab].txt").matches("xb.txt"));
+        assertTrue("unclosed bracket is literal", AntPathPattern.compile("x[a.txt").matches("x[a.txt"));
+    }
 }

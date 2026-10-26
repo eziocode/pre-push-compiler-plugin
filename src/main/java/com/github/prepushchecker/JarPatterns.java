@@ -17,12 +17,13 @@ final class JarPatterns {
 
     /**
      * A pattern for every version of the jar, anywhere: {@code lib/commons-collections-3.2.jar}
-     * gives {@code **&#47;commons-collections-*.jar}. A name without a version matches only itself.
+     * gives {@code **&#47;commons-collections-[0-9]*.jar}; the digit keeps sibling artifacts such as
+     * {@code log4j-api-2.x.jar} out of a {@code log4j-1.x.jar} pattern. A name without a version matches only itself.
      */
     static @NotNull String anyVersion(@NotNull String jarDisplayPath) {
         String name = jarDisplayPath.substring(jarDisplayPath.lastIndexOf('/') + 1);
         Matcher matcher = VERSIONED.matcher(name);
-        return matcher.matches() ? "**/" + matcher.group(1) + "-*.jar" : "**/" + name;
+        return matcher.matches() ? "**/" + matcher.group(1) + "-[0-9]*.jar" : "**/" + name;
     }
 
     /** One {@code <dir>/*.jar} scan per folder holding IntelliJ's repo-relative library jars, sorted. */
