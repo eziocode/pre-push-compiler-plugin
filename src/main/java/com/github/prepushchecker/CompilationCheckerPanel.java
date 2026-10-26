@@ -256,12 +256,14 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                 if (index < 0) return;
                 errorList.setSelectedIndex(index);
                 String diagnostic = errorList.getSelectedValue();
-                if (!DiagnosticPathMatcher.canIgnoreDiagnostic(project, diagnostic)) return;
                 JPopupMenu menu = new JPopupMenu();
-                JMenuItem ignore = new JMenuItem("Ignore File");
-                ignore.addActionListener(event -> ignoreDiagnosticFile(diagnostic));
-                menu.add(ignore);
-                menu.show(errorList, e.getX(), e.getY());
+                if (DiagnosticPathMatcher.canIgnoreDiagnostic(project, diagnostic)) {
+                    JMenuItem ignore = new JMenuItem("Ignore File");
+                    ignore.addActionListener(event -> ignoreDiagnosticFile(diagnostic));
+                    menu.add(ignore);
+                }
+                addLayerFixes(menu, diagnostic);
+                if (menu.getComponentCount() > 0) menu.show(errorList, e.getX(), e.getY());
             }
         });
         errorList.addKeyListener(new KeyAdapter() {
@@ -508,6 +510,51 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             if (CrossLayerImportCheck.hasRulesFile(root)) return root;
         }
         return roots.isEmpty() ? null : roots.iterator().next();
+    }
+
+    /** Quick fixes for jar diagnostics of the cross-layer check: they rewrite {@code .prepush-layers}. */
+    private void addLayerFixes(JPopupMenu menu, @Nullable String diagnostic) {
+        LayerDiagnostic parsed = diagnostic == null ? null : LayerDiagnostic.parse(diagnostic);
+        String root = parsed == null ? null : layerRepositoryRoot();
+        if (root == null || !CrossLayerImportCheck.hasRulesFile(root)) return;
+        if (menu.getComponentCount() > 0) menu.addSeparator();
+        for (String jar : parsed.jars()) {
+            boolean forbidden = parsed.kind() == LayerDiagnostic.Kind.FORBIDDEN_JAR;
+            JMenuItem fix = new JMenuItem((forbidden ? "Check " + jar + " for '" : "Allow " + jar + " in '")
+                + parsed.layer() + "'");
+            fix.addActionListener(event -> applyLayerFix(root, text -> forbidden
+                ? LayerRulesEdit.allowJar(text, parsed.layer(), jar)
+                : LayerRulesEdit.addLib(text, parsed.layer(), jar)));
+            menu.add(fix);
+        }
+        JMenuItem open = new JMenuItem("Open Layers…");
+        open.addActionListener(event -> editLayerRules());
+        menu.add(open);
+    }
+
+    private void applyLayerFix(String root, java.util.function.UnaryOperator<String> edit) {
+        VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
+        VirtualFile rules = rootFile == null ? null : rootFile.findChild(LayerRules.FILE_NAME);
+        if (rules == null) return;
+        String text;
+        try {
+            com.intellij.openapi.editor.Document document =
+                com.intellij.openapi.fileEditor.FileDocumentManager.getInstance().getDocument(rules);
+            text = document != null ? document.getText() : com.intellij.openapi.vfs.VfsUtilCore.loadText(rules);
+        } catch (java.io.IOException e) {
+            Messages.showErrorDialog(project, e.getMessage(), "Layer Rules");
+            return;
+        }
+        if (LayerRulesEdit.hasOwnComments(text) && Messages.showYesNoDialog(project,
+                "Comments in " + LayerRules.FILE_NAME + " will be removed. Continue?", "Layer Rules", null)
+                != Messages.YES) {
+            return;
+        }
+        try {
+            writeRulesFile(rootFile, edit.apply(text));
+        } catch (IllegalArgumentException e) {
+            Messages.showErrorDialog(project, e.getMessage(), "Layer Rules");
+        }
     }
 
     private void runLayerCheckNow() {
