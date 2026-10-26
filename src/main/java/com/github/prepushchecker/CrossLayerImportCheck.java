@@ -117,9 +117,12 @@ final class CrossLayerImportCheck {
         List<String> targets = selectTargets(rules, headFiles, changedRelativePaths, forceFullScan);
         if (targets.isEmpty()) return List.of();
         Map<String, String> contents = readHeadContents(repositoryRoot, targets);
-        if (!rules.hasLibs()) return analyze(rules, headFiles, contents);
-        try (JarClassIndex jars = new JarClassIndex(LayerJars.resolve(repositoryRoot, rules))) {
-            return analyze(rules, headFiles, contents, jars);
+        if (!rules.hasJarRules()) return analyze(rules, headFiles, contents);
+        List<String> scans = new ArrayList<>();
+        rules.scans().forEach(p -> scans.add(p.source()));
+        try (JarClassIndex jars = new JarClassIndex(LayerJars.resolve(repositoryRoot, rules));
+             ScanJarIndex scanned = new ScanJarIndex(ScanJars.resolve(repositoryRoot, scans))) {
+            return analyze(rules, headFiles, contents, jars, scans.isEmpty() ? null : scanned);
         }
     }
 
@@ -135,7 +138,7 @@ final class CrossLayerImportCheck {
     ) {
         boolean full = forceFullScan;
         for (String path : changedRelativePaths) {
-            if (LayerRules.isRulesFile(path) || path.endsWith(".jar")) full = true;
+            if (LayerRules.isRulesFile(path) || path.endsWith(".jar") || ScanJars.isZip(path)) full = true;
             else if (path.endsWith(".java") && !headFiles.contains(path)) full = true;
         }
         Collection<String> candidates = full ? headFiles : changedRelativePaths;
@@ -143,7 +146,7 @@ final class CrossLayerImportCheck {
         for (String path : candidates) {
             if (!path.endsWith(".java") || !headFiles.contains(path)) continue;
             LayerRules.Layer layer = rules.layerOf(path);
-            if (layer != null && rules.hasLaterLayer(layer)) targets.add(path);
+            if (layer != null && (rules.hasLaterLayer(layer) || !layer.forbids().isEmpty())) targets.add(path);
         }
         return targets;
     }
@@ -164,6 +167,20 @@ final class CrossLayerImportCheck {
         @NotNull Map<String, String> contentsByPath,
         @Nullable JarLookup jars
     ) {
+        return analyze(rules, headFiles, contentsByPath, jars, null);
+    }
+
+    /**
+     * As above; with {@code scanned} (jars from {@code scan} lines) also flags imports that every
+     * jar holding them is forbidden for the importing layer. A class in at least one allowed jar passes.
+     */
+    static @NotNull List<String> analyze(
+        @NotNull LayerRules rules,
+        @NotNull Set<String> headFiles,
+        @NotNull Map<String, String> contentsByPath,
+        @Nullable JarLookup jars,
+        @Nullable JarLookup scanned
+    ) {
         PackageIndex index = PackageIndex.build(rules, headFiles);
         List<String> messages = new ArrayList<>();
         for (Map.Entry<String, String> entry : contentsByPath.entrySet()) {
@@ -173,13 +190,9 @@ final class CrossLayerImportCheck {
             for (ImportLine imp : parseImports(entry.getValue())) {
                 Violation violation = index.resolve(rules, imp);
                 if (violation == null) {
-                    JarHit jar = jars == null ? null : earliestJar(jars, imp);
-                    if (jar == null || jar.layerIndex() <= layer.index()) continue;
-                    messages.add(String.format(
-                        "[%s (%d:1)] Layer violation: '%s' file imports %s, found only in jar %s of later"
-                            + " layer '%s'; the '%s' build step's classpath does not include it",
-                        path, imp.line(), layer.name(), imp.name(), jar.jarPath(),
-                        rules.layers().get(jar.layerIndex()).name(), layer.name()));
+                    String message = jarMessage(rules, layer, path, imp, jars, scanned);
+                    if (message == null) continue;
+                    messages.add(message);
                     if (messages.size() >= MAX_MESSAGES) return List.copyOf(messages);
                     continue;
                 }
@@ -195,14 +208,72 @@ final class CrossLayerImportCheck {
         return List.copyOf(messages);
     }
 
-    /** Earliest-layer jar holding the import: longest class prefix first, then the wildcard package. */
-    private static @Nullable JarHit earliestJar(@NotNull JarLookup jars, @NotNull ImportLine imp) {
+    /**
+     * The jar diagnostic for an import with no in-repo source, or {@code null} when allowed or unknown.
+     * Allowed: some jar the layer can see (an earlier-or-own {@code lib}, or any scanned jar that no
+     * later layer lists) holds it and is not forbidden for the layer.
+     */
+    private static @Nullable String jarMessage(
+        @NotNull LayerRules rules,
+        @NotNull LayerRules.Layer layer,
+        @NotNull String path,
+        @NotNull ImportLine imp,
+        @Nullable JarLookup jars,
+        @Nullable JarLookup scanned
+    ) {
+        List<JarHit> libHits = jars == null ? List.of() : allHits(jars, imp);
+        Set<String> laterLibs = new LinkedHashSet<>();
+        Set<String> candidates = new LinkedHashSet<>();
+        for (JarHit hit : libHits) {
+            if (hit.layerIndex() <= layer.index()) candidates.add(hit.jarPath());
+            else laterLibs.add(hit.jarPath());
+        }
+        if (scanned != null) {
+            for (JarHit hit : allHits(scanned, imp)) {
+                if (!laterLibs.contains(hit.jarPath())) candidates.add(hit.jarPath());
+            }
+        }
+        for (String candidate : candidates) {
+            if (!layer.isForbidden(candidate)) return null;
+        }
+        if (!candidates.isEmpty()) {
+            return String.format(
+                "[%s (%d:1)] Forbidden jar: '%s' file imports %s, available only from jars layer '%s' unchecked: %s."
+                    + " Check one in Layers or fix the import",
+                path, imp.line(), layer.name(), imp.name(), layer.name(), listJars(candidates));
+        }
+        JarHit jar = earliest(libHits);
+        if (jar == null) return null;
+        return String.format(
+            "[%s (%d:1)] Layer violation: '%s' file imports %s, found only in jar %s of later"
+                + " layer '%s'; the '%s' build step's classpath does not include it",
+            path, imp.line(), layer.name(), imp.name(), jar.jarPath(),
+            rules.layers().get(jar.layerIndex()).name(), layer.name());
+    }
+
+    /** Up to three jar paths, then {@code and N more}. */
+    private static String listJars(Collection<String> jars) {
+        List<String> shown = new ArrayList<>();
+        for (String jar : jars) {
+            if (shown.size() == 3) break;
+            shown.add(jar);
+        }
+        String text = String.join(", ", shown);
+        return jars.size() > shown.size() ? text + " and " + (jars.size() - shown.size()) + " more" : text;
+    }
+
+    /** Jars holding the import: longest class prefix first, then the wildcard package. */
+    private static @NotNull List<JarHit> allHits(@NotNull JarLookup jars, @NotNull ImportLine imp) {
         String[] parts = imp.name().split("\\.");
         List<JarHit> hits = List.of();
         for (int end = parts.length; end >= 1 && hits.isEmpty(); end--) {
             hits = jars.classHits(String.join(".", java.util.Arrays.copyOfRange(parts, 0, end)));
         }
         if (hits.isEmpty() && imp.wildcard()) hits = jars.packageHits(imp.name());
+        return hits;
+    }
+
+    private static @Nullable JarHit earliest(@NotNull List<JarHit> hits) {
         JarHit best = null;
         for (JarHit hit : hits) {
             if (best == null || hit.layerIndex() < best.layerIndex()) best = hit;
