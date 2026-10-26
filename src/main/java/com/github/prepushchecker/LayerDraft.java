@@ -22,6 +22,12 @@ final class LayerDraft {
         List<LayerDraft> drafts = new ArrayList<>();
         for (LayerRules.Layer layer : rules.layers()) {
             LayerDraft draft = new LayerDraft(layer.name());
+            for (String root : rules.roots()) {
+                // A root goes with the layers whose includes live under it, so saving keeps it.
+                if (layer.includes().stream().anyMatch(p -> root.isEmpty() || p.source().startsWith(root + "/"))) {
+                    draft.roots.add(root);
+                }
+            }
             layer.includes().forEach(p -> draft.includes.add(p.source()));
             layer.excludes().forEach(p -> draft.excludes.add(p.source()));
             layer.libs().forEach(p -> draft.libs.add(p.source()));

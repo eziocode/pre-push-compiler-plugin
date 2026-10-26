@@ -52,4 +52,14 @@ public class LayerRulesWriterTest extends TestCase {
         assertEquals("dist/TP.zip", back.scans().get(0).source());
         assertEquals(List.of("**/old-*.jar"), LayerDraft.fromRules(back).get(0).forbids);
     }
+
+    public void testReloadedDraftsKeepTheirRoots() {
+        LayerRules rules = LayerRulesParser.parse(
+            "root mod1/src\nroot mod2/src\nlayer a\n  include mod1/src/**\nlayer b\n  include mod2/src/**\n").rules();
+        List<LayerDraft> drafts = LayerDraft.fromRules(rules);
+        assertEquals(List.of("mod1/src"), drafts.get(0).roots);
+        LayerRules back = LayerRulesParser.parse(LayerRulesWriter.render(List.of(), List.of(), drafts, List.of())).rules();
+        assertNotNull(back);
+        assertEquals(List.of("mod1/src", "mod2/src"), back.roots());
+    }
 }

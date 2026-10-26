@@ -170,6 +170,78 @@ public class LayersEditorIdeModelTest extends HeavyPlatformTestCase {
             LayerRulesParser.parse(Files.readString(file)).ok());
     }
 
+    public void testAllJarsCheckedByDefaultAndUncheckWritesForbid() throws Exception {
+        TestFiles.zip(repo, "dist/TP.zip", java.util.Map.of("lib/old-1.0.jar", TestFiles.jarBytes("o/Old.class")));
+        LayersEditorDialog dialog = new LayersEditorDialog(getProject(), repo.toString(), snapshot, List.of(),
+            List.of(), List.of("dist/TP.zip"));
+        try {
+            JComponent panel = centerPanel(dialog);
+            click(panel, "From IntelliJ modules");
+            assertTrue(dialog.universe().toString(), dialog.universe().containsAll(
+                List.of("lib/core-lib.jar", "lib/api-lib.jar", "dist/TP.zip!/lib/old-1.0.jar")));
+            JList<?> layers = field(dialog, "layerList");
+            layers.setSelectedIndex(indexOf(layers, "mod1"));
+            com.intellij.ui.CheckBoxList<String> jars = field(dialog, "jarList");
+            assertEquals(dialog.universe().size(), jars.getItemsCount());
+            for (int i = 0; i < jars.getItemsCount(); i++) assertTrue(jars.getItemAt(i), jars.isItemSelected(i));
+            assertFalse(dialog.getRulesText(), dialog.getRulesText().contains("  forbid "));
+
+            dialog.setJarChecked("dist/TP.zip!/lib/old-1.0.jar", false);
+            assertFalse(jars.isItemSelected(dialog.universe().indexOf("dist/TP.zip!/lib/old-1.0.jar")));
+            dialog.addFolderEntries("exclude", List.of("mod1/src/com/x/gen"));
+            String text = dialog.getRulesText();
+            assertTrue(text, text.contains("scan dist/TP.zip\n") && text.contains("scan lib/*.jar\n")
+                && text.contains("  forbid dist/TP.zip!/lib/old-1.0.jar\n")
+                && text.contains("  exclude mod1/src/com/x/gen/**\n"));
+            assertTrue(LayerRulesParser.parse(text).ok());
+            assertTrue(dialog.isOKActionEnabled());
+
+            dialog.setJarChecked("dist/TP.zip!/lib/old-1.0.jar", true);
+            assertFalse(dialog.getRulesText(), dialog.getRulesText().contains("  forbid "));
+        } finally {
+            Disposer.dispose(dialog.getDisposable());
+        }
+    }
+
+    public void testNewJarDefaultsChecked() throws Exception {
+        TestFiles.write(repo, LayerRules.FILE_NAME, String.join("\n",
+            "root mod1/src", "root mod2/src", "scan lib/*.jar",
+            "layer mod1", "  include mod1/src/**", "  forbid lib/api-lib.jar",
+            "layer mod2", "  include mod2/src/**", ""));
+        LayerRules rules = LayerRulesParser.parse(Files.readString(repo.resolve(LayerRules.FILE_NAME))).rules();
+        LayersEditorDialog dialog = new LayersEditorDialog(getProject(), repo.toString(), snapshot,
+            LayerDraft.fromRules(rules), List.of("lib/*.jar"), List.of());
+        try {
+            JComponent panel = centerPanel(dialog);
+            String before = dialog.getRulesText();
+            TestFiles.jar(repo, "lib/new.jar", "n/N.class");
+            click(panel, "Reload file");
+            assertEquals(before, dialog.getRulesText());
+            com.intellij.ui.CheckBoxList<String> jars = field(dialog, "jarList");
+            int added = dialog.universe().indexOf("lib/new.jar");
+            assertTrue(dialog.universe().toString(), added >= 0);
+            assertTrue(jars.isItemSelected(added));
+            assertFalse(jars.isItemSelected(dialog.universe().indexOf("lib/api-lib.jar")));
+        } finally {
+            Disposer.dispose(dialog.getDisposable());
+        }
+    }
+
+    public void testUncheckAllVersionsWritesPattern() throws Exception {
+        LayersEditorDialog dialog = new LayersEditorDialog(getProject(), repo.toString(), snapshot, List.of(),
+            List.of(), List.of());
+        try {
+            click(centerPanel(dialog), "From IntelliJ modules");
+            JList<?> layers = field(dialog, "layerList");
+            layers.setSelectedIndex(indexOf(layers, "mod1"));
+            dialog.uncheckAllVersions("lib/core-lib.jar");
+            assertTrue(dialog.getRulesText(), dialog.getRulesText().contains("layer mod1\n")
+                && dialog.getRulesText().contains("  forbid **/core-lib.jar\n"));
+        } finally {
+            Disposer.dispose(dialog.getDisposable());
+        }
+    }
+
     private IdeProjectLayers.ModuleInfo module(String name) {
         return snapshot.modules().stream().filter(m -> m.name().equals(name)).findFirst().orElseThrow();
     }

@@ -594,25 +594,39 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             new Task.Backgroundable(project, "Reading Modules and Jars", true) {
                 private IdeProjectLayers.Snapshot snapshot;
                 private List<LayerDraft> initial = new java.util.ArrayList<>();
+                private final List<String> fileScans = new java.util.ArrayList<>();
+                private final List<String> suggestedScans = new java.util.ArrayList<>();
 
                 @Override
                 public void run(@NotNull ProgressIndicator indicator) {
                     snapshot = IdeProjectLayers.read(project, root);
                     java.nio.file.Path existing = java.nio.file.Path.of(root, LayerRules.FILE_NAME);
-                    if (!java.nio.file.Files.isRegularFile(existing)) return;
-                    try {
-                        LayerRules rules = LayerRulesParser.parse(
-                            java.nio.file.Files.readString(existing, StandardCharsets.UTF_8)).rules();
-                        if (rules != null) initial = LayerDraft.fromRules(rules);
-                    } catch (java.io.IOException ignored) {
-                        // Start empty; "Reload file" in the dialog reports the problem.
+                    if (java.nio.file.Files.isRegularFile(existing)) {
+                        try {
+                            LayerRules rules = LayerRulesParser.parse(
+                                java.nio.file.Files.readString(existing, StandardCharsets.UTF_8)).rules();
+                            if (rules != null) {
+                                initial = LayerDraft.fromRules(rules);
+                                rules.scans().forEach(pattern -> fileScans.add(pattern.source()));
+                            }
+                        } catch (java.io.IOException ignored) {
+                            // Start empty; "Reload file" in the dialog reports the problem.
+                        }
+                    }
+                    if (fileScans.isEmpty()) {
+                        indicator.setText("Finding jar locations");
+                        for (ScanDetector.Suggestion suggestion
+                                : ScanDetector.detect(java.nio.file.Path.of(root), snapshot.jars())) {
+                            suggestedScans.add(suggestion.pattern());
+                        }
                     }
                 }
 
                 @Override
                 public void onSuccess() {
                     if (project.isDisposed() || snapshot == null) return;
-                    LayersEditorDialog dialog = new LayersEditorDialog(project, root, snapshot, initial);
+                    LayersEditorDialog dialog = new LayersEditorDialog(project, root, snapshot, initial,
+                        fileScans, suggestedScans);
                     if (dialog.showAndGet()) writeRulesFile(rootFile, dialog.getRulesText());
                 }
             });
