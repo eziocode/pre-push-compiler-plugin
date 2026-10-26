@@ -39,4 +39,13 @@ public class LayerRulesEditTest extends TestCase {
             // Rules that don't parse are not rewritten.
         }
     }
+
+    public void testWildcardForbidsMatchingTellsTheQuickFixWhatElseItAllows() {
+        String text = "root s\nlayer a\n  include s/a/**\n  forbid **/old-[0-9]*.jar\n  forbid lib/old-1.0.jar\n"
+            + "layer b\n  include s/**\n";
+        assertEquals(java.util.List.of("**/old-[0-9]*.jar"),
+            LayerRulesEdit.wildcardForbidsMatching(text, "a", "lib/old-1.0.jar"));
+        assertTrue(LayerRulesEdit.wildcardForbidsMatching(text, "b", "lib/old-1.0.jar").isEmpty());
+        assertTrue(LayerRulesEdit.wildcardForbidsMatching("not rules", "a", "x.jar").isEmpty());
+    }
 }

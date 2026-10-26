@@ -522,9 +522,16 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             boolean forbidden = parsed.kind() == LayerDiagnostic.Kind.FORBIDDEN_JAR;
             JMenuItem fix = new JMenuItem((forbidden ? "Check " + jar + " for '" : "Allow " + jar + " in '")
                 + parsed.layer() + "'");
-            fix.addActionListener(event -> applyLayerFix(root, text -> forbidden
-                ? LayerRulesEdit.allowJar(text, parsed.layer(), jar)
-                : LayerRulesEdit.addLib(text, parsed.layer(), jar)));
+            fix.addActionListener(event -> applyLayerFix(root, text -> {
+                if (!forbidden) return LayerRulesEdit.addLib(text, parsed.layer(), jar);
+                List<String> wide = LayerRulesEdit.wildcardForbidsMatching(text, parsed.layer(), jar);
+                if (!wide.isEmpty() && Messages.showYesNoDialog(project,
+                        "This also re-allows other jars matching '" + String.join("', '", wide) + "'. Continue?",
+                        "Layer Rules", null) != Messages.YES) {
+                    return null;
+                }
+                return LayerRulesEdit.allowJar(text, parsed.layer(), jar);
+            }));
             menu.add(fix);
         }
         JMenuItem open = new JMenuItem("Open Layers…");
@@ -532,6 +539,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         menu.add(open);
     }
 
+    /** {@code edit} returns the new rules text, or {@code null} when the user backed out. */
     private void applyLayerFix(String root, java.util.function.UnaryOperator<String> edit) {
         VirtualFile rootFile = LocalFileSystem.getInstance().findFileByPath(root);
         VirtualFile rules = rootFile == null ? null : rootFile.findChild(LayerRules.FILE_NAME);
@@ -551,7 +559,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
             return;
         }
         try {
-            writeRulesFile(rootFile, edit.apply(text));
+            String edited = edit.apply(text);
+            if (edited != null) writeRulesFile(rootFile, edited);
         } catch (IllegalArgumentException e) {
             Messages.showErrorDialog(project, e.getMessage(), "Layer Rules");
         }

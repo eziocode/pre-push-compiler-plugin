@@ -30,6 +30,29 @@ final class LayerRulesEdit {
             draft -> draft.forbids.removeIf(forbid -> AntPathPattern.compile(forbid).matches(jarDisplayPath)));
     }
 
+    /**
+     * {@code layer}'s wildcard {@code forbid} patterns that match the jar: {@link #allowJar} removes them
+     * too, re-allowing every other jar they cover. Empty when the text does not parse.
+     */
+    static @NotNull List<String> wildcardForbidsMatching(
+        @NotNull String rulesText,
+        @NotNull String layer,
+        @NotNull String jarDisplayPath
+    ) {
+        LayerRules rules = LayerRulesParser.parse(rulesText).rules();
+        if (rules == null) return List.of();
+        List<String> result = new ArrayList<>();
+        for (LayerRules.Layer candidate : rules.layers()) {
+            if (!candidate.name().equals(layer)) continue;
+            for (AntPathPattern forbid : candidate.forbids()) {
+                String source = forbid.source();
+                boolean wildcard = source.indexOf('*') >= 0 || source.indexOf('?') >= 0 || source.indexOf('[') >= 0;
+                if (wildcard && forbid.matches(jarDisplayPath)) result.add(source);
+            }
+        }
+        return result;
+    }
+
     /** {@code true} when the text has comments the writer would not put back. */
     static boolean hasOwnComments(@NotNull String rulesText) {
         Set<String> generated = new HashSet<>(List.of(
