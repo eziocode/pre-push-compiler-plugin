@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
 
 /** Expands {@code lib} patterns (repo-relative Ant globs) to jar files on disk. */
@@ -38,6 +39,15 @@ final class LayerJars {
 
     /** Repo-relative paths of {@code .jar} files matching any pattern; patterns match the relative path. */
     static @NotNull Set<String> expand(@NotNull Path repositoryRoot, @NotNull List<String> patterns) {
+        return walk(repositoryRoot, patterns, LayerJars::isJar);
+    }
+
+    /** Repo-relative paths of regular files that match any pattern and {@code accept}, in pattern order. */
+    static @NotNull Set<String> walk(
+        @NotNull Path repositoryRoot,
+        @NotNull List<String> patterns,
+        @NotNull Predicate<String> accept
+    ) {
         Set<String> found = new LinkedHashSet<>();
         for (String raw : patterns) {
             String pattern = raw.trim().replace('\\', '/');
@@ -49,7 +59,7 @@ final class LayerJars {
             int fixed = 0;
             while (fixed < segments.length && !hasWildcard(segments[fixed])) fixed++;
             if (fixed == segments.length) {
-                if (isJar(pattern) && Files.isRegularFile(repositoryRoot.resolve(pattern))) found.add(pattern);
+                if (accept.test(pattern) && Files.isRegularFile(repositoryRoot.resolve(pattern))) found.add(pattern);
                 continue;
             }
             String prefix = String.join("/", java.util.Arrays.copyOfRange(segments, 0, fixed));
@@ -60,7 +70,7 @@ final class LayerJars {
             try (Stream<Path> walk = Files.walk(base, depth)) {
                 walk.filter(Files::isRegularFile).forEach(file -> {
                     String relative = repositoryRoot.relativize(file).toString().replace('\\', '/');
-                    if (isJar(relative) && compiled.matches(relative)) found.add(relative);
+                    if (accept.test(relative) && compiled.matches(relative)) found.add(relative);
                 });
             } catch (IOException | RuntimeException ignored) {
                 // Unreadable directory: its jars stay unknown rather than failing the push check.
@@ -73,7 +83,7 @@ final class LayerJars {
         return segment.indexOf('*') >= 0 || segment.indexOf('?') >= 0;
     }
 
-    private static boolean isJar(String path) {
+    static boolean isJar(@NotNull String path) {
         return path.toLowerCase(Locale.ROOT).endsWith(".jar");
     }
 }
