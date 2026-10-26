@@ -107,6 +107,14 @@ public class CrossLayerScanCheckTest extends TestCase {
         assertTrue(errors.get(0), errors.get(0).contains("found only in jar lib/crm.jar of later layer 'crm'"));
     }
 
+    public void testScannedCopyDoesNotHideLaterLayerJar() throws Exception {
+        TestFiles.jar(repo, "other/crm-copy.jar", "org/crm/CrmUtil.class");
+        LayerRules withCopy = LayerRulesParser.parse(RULES.replace("scan lib/**", "scan lib/**\nscan other/*.jar")).rules();
+        List<String> errors = analyzeScanned(withCopy, CORE_FILE, "org.crm.CrmUtil");
+        assertEquals(errors.toString(), 1, errors.size());
+        assertTrue(errors.get(0), errors.get(0).contains("found only in jar lib/crm.jar of later layer 'crm'"));
+    }
+
     public void testZipChangeForcesFullScan() {
         Set<String> head = Set.of(CORE_FILE, CRM_FILE);
         assertEquals(List.of(CORE_FILE),

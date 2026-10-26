@@ -210,8 +210,8 @@ final class CrossLayerImportCheck {
 
     /**
      * The jar diagnostic for an import with no in-repo source, or {@code null} when allowed or unknown.
-     * Allowed: some jar the layer can see (an earlier-or-own {@code lib}, or any scanned jar that no
-     * later layer lists) holds it and is not forbidden for the layer.
+     * Allowed: some jar the layer can see holds it and is not forbidden for the layer. Visible jars are
+     * earlier-or-own {@code lib} jars, plus scanned jars when no later layer's {@code lib} holds the class.
      */
     private static @Nullable String jarMessage(
         @NotNull LayerRules rules,
@@ -228,10 +228,10 @@ final class CrossLayerImportCheck {
             if (hit.layerIndex() <= layer.index()) candidates.add(hit.jarPath());
             else laterLibs.add(hit.jarPath());
         }
-        if (scanned != null) {
-            for (JarHit hit : allHits(scanned, imp)) {
-                if (!laterLibs.contains(hit.jarPath())) candidates.add(hit.jarPath());
-            }
+        // A later layer's lib owning the class keeps the later-layer verdict: a stray scanned copy
+        // elsewhere must not quietly turn that check off.
+        if (scanned != null && laterLibs.isEmpty()) {
+            for (JarHit hit : allHits(scanned, imp)) candidates.add(hit.jarPath());
         }
         for (String candidate : candidates) {
             if (!layer.isForbidden(candidate)) return null;
