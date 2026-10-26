@@ -56,4 +56,24 @@ public class ScanJarsTest extends TestCase {
             assertTrue(index.packageHits("a").isEmpty());
         }
     }
+
+    public void testCachesEvictLeastRecentlyUsedNotEverything() {
+        Map<String, String> cache = ScanJarIndex.lruCache(2);
+        cache.put("a", "1");
+        cache.put("b", "2");
+        cache.get("a");
+        cache.put("c", "3");
+        assertEquals(java.util.Set.of("a", "c"), cache.keySet());
+    }
+
+    public void testNestedJarClassesAreFoundOnlyThroughTheirPackage() throws Exception {
+        TestFiles.zip(repo, "dist/TP.zip", Map.of(
+            "a.jar", TestFiles.jarBytes("org/a/A.class"),
+            "b.jar", TestFiles.jarBytes("org/b/B.class")));
+        try (ScanJarIndex index = new ScanJarIndex(ScanJars.resolve(repo, List.of("dist/TP.zip")))) {
+            assertEquals("dist/TP.zip!/b.jar", index.classHits("org.b.B").get(0).jarPath());
+            assertTrue(index.classHits("org.b.A").isEmpty());
+            assertEquals(1, index.packageHits("org.a").size());
+        }
+    }
 }
