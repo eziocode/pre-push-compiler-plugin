@@ -24,6 +24,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   the reverse. The importer now also reads `<classpath>`, `classpath=`/`classpathref=`, `<path>`,
   `<pathelement>` and `<fileset>` into `lib` lines (first layer to list a jar owns it).
 
+- **Jar selection per layer.** New `scan <pattern>` lines list where jars are found, including jars
+  inside `.zip` files (shown as `zip!/entry`). New per-layer `forbid <pattern>` lines block jars for
+  one layer. A file importing a class that only forbidden jars hold fails with *Forbidden jar*; a class
+  also in an allowed jar passes. Everything is allowed until forbidden, so new jars need no edit.
+- **Layers dialog, no typing needed.** Scan locations come pre-filled from IntelliJ's jar folders and
+  detected zips/jar folders (*Detect…*, *Add folder or zip…*). Each layer lists every jar as a
+  checkbox, checked by default; uncheck to forbid, right-click → *Uncheck all versions*. Include and
+  exclude folders use folder pickers; *Edit pattern…* (entry right-click) remains for hand edits.
+- **Quick fixes** on jar diagnostics in the Compilation Checker: *Check <jar> for '<layer>'* removes
+  the forbid, *Allow <jar> in '<layer>'* adds a later-layer jar as `lib`, *Open Layers…*.
+
+### Fixed
+
+- Reopening the Layers dialog over an existing `.prepush-layers` kept no `root` lines, so it showed
+  "No source root yet" until the layers were rebuilt.
+
 ### Changed
 
 - The pre-push hook now also runs when a push changes a `.jar`, and a jar change triggers a full

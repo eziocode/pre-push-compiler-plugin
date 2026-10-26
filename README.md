@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.6.0-blue)
+![Version](https://img.shields.io/badge/version-2.7.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -23,7 +23,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Per-branch build snapshots** — verdicts are keyed by working-tree content and kept per branch until the branch is deleted. Switching back to a branch restores its errors without a build, commits keep the verdict, and a push of already cleanly compiled sources skips the compile (clean verdicts only, max. 24 h old)
 - **In-flight sharing** — concurrent identical pushes share one compiler run
 - **Symbolic A/B detection** — parses `git diff HEAD` of unpushed local files for newly added method/class/field declarations and scans HEAD content of pushed files for word-boundary references; blocks the push instantly when the pushed commit references a symbol defined only in an unpushed local edit (no compile required)
-- **Cross-layer import check** — for layered Ant builds: blocks a push when a file imports in-repo source that only a later `<javac>` target compiles (the IDE's single-module compile never sees this). Layers live in `.prepush-layers` at the repository root; build them with **Edit Layers…** (from IntelliJ's modules and jars, or `build.xml`) or **Generate from build.xml…**. `lib` lines also flag imports of jar classes that only a later layer's classpath has. Needs the IDE running
+- **Cross-layer import check** — for layered Ant builds: blocks a push when a file imports in-repo source that only a later `<javac>` target compiles (the IDE's single-module compile never sees this). Layers live in `.prepush-layers` at the repository root; build them with **Edit Layers…** (from IntelliJ's modules and jars, or `build.xml`) or **Generate from build.xml…**. `lib` lines also flag imports of jar classes that only a later layer's classpath has. **Jar selection:** `scan` lines list where jars are found (IntelliJ's jar folders, plus zips such as `TP_COMPONENTS.zip` that *Detect…* finds; jars inside a zip count). In the dialog each layer shows every jar as a checkbox, all checked by default. Uncheck a jar to forbid it for that layer (`forbid` line; right-click → *Uncheck all versions*), and a push importing a class available only from unchecked jars is blocked. Right-click such an error in the tool window to check the jar again. Include/exclude folders are picked, not typed. Fully-qualified references without an `import` are not detected. Needs the IDE running
 - **Non-modal IntelliJ flow** — normal validation stays inside IntelliJ's native background Git task and never obscures the editor
 - **Failure-only UI** — confirmed errors block the push and produce one notification with an action to open navigable errors
 - **Isolated HEAD snapshot in the external hook** — when the IDE socket is unreachable, the hook builds a temporary detached worktree so old `target/`, `build/`, or local-only files cannot contaminate the pushed snapshot
