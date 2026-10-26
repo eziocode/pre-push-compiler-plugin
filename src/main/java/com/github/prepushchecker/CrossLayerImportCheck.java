@@ -236,7 +236,7 @@ final class CrossLayerImportCheck {
         for (String candidate : candidates) {
             if (!layer.isForbidden(candidate)) return null;
         }
-        if (!candidates.isEmpty()) {
+        if (!candidates.isEmpty() && !jdkProvides(imp)) {
             return String.format(
                 "[%s (%d:1)] Forbidden jar: '%s' file imports %s, available only from jars layer '%s' unchecked: %s."
                     + " Check one in Layers or fix the import",
@@ -249,6 +249,24 @@ final class CrossLayerImportCheck {
                 + " layer '%s'; the '%s' build step's classpath does not include it",
             path, imp.line(), layer.name(), imp.name(), jar.jarPath(),
             rules.layers().get(jar.layerIndex()).name(), layer.name());
+    }
+
+    /**
+     * {@code true} when the running JDK has the imported class or package, so a forbidden jar that
+     * duplicates it (xml-apis, jaxb-api, ...) is not the only source. This is the IDE's JDK, not the project's.
+     */
+    private static boolean jdkProvides(@NotNull ImportLine imp) {
+        ClassLoader platform = ClassLoader.getPlatformClassLoader();
+        String[] parts = imp.name().split("\\.");
+        for (int end = parts.length; end >= 1; end--) {
+            String entry = String.join("/", java.util.Arrays.copyOfRange(parts, 0, end)) + ".class";
+            if (platform.getResource(entry) != null) return true;
+        }
+        if (!imp.wildcard()) return false;
+        for (Module module : ModuleLayer.boot().modules()) {
+            if (module.getPackages().contains(imp.name())) return true;
+        }
+        return false;
     }
 
     /** Up to three jar paths, then {@code and N more}. */

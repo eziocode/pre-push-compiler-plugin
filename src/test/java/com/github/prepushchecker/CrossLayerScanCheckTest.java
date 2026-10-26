@@ -115,6 +115,15 @@ public class CrossLayerScanCheckTest extends TestCase {
         assertTrue(errors.get(0), errors.get(0).contains("found only in jar lib/crm.jar of later layer 'crm'"));
     }
 
+    public void testClassTheJdkAlsoProvidesIsNotForbidden() throws Exception {
+        TestFiles.jar(repo, "lib/xml-apis-1.4.jar", "javax/xml/parsers/DocumentBuilder.class", "org/w3c/x/Old.class");
+        LayerRules forbidXml = LayerRulesParser.parse(RULES.replace(
+            "  forbid **/commons-collections-3*.jar", "  forbid **/xml-apis-*.jar")).rules();
+        assertTrue(analyzeScanned(forbidXml, CORE_FILE, "javax.xml.parsers.DocumentBuilder").isEmpty());
+        assertTrue(analyzeScanned(forbidXml, CORE_FILE, "javax.xml.parsers.*").isEmpty());
+        assertEquals(1, analyzeScanned(forbidXml, CORE_FILE, "org.w3c.x.Old").size());
+    }
+
     public void testZipChangeForcesFullScan() {
         Set<String> head = Set.of(CORE_FILE, CRM_FILE);
         assertEquals(List.of(CORE_FILE),
