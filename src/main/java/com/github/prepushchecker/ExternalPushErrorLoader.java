@@ -129,6 +129,7 @@ public final class ExternalPushErrorLoader {
             if (exitCode == null) {
                 return;
             }
+            recordExternalStats(project, logFile, mtime, exitCode, parsedLog);
             if (exitCode == 0) {
                 CompilationErrorService.getInstance(project).clearErrors();
                 return;
@@ -146,6 +147,30 @@ public final class ExternalPushErrorLoader {
         }
     }
 
+    /**
+     * Counts a push the hook validated without the IDE. A log the IDE answered is skipped: the
+     * IDE already counted that verdict. Each log write is counted once, even across restarts.
+     */
+    private static void recordExternalStats(
+        @NotNull Project project,
+        @NotNull Path logFile,
+        long mtime,
+        int exitCode,
+        @NotNull HookLogParseResult parsedLog
+    ) {
+        if (parsedLog.ideHandled()) return;
+        try {
+            PushStats stats = PushStats.getInstance();
+            if (!stats.claimLogStamp(logFile.toAbsolutePath().toString(), mtime)) return;
+            String basePath = project.getBasePath();
+            stats.record(basePath == null ? "" : basePath, project.getName(),
+                exitCode == 0 ? PushStats.Result.ALLOWED : PushStats.Result.BLOCKED,
+                parsedLog.errors(), "", false, "", PushStats.Source.EXTERNAL);
+        } catch (RuntimeException e) {
+            LOG.debug("Could not record external push stats", e);
+        }
+    }
+
     @Nullable
     private static Integer parseExitCode(@NotNull String line) {
         try {
@@ -159,6 +184,7 @@ public final class ExternalPushErrorLoader {
         throws IOException {
         try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
             Integer exitCode = null;
+            boolean ideHandled = false;
             List<String> compilerLines = new ArrayList<>();
 
             String raw;
@@ -171,10 +197,19 @@ public final class ExternalPushErrorLoader {
                     continue;
                 }
 
+                if (isIdeVerdictLine(line)) ideHandled = true;
                 compilerLines.add(line);
             }
-            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines), compilerLines);
+            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines), compilerLines, ideHandled);
         }
+    }
+
+    /** Lines the hook writes only after the IDE answered a check (see the managed hook script). */
+    private static boolean isIdeVerdictLine(String line) {
+        return line.equals("OK") || line.startsWith("ERRORS ")
+            || line.startsWith("TIMEOUT ") || line.startsWith("STALE ")
+            || line.startsWith("[pre-push] IntelliJ ")
+            || line.startsWith("[pre-push] Repository changed during validation");
     }
 
     private static List<String> buildRawLogFallback(int exitCode, @NotNull List<String> rawLines) {
@@ -294,12 +329,18 @@ public final class ExternalPushErrorLoader {
         private final Integer exitCode;
         private final List<String> errors;
         private final List<String> rawLines;
+        private final boolean ideHandled;
 
         private HookLogParseResult(@Nullable Integer exitCode, @NotNull List<String> errors,
-                                   @NotNull List<String> rawLines) {
+                                   @NotNull List<String> rawLines, boolean ideHandled) {
             this.exitCode = exitCode;
             this.errors = errors;
             this.rawLines = rawLines;
+            this.ideHandled = ideHandled;
+        }
+
+        private boolean ideHandled() {
+            return ideHandled;
         }
 
         private @Nullable Integer exitCode() {

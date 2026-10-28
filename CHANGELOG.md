@@ -10,6 +10,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.8.0] - 2026-10-28
+
+### Added
+
+- **Push Stats** (tool window → *Push Stats…*): counts the pushes the plugin checked on this machine —
+  allowed, blocked (compile errors, layer violations, forbidden jars, symbolic A/B), fixed after a block,
+  answered from the clean-verdict cache, and checked without the IDE — per project and over all projects,
+  with a list of recent pushes, *Copy as Text* and *Reset*. Only a push attempt the plugin validated is
+  counted; manual builds, smart background builds and bypassed pushes are not. An identical blocked push
+  retried within 10 minutes counts once, and a hook log written while the IDE was closed is counted once
+  even across restarts. Each counted verdict also writes one `[push-stats]` line to `idea.log`. Stored in
+  `prePushStats.xml`, not synced, and nothing leaves the machine.
+
+---
+
 ## [2.7.1] - 2026-10-26
 
 ### Added
