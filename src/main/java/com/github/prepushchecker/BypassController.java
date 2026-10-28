@@ -66,6 +66,8 @@ public final class BypassController implements Disposable {
         expiryFuture = AppExecutorUtil.getAppScheduledExecutorService().schedule(
             this::expire, PrePushCheckerSettings.bypassMaxAgeMillis(), TimeUnit.MILLISECONDS);
         fileExecutor.execute(() -> PrePushCheckerSettings.setForcePushBypass(project, now));
+        PushStats.getInstance().recordBypassActivation(
+            project.getBasePath() == null ? "" : project.getBasePath(), project.getName());
         fireListeners();
     }
 

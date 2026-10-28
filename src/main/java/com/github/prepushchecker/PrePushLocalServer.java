@@ -364,7 +364,8 @@ public final class PrePushLocalServer implements Disposable {
         SnapshotToken before = captureSnapshot(normalizedRequest);
         String requestKey = buildRequestKey(normalizedRequest, projectScope, before);
 
-        return PrePushValidationCoordinator.getInstance(project).request(
+        AtomicBoolean cacheHit = new AtomicBoolean();
+        PrePushValidationCoordinator.Outcome outcome = PrePushValidationCoordinator.getInstance(project).request(
             requestKey,
             () -> {
                 // Same content already compiled cleanly (smart build, user build, earlier push).
@@ -382,7 +383,9 @@ public final class PrePushLocalServer implements Disposable {
                     }
                     return layerErrors;
                 }
-                return SmartBuildService.getInstance(project).cachedCleanVerdict();
+                List<String> cached = SmartBuildService.getInstance(project).cachedCleanVerdict();
+                if (cached != null) cacheHit.set(true);
+                return cached;
             },
             () -> {
                 if (!snapshotMatches(normalizedRequest, before)) {
@@ -400,6 +403,40 @@ public final class PrePushLocalServer implements Disposable {
             null,
             COMPILE_TIMEOUT_SECONDS,
             TimeUnit.SECONDS);
+        recordStats(normalizedRequest, requestKey, outcome, cacheHit.get());
+        return outcome;
+    }
+
+    /** Counts this verdict in {@link PushStats}. A failure here must never affect the push. */
+    private void recordStats(
+        ValidationRequest request,
+        String requestKey,
+        PrePushValidationCoordinator.Outcome outcome,
+        boolean cacheHit
+    ) {
+        try {
+            PushStats.Result result = switch (outcome.status()) {
+                case TIMEOUT -> PushStats.Result.TIMEOUT;
+                case STALE -> PushStats.Result.STALE;
+                case COMPLETED -> outcome.errors().isEmpty() ? PushStats.Result.ALLOWED : PushStats.Result.BLOCKED;
+                default -> PushStats.Result.INFRASTRUCTURE;
+            };
+            PushStats.getInstance().record(
+                valueOrEmpty(project.getBasePath()), project.getName(), result, outcome.errors(),
+                requestKey, cacheHit, currentBranch(request.repositoryRoot()), PushStats.Source.IDE);
+        } catch (RuntimeException e) {
+            LOG.debug("Could not record push stats", e);
+        }
+    }
+
+    private String currentBranch(String repositoryRoot) {
+        for (git4idea.repo.GitRepository repository
+                : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+            if (normalizeRoot(repository.getRoot().getPath()).equals(repositoryRoot)) {
+                return valueOrEmpty(repository.getCurrentBranchName());
+            }
+        }
+        return "";
     }
 
     /** Cross-layer import violations for the pushed snapshot; empty when disabled or clean. */

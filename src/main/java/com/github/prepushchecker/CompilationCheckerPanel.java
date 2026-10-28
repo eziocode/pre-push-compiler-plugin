@@ -118,6 +118,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         group.add(new RepairHooksAction());
         group.add(new GenerateCommitMsgAction());
         group.addSeparator();
+        group.add(new PushStatsAction());
         group.add(new ToggleSettingsAction());
         group.add(new ReportAction());
         var toolbar = ActionManager.getInstance()
@@ -918,6 +919,24 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     }
 
     // ── Toolbar actions ───────────────────────────────────────────────────────
+
+    /** Opens the Push Stats dialog. */
+    private final class PushStatsAction extends AnAction {
+        PushStatsAction() {
+            super("Push Stats\u2026", "Show how many pushes were checked and blocked",
+                AllIcons.Vcs.History);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            new PushStatsDialog(project).show();
+        }
+    }
 
     private final class ClearResultsAction extends AnAction {
 

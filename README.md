@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.7.1-blue)
+![Version](https://img.shields.io/badge/version-2.8.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 
 ---
@@ -33,6 +33,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Git hook repair action** — rechecks and repairs the terminal hook from the tool window if another tool overwrites or edits it
 - **Navigable error list** — double-click or press Enter on any error entry to jump to the source file in the editor
 - **Auto-copy commit SHA to clipboard** — when validation allows a push, or after an IDE commit, the HEAD commit SHA is copied in full or short form; push-time copying is silent
+- **Push Stats** — local counters of pushes checked, allowed and blocked (by cause), per project and overall, in the tool window; manual and background builds are not counted, and nothing leaves your machine
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
 
 ---
