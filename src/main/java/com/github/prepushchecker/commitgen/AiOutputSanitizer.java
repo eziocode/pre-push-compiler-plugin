@@ -145,8 +145,31 @@ public final class AiOutputSanitizer {
             lines.remove(lines.size() - 1);
             lines.remove(0);
             trimBlankEnds(lines);
+        } else {
+            keepOnlyFencedBody(lines);
         }
         return stripTrailingWhitespace(String.join("\n", lines));
+    }
+
+    /**
+     * Exactly one fenced block with prose around it: keep only the block body. With no fences,
+     * or two or more, the lines are left as they are so real code is never removed.
+     */
+    private static void keepOnlyFencedBody(@NotNull List<String> lines) {
+        int open = -1;
+        int close = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            if (!line.trim().startsWith("```")) continue;
+            if (open < 0 && FENCE_OPEN.matcher(line).matches()) open = i;
+            else if (open >= 0 && close < 0 && FENCE_CLOSE.matcher(line).matches()) close = i;
+            else return; // a further or malformed fence marker: ambiguous, leave untouched
+        }
+        if (open < 0 || close < 0) return;
+        List<String> body = new ArrayList<>(lines.subList(open + 1, close));
+        lines.clear();
+        lines.addAll(body);
+        trimBlankEnds(lines);
     }
 
     private static void trimBlankEnds(@NotNull List<String> lines) {

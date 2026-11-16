@@ -251,4 +251,16 @@ public class AiOutputSanitizerTest extends TestCase {
         assertEquals("a();", AiOutputSanitizer.cleanCompletion(
             "\n<think>x</think>\n<thinking>y</thinking>\n<tool_call>z</tool_call>\na();"));
     }
+
+    public void testCompletionKeepsOnlyFencedBodyAmongProse() {
+        assertEquals("a();\nb();",
+            AiOutputSanitizer.cleanCompletion("Here is the code:\n```java\na();\nb();\n```\nHope this helps!"));
+    }
+
+    public void testCompletionLeavesUnfencedAndTwoFenceAnswersAlone() {
+        String plain = "Here is text\na();";
+        assertEquals(plain, AiOutputSanitizer.cleanCompletion(plain));
+        String two = "x\n```\na();\n```\ny\n```\nb();\n```";
+        assertEquals(two, AiOutputSanitizer.cleanCompletion(two));
+    }
 }
