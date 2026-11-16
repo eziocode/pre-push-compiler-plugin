@@ -51,6 +51,37 @@ public class ReviewPromptTest extends TestCase {
         assertEquals(7, f.get(1).line);
     }
 
+    public void testParseCountsDroppedAndAcceptsAlternativeKeys() {
+        Map<?, ?> answer = AiOutputSanitizer.cleanStructured("""
+            {"findings":[
+              {"path":"crm/LeadTest.java","line":3,"description":"alt keys","fix":"do it"},
+              {"line":5,"message":"no file named"},
+              {"file":"Other.java","line":1,"message":"not reviewed"},
+              {"file":"crm/LeadTest.java","message":""}
+            ]}""", "findings");
+        ReviewPrompt.Parsed p = ReviewPrompt.parse(answer, Map.of("crm/LeadTest.java", "/r/crm/LeadTest.java"));
+        assertEquals(2, p.findings().size());
+        assertEquals(2, p.dropped());
+        assertEquals("alt keys", p.findings().get(0).message);
+        assertEquals("do it", p.findings().get(0).suggestion);
+        assertEquals("/r/crm/LeadTest.java", p.findings().get(1).path);
+        assertEquals(5, p.findings().get(1).line);
+    }
+
+    public void testNoFileFallbackOnlyForSingleFileBatch() {
+        Map<?, ?> answer = Map.of("findings", List.of(Map.of("line", 1, "message", "m")));
+        ReviewPrompt.Parsed p = ReviewPrompt.parse(answer, Map.of("a/A.java", "/r/a/A.java", "b/B.java", "/r/b/B.java"));
+        assertTrue(p.findings().isEmpty());
+        assertEquals(1, p.dropped());
+    }
+
+    public void testReviewPromptCoversBothSidesAndAccurateMessages() {
+        String p = ReviewPrompt.reviewSystemPrompt("rules");
+        assertTrue(p, p.contains("broken by a change on either side"));
+        assertTrue(p, p.contains("Never claim code changed when only a description"));
+        assertTrue(p, p.contains("{\"findings\":[]}"));
+    }
+
     public void testBatchesSplitLargeInput() {
         String big = "x".repeat(ReviewPrompt.MAX_BATCH_CHARS / 2);
         List<List<ReviewPrompt.FileDiff>> b = ReviewPrompt.batches(List.of(

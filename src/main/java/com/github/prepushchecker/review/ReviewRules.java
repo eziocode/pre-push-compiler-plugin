@@ -206,10 +206,13 @@ public final class ReviewRules {
             ---
             Review the changed code against these rules. Report only real violations.
 
-            1. When steps are added to or removed from an existing test case, the report
-               description (the list passed to addRowToReport, or description.add(...) calls)
-               must describe them. Flag a test case whose steps changed while its description
-               did not.
+            1. A test case's steps and its report description (the list passed to
+               addRowToReport, or description.add(...) calls) must match. Flag a change that
+               makes them disagree:
+               - a step added to or removed from the code with no matching description change, or
+               - a description entry added or removed with no matching step in the code.
+               Say which side changed and which side is missing. Suggest both ways to fix it:
+               update the description, or add or remove the step in the test case.
             2. Do not leave commented-out code in place of a real change.
             """;
     }

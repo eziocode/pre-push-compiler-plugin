@@ -8,8 +8,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-11-16
+
 ### Fixed
 
+- **Same code review result on every AI provider.** The default steps/description rule only
+  flagged steps changed without a description change, so a description entry added with no matching
+  step passed on Codex while Claude and Copilot flagged it with a made-up reason ("a step was
+  added"). The rule is now two-way (steps and description must match), and the review prompt tells
+  every provider to describe what the diff actually changed and to suggest each way to fix it.
+  Existing `.prepush-review.md` files keep their own wording; update rule 1 to get this behaviour.
+- **No silent "Review passed" from an answer the plugin cannot read.** Findings with other key
+  names (`path`, `description`, `fix`, …) are now read, a finding with no file in a single-file
+  review belongs to that file, and an answer whose findings all lack a usable file or message is
+  reported as an error instead of marking the files clean.
 - **Hidden "Code Review" / "Compilation" tab in a narrow tool window.** When the Compilation
   Checker window was too narrow for both tabs, the platform silently hid one. The tabs now turn
   into a dropdown ("Compilation Checker: Code Review ▾") when they do not fit, and back into tabs
