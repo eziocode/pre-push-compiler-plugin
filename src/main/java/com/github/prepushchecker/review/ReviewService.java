@@ -192,6 +192,7 @@ public final class ReviewService {
                 Map<?, ?> answer;
                 try {
                     String raw = CommitMessageGeneratorService.resolveProvider().generate(request);
+                    if (LOG.isDebugEnabled()) LOG.debug("AI review answer: " + AiOutputSanitizer.truncate(raw, 4000));
                     answer = AiOutputSanitizer.cleanStructured(raw, "findings");
                 } catch (ProcessCanceledException pce) {
                     throw pce;
@@ -206,7 +207,16 @@ public final class ReviewService {
                 }
                 Map<String, String> displayToAbs = new HashMap<>();
                 for (ReviewPrompt.FileDiff f : batch) displayToAbs.put(f.displayPath(), byDisplay.get(f.displayPath()).absolutePath());
-                List<ReviewFinding> found = ReviewPrompt.parseFindings(answer, displayToAbs);
+                ReviewPrompt.Parsed parsed = ReviewPrompt.parse(answer, displayToAbs);
+                List<ReviewFinding> found = parsed.findings();
+                if (found.isEmpty() && parsed.dropped() > 0) {
+                    // Recording these files as clean would be a silent pass.
+                    LOG.info("AI review answer listed findings that could not be used: " + answer);
+                    errors.add("The AI answer listed " + parsed.dropped() + " finding(s) without a usable file "
+                        + "or message, so " + batch.size() + " file(s) were not marked reviewed. Try again or "
+                        + "choose another model.");
+                    continue;
+                }
                 for (ReviewPrompt.FileDiff f : batch) {
                     Target t = byDisplay.get(f.displayPath());
                     List<ReviewFinding> mine = found.stream().filter(x -> x.path.equals(t.absolutePath())).toList();
