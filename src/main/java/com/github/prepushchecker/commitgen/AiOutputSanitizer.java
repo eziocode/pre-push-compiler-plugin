@@ -114,6 +114,8 @@ public final class AiOutputSanitizer {
         return unquote(tidy(text));
     }
 
+    private static final Pattern COMPLETION_LEADING_BLOCK = Pattern.compile(
+        "(?is)\\A\\s*<((?:antml:)?(?:think|thinking|reasoning|tool_call))\\b[^>]*>.*?</\\1\\s*>");
     private static final Pattern FENCE_OPEN = Pattern.compile("^[ \\t]*```[ \\t]*[A-Za-z0-9_+.#-]*[ \\t]*$");
     private static final Pattern FENCE_CLOSE = Pattern.compile("^[ \\t]*```[ \\t]*$");
 
@@ -128,10 +130,13 @@ public final class AiOutputSanitizer {
     public static @NotNull String cleanCompletion(@Nullable String raw) {
         if (raw == null) return "";
         String text = stripTerminalNoise(raw);
-        text = SELF_CLOSING_TAG.matcher(text).replaceAll("");
-        text = TAG_BLOCK.matcher(text).replaceAll("");
-        text = ORPHAN_THINK_CLOSE.matcher(text).replaceFirst("");
-        text = STRAY_TAG.matcher(text).replaceAll("");
+        // Only complete reasoning/tool blocks at the very start are removed: code may legitimately
+        // contain tags such as <parameter> or a later </think>.
+        Matcher m = COMPLETION_LEADING_BLOCK.matcher(text);
+        while (m.find()) {
+            text = text.substring(m.end());
+            m = COMPLETION_LEADING_BLOCK.matcher(text);
+        }
 
         List<String> lines = new ArrayList<>(List.of(text.split("\n", -1)));
         trimBlankEnds(lines);

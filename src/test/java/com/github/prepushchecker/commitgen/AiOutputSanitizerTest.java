@@ -234,4 +234,21 @@ public class AiOutputSanitizerTest extends TestCase {
         assertEquals("", AiOutputSanitizer.cleanCompletion("  \n\n"));
         assertEquals("", AiOutputSanitizer.cleanCompletion(null));
     }
+
+    public void testCompletionKeepsParameterTagsInCode() {
+        String xml = "<parameter name=\"x\">1</parameter>";
+        assertEquals(xml, AiOutputSanitizer.cleanCompletion(xml));
+        String more = "<invoke a=\"1\">\n  <signature>s</signature>\n</invoke>";
+        assertEquals(more, AiOutputSanitizer.cleanCompletion(more));
+    }
+
+    public void testCompletionKeepsLaterThinkCloseTag() {
+        String code = "String s = \"a</think>b\";\nint y = 2;";
+        assertEquals(code, AiOutputSanitizer.cleanCompletion(code));
+    }
+
+    public void testCompletionRemovesRepeatedLeadingBlocks() {
+        assertEquals("a();", AiOutputSanitizer.cleanCompletion(
+            "\n<think>x</think>\n<thinking>y</thinking>\n<tool_call>z</tool_call>\na();"));
+    }
 }
