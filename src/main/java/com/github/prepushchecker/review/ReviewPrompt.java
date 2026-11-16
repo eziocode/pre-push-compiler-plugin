@@ -45,6 +45,13 @@ public final class ReviewPrompt {
             "suggestion":"<how to fix it>"}]}
             Report a finding only when a change breaks one of the rules above. Do not report style \
             preferences or rules that are not listed. When nothing breaks a rule, answer {"findings":[]}.
+
+            Writing findings:
+            - Base every message on what the diff actually shows: say which lines were added or \
+            removed. Never claim code changed when only a description, comment or string changed.
+            - A rule that requires two parts of the code to agree (for example test steps and \
+            their description) is broken by a change on either side.
+            - When a finding can be fixed in more than one way, the suggestion names each option.
             """.formatted(rules.strip());
     }
 
@@ -117,22 +124,50 @@ public final class ReviewPrompt {
         return cap(out.toString(), MAX_FILE_CHARS);
     }
 
+    /** Findings read from one AI answer, and how many listed items could not be used. */
+    public record Parsed(@NotNull List<ReviewFinding> findings, int dropped) {}
+
     /** Reads findings, keeping only those for {@code allowedPaths} (as shown to the AI). */
     public static @NotNull List<ReviewFinding> parseFindings(@Nullable Map<?, ?> answer,
                                                              @NotNull Map<String, String> displayToAbsolute) {
+        return parse(answer, displayToAbsolute).findings();
+    }
+
+    /**
+     * Reads findings and counts the listed items that were dropped (no message, or a file that was
+     * not reviewed). Common alternative key names are accepted, since providers vary. In a
+     * single-file batch, a finding that names no file belongs to that file.
+     */
+    public static @NotNull Parsed parse(@Nullable Map<?, ?> answer, @NotNull Map<String, String> displayToAbsolute) {
         List<ReviewFinding> out = new ArrayList<>();
-        if (answer == null || !(answer.get("findings") instanceof List<?> list)) return out;
+        if (answer == null || !(answer.get("findings") instanceof List<?> list)) return new Parsed(out, 0);
+        String onlyFile = displayToAbsolute.size() == 1 ? displayToAbsolute.values().iterator().next() : null;
+        int dropped = 0;
         for (Object item : list) {
-            if (!(item instanceof Map<?, ?> f)) continue;
-            String file = str(f.get("file"));
+            if (!(item instanceof Map<?, ?> f)) {
+                dropped++;
+                continue;
+            }
+            String file = first(f, "file", "path", "filename");
             String abs = resolvePath(file, displayToAbsolute);
-            if (abs == null) continue;
-            String message = str(f.get("message"));
-            if (message.isBlank()) continue;
-            out.add(new ReviewFinding(abs, toInt(f.get("line")), str(f.get("rule")), message,
-                str(f.get("suggestion"))));
+            if (abs == null && onlyFile != null && file.isBlank()) abs = onlyFile;
+            String message = first(f, "message", "description", "issue");
+            if (abs == null || message.isBlank()) {
+                dropped++;
+                continue;
+            }
+            out.add(new ReviewFinding(abs, toInt(f.get("line")), first(f, "rule", "name"), message,
+                first(f, "suggestion", "fix")));
         }
-        return out;
+        return new Parsed(out, dropped);
+    }
+
+    private static @NotNull String first(@NotNull Map<?, ?> m, @NotNull String... keys) {
+        for (String k : keys) {
+            String v = str(m.get(k));
+            if (!v.isBlank()) return v;
+        }
+        return "";
     }
 
     public static @NotNull String fixSystemPrompt(@NotNull String rules) {
