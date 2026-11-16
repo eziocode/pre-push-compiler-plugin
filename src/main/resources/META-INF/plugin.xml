@@ -1087,6 +1087,8 @@
         <!-- AI Commit Message Generator -->
         <applicationService
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageSettings"/>
+        <applicationService
+            serviceImplementation="com.github.prepushchecker.inline.InlineSuggestSettings"/>
         <projectService
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageGeneratorService"/>
         <!-- Settings → Tools → Pre-Push Checker (General) with AI Provider, Commit Message, Code Review -->
