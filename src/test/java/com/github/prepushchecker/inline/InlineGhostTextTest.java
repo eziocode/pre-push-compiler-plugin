@@ -68,6 +68,30 @@ public class InlineGhostTextTest extends BasePlatformTestCase {
         }
     }
 
+    public void testStaleOffsetAcceptFallsThrough() {          // R14
+        myFixture.configureByText("A.txt", "ab<caret>");
+        Editor e = myFixture.getEditor();
+        InlineGhostText.show(e, 6, "gh");                      // offset past the end, as after a shrink
+        assertTrue(InlineGhostText.isShowing(e));
+        assertFalse(InlineGhostText.accept(e));
+        assertFalse(InlineGhostText.isShowing(e));
+        assertEquals("ab", e.getDocument().getText());
+    }
+
+    public void testReadOnlyDocumentAcceptFallsThrough() {     // R14
+        myFixture.configureByText("A.txt", "ab<caret>");
+        Editor e = myFixture.getEditor();
+        InlineGhostText.show(e, 2, "c");
+        e.getDocument().setReadOnly(true);
+        try {
+            assertFalse(InlineGhostText.accept(e));
+            assertFalse(InlineGhostText.isShowing(e));
+            assertEquals("ab", e.getDocument().getText());
+        } finally {
+            e.getDocument().setReadOnly(false);
+        }
+    }
+
     public void testShowBlankIsNoop() {
         myFixture.configureByText("A.txt", "<caret>");
         InlineGhostText.show(myFixture.getEditor(), 0, "  ");

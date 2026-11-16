@@ -17,7 +17,7 @@ public final class InlineEscapeHandler extends EditorActionHandler {
 
     @Override
     protected boolean isEnabledForCaret(@NotNull Editor editor, @NotNull Caret caret, DataContext dataContext) {
-        return InlineGhostText.isShowing(editor) || original.isEnabled(editor, caret, dataContext);
+        return InlineGhostText.isShowing(editor) || InlineSuggestService.hasPendingRequest(editor) || original.isEnabled(editor, caret, dataContext);
     }
 
     @Override
@@ -27,6 +27,7 @@ public final class InlineEscapeHandler extends EditorActionHandler {
 
     @Override
     protected void doExecute(@NotNull Editor editor, @Nullable Caret caret, DataContext dataContext) {
+        InlineSuggestService.cancelRequestFor(editor);
         if (InlineGhostText.isShowing(editor)) {
             InlineGhostText.dismiss(editor);
         } else {

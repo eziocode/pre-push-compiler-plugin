@@ -2,12 +2,15 @@ package com.github.prepushchecker.inline;
 
 import com.intellij.openapi.command.WriteCommandAction;
 import com.intellij.openapi.editor.DefaultLanguageHighlighterColors;
+import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.EditorCustomElementRenderer;
+import com.intellij.openapi.editor.EditorModificationUtil;
 import com.intellij.openapi.editor.Inlay;
 import com.intellij.openapi.editor.colors.EditorColorsScheme;
 import com.intellij.openapi.editor.colors.EditorFontType;
 import com.intellij.openapi.editor.markup.TextAttributes;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.openapi.util.Key;
 import com.intellij.ui.JBColor;
@@ -131,6 +134,14 @@ public final class InlineGhostText {
             return false;
         }
         dismiss(editor);
+        Document document = editor.getDocument();
+        if (state.offset < 0 || state.offset > document.getTextLength()) {
+            return false;
+        }
+        if (!EditorModificationUtil.checkModificationAllowed(editor)
+            || !FileDocumentManager.getInstance().requestWriting(document, editor.getProject())) {
+            return false;
+        }
         int end = state.offset + state.text.length();
         WriteCommandAction.writeCommandAction(editor.getProject())
             .withName(ACCEPT_COMMAND_NAME)

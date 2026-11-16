@@ -1089,6 +1089,10 @@
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageSettings"/>
         <applicationService
             serviceImplementation="com.github.prepushchecker.inline.InlineSuggestSettings"/>
+        <applicationService serviceImplementation="com.github.prepushchecker.inline.InlineSuggestService"/>
+        <typedHandler implementation="com.github.prepushchecker.inline.InlineTypedHandler"/>
+        <enterHandlerDelegate implementation="com.github.prepushchecker.inline.InlineEnterHandler"/>
+        <backspaceHandlerDelegate implementation="com.github.prepushchecker.inline.InlineBackspaceHandler"/>
         <editorActionHandler action="EditorTab" implementationClass="com.github.prepushchecker.inline.InlineTabHandler" order="first"/>
         <editorActionHandler action="EditorEscape" implementationClass="com.github.prepushchecker.inline.InlineEscapeHandler" order="first"/>
         <projectService
@@ -1143,7 +1147,18 @@
                     icon="/icons/toolWindowCompilation.svg"/>
     </extensions>
 
+    <projectListeners>
+        <listener class="com.github.prepushchecker.inline.InlineSuggestService$LookupListener"
+                  topic="com.intellij.codeInsight.lookup.LookupManagerListener"/>
+    </projectListeners>
+
     <actions>
+        <action id="PrePushChecker.InlineSuggest" class="com.github.prepushchecker.inline.InlineSuggestAction"
+                text="Suggest Code Inline (Pre-Push Checker)">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt BACK_SLASH"/>
+        </action>
+        <action id="PrePushChecker.ToggleInlineSuggest" class="com.github.prepushchecker.inline.ToggleInlineSuggestAction"
+                text="Toggle Inline AI Suggestions (Pre-Push Checker)"/>
         <action id="CommitMessageGenerator.Generate"
                 class="com.github.prepushchecker.commitgen.GenerateCommitMessageAction"
                 text="Generate Commit Message (Pre-Push Checker)"
