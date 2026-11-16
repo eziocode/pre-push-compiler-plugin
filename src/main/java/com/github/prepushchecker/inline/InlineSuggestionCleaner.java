@@ -7,6 +7,8 @@ import org.jetbrains.annotations.Nullable;
 /** Turns raw model output into the text to show as an inline suggestion. Pure. */
 public final class InlineSuggestionCleaner {
 
+    private static final int MIN_ECHO_LENGTH = 3;
+
     private InlineSuggestionCleaner() {}
 
     /** @return the text to insert; {@code ""} means show nothing */
@@ -15,10 +17,13 @@ public final class InlineSuggestionCleaner {
         if (text.isEmpty()) return "";
 
         String echoed = lastNonBlankLine(prefix);
-        if (!echoed.isEmpty() && text.startsWith(echoed) && text.length() > echoed.length()) {
-            text = text.substring(echoed.length());
-            if (!prefix.isEmpty() && Character.isWhitespace(prefix.charAt(prefix.length() - 1))) {
-                text = stripLeadingHorizontal(text);
+        if (echoed.length() >= MIN_ECHO_LENGTH) {
+            String lead = text.stripLeading();
+            if (lead.startsWith(echoed) && lead.length() > echoed.length()) {
+                text = lead.substring(echoed.length());
+                if (!prefix.isEmpty() && Character.isWhitespace(prefix.charAt(prefix.length() - 1))) {
+                    text = stripLeadingHorizontal(text);
+                }
             }
         }
 
@@ -35,11 +40,27 @@ public final class InlineSuggestionCleaner {
         String next = firstNonBlankLine(suffix);
         if (!next.isEmpty()) {
             String stripped = stripTrailing(text);
-            if (stripped.endsWith(next)) text = stripped.substring(0, stripped.length() - next.length());
+            if (stripped.endsWith(next)) {
+                String remainder = stripped.substring(0, stripped.length() - next.length());
+                if (bracketBalance(remainder) <= 0) text = remainder;
+            }
         }
 
         text = stripTrailing(text);
         return text.isBlank() ? "" : text;
+    }
+
+    /** Openers minus closers over {@code ()[]{}}. */
+    private static int bracketBalance(String s) {
+        int n = 0;
+        for (int i = 0; i < s.length(); i++) {
+            switch (s.charAt(i)) {
+                case '(', '[', '{' -> n++;
+                case ')', ']', '}' -> n--;
+                default -> { }
+            }
+        }
+        return n;
     }
 
     private static String lastNonBlankLine(String s) {

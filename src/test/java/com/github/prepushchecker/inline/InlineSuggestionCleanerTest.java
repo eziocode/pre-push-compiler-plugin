@@ -31,4 +31,13 @@ public class InlineSuggestionCleanerTest {
         assertFalse(out.contains("Hope"));
         assertFalse(out.contains("Here is"));
     }
+
+    @Test public void keepsBalancedClosingBracket() { assertEquals("baz(1)", clean("baz(1)", "foo(", ")", true, 8)); }
+
+    @Test
+    public void doesNotStripShortTokenEcho() {
+        assertEquals("}\n\nvoid f() {", clean("}\n\nvoid f() {", "x();\n}\n", "", true, 8));
+    }
+
+    @Test public void stripsIndentedEcho() { assertEquals("b + c", clean("    int a = b + c", "  int a = ", ";", true, 8)); }
 }
