@@ -10,6 +10,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.10.0] - 2026-11-16
+
+### Added
+
+- **AI code review before push.** A rule file at the repository root (`.prepush-review.md`,
+  path configurable) holds the team's review rules in plain text, plus front matter:
+  `mandatory:`, `paths:` and `exclude:` (Ant globs). **Review Changes with AI**, next to the
+  commit message button, reviews exactly the checked files, unversioned ones included, with the AI
+  provider set for commit messages. Files outside `paths` are never sent to the AI.
+- **Code Review tab** in the Compilation Checker tool window: findings per file with
+  **Go to code**, **Resolve** and **Resolve with AI**. The AI fix is shown as a diff and applied as
+  one undoable edit only when accepted; the AI CLI itself never writes files.
+- **Review gate on push.** Each file's reviewed content is remembered (git blob id), so a push
+  never re-reviews unchanged content. With review mandatory (rule file `mandatory: true`, or the
+  IDE setting when the file does not say), a push is blocked for files that were not reviewed or
+  still have open findings; other pushed files are not affected. **On push** mode reviews
+  unreviewed files during the push instead. A terminal push with IntelliJ closed and a mandatory
+  review is blocked with a message saying to review from IntelliJ.
+
+### Changed
+
+- **Settings** moved out of the tool window to **Settings → Tools → Pre-Push Checker**, with
+  pages **AI Provider**, **Commit Message** and **Code Review**. The tool window keeps results,
+  the bypass switch, a Layers menu (Edit Layers…, Run Layer Check, Generate from build.xml…) and a
+  Settings button.
+- **AI Provider page:** choose API key, local CLI or JetBrains AI. For a CLI, one **Choose CLI…**
+  button lists the installed CLIs with path, version and sign-in state (or browse for any
+  executable); path, arguments, fallback key and Codex sign-in are under **Advanced**. Test
+  connection shows its result on the page. Built with the platform UI DSL: compact fields, no
+  oversized controls.
+- Push Stats counts pushes blocked by the AI review.
+
+### Fixed
+
+- **Codex as "Other local CLI".** The generic CLI provider ran `codex` with the sahaa template
+  (`--chat …`: "unexpected argument '--chat'") or bare, which starts codex's terminal UI ("stdin is
+  not a terminal"). A binary with its own provider (codex, claude, llm, gh) is now always run the
+  way that provider runs it (`codex exec … -`), and saved settings are migrated to that provider.
+  The "Other CLI" template defaults to the chosen binary's preset; a CLI that still asks for a
+  terminal gets a message saying to set an arguments template.
+- The llm CLI reports "not found" instead of failing to start.
+- Commit message generation includes checked unversioned (new) files; the button is enabled when
+  only new files exist.
+
 ## [2.9.0] - 2026-11-16
 
 ### Fixed

@@ -1,0 +1,181 @@
+package com.github.prepushchecker.review;
+
+import com.github.prepushchecker.ProcessExecution;
+import com.intellij.openapi.diagnostic.Logger;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** The few git commands the review needs. Stdout only; no prompts; short timeouts. */
+final class ReviewGit {
+    private static final Logger LOG = Logger.getInstance(ReviewGit.class);
+    private static final Duration TIMEOUT = Duration.ofSeconds(30);
+    private static final int BATCH = 200;
+
+    private ReviewGit() {}
+
+    /** The working tree root containing {@code file}, or {@code null}. */
+    static @Nullable Path repoRoot(@NotNull Path file) {
+        Path dir = Files.isDirectory(file) ? file : file.getParent();
+        while (dir != null) {
+            if (Files.exists(dir.resolve(".git"))) return dir;
+            dir = dir.getParent();
+        }
+        return null;
+    }
+
+    /** Real path of {@code root} (symlinks resolved), so IDE and hook paths give the same key. */
+    static @NotNull Path canonical(@NotNull Path root) {
+        try {
+            return root.toRealPath();
+        } catch (Exception e) {
+            return root.toAbsolutePath().normalize();
+        }
+    }
+
+    static @NotNull String relative(@NotNull Path root, @NotNull Path file) {
+        return root.relativize(file).toString().replace('\\', '/');
+    }
+
+    /** Blob ids git would store for the working-tree files (filters applied, like {@code git add}). */
+    static @NotNull Map<String, String> hashObjects(@NotNull Path root, @NotNull List<String> relPaths) {
+        Map<String, String> out = new LinkedHashMap<>();
+        List<String> existing = new ArrayList<>();
+        for (String p : relPaths) if (Files.isRegularFile(root.resolve(p))) existing.add(p);
+        for (int i = 0; i < existing.size(); i += BATCH) {
+            List<String> batch = existing.subList(i, Math.min(existing.size(), i + BATCH));
+            List<String> cmd = new ArrayList<>(List.of("hash-object", "--"));
+            cmd.addAll(batch);
+            String stdout = git(root, cmd);
+            if (stdout == null) continue;
+            String[] lines = stdout.strip().split("\n");
+            if (lines.length != batch.size()) continue;
+            for (int j = 0; j < lines.length; j++) out.put(batch.get(j), lines[j].trim());
+        }
+        return out;
+    }
+
+    /** Blob ids of {@code relPaths} in commit {@code rev}; files missing there are absent. */
+    static @NotNull Map<String, String> blobsAt(@NotNull Path root, @NotNull String rev, @NotNull List<String> relPaths) {
+        Map<String, String> out = new LinkedHashMap<>();
+        for (int i = 0; i < relPaths.size(); i += BATCH) {
+            List<String> batch = relPaths.subList(i, Math.min(relPaths.size(), i + BATCH));
+            List<String> cmd = new ArrayList<>(List.of("ls-tree", "-r", "-z", rev, "--"));
+            cmd.addAll(batch);
+            String stdout = git(root, cmd);
+            if (stdout == null) continue;
+            for (String entry : stdout.split("\0")) {
+                int tab = entry.indexOf('\t');
+                if (tab < 0) continue;
+                String[] meta = entry.substring(0, tab).split(" ");
+                if (meta.length == 3 && meta[1].equals("blob")) out.put(entry.substring(tab + 1), meta[2]);
+            }
+        }
+        return out;
+    }
+
+    /** The subset of {@code relPaths} that git tracks. */
+    static @NotNull java.util.Set<String> tracked(@NotNull Path root, @NotNull List<String> relPaths) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (int i = 0; i < relPaths.size(); i += BATCH) {
+            List<String> batch = relPaths.subList(i, Math.min(relPaths.size(), i + BATCH));
+            List<String> cmd = new ArrayList<>(List.of("ls-files", "-z", "--"));
+            cmd.addAll(batch);
+            String stdout = git(root, cmd);
+            if (stdout == null) continue;
+            for (String p : stdout.split("\0")) if (!p.isEmpty()) out.add(p);
+        }
+        return out;
+    }
+
+    static boolean isTracked(@NotNull Path root, @NotNull String relPath) {
+        return git(root, List.of("ls-files", "--error-unmatch", "--", relPath)) != null;
+    }
+
+    static @Nullable String headSha(@NotNull Path root) {
+        String out = git(root, List.of("rev-parse", "--verify", "-q", "HEAD"));
+        return out == null || out.isBlank() ? null : out.trim();
+    }
+
+    /** Working tree vs HEAD for one tracked file. */
+    static @NotNull String diffAgainstHead(@NotNull Path root, @NotNull String relPath) {
+        String out = git(root, withFunctionContext(List.of("diff", "--no-color", "--no-ext-diff", "-U5", "-W", "HEAD", "--", relPath)));
+        return out == null ? "" : out;
+    }
+
+    /** {@code base..head} for one file. */
+    static @NotNull String diffRange(@NotNull Path root, @NotNull String base, @NotNull String head,
+                                     @NotNull String relPath) {
+        String out = git(root, withFunctionContext(List.of("diff", "--no-color", "--no-ext-diff", "-U5", "-W", base, head, "--", relPath)));
+        return out == null ? "" : out;
+    }
+
+    /** Merge base of HEAD and its upstream, or {@code null} when there is no upstream. */
+    static @Nullable String upstreamBase(@NotNull Path root) {
+        String out = git(root, List.of("merge-base", "HEAD", "@{upstream}"));
+        return out == null || out.isBlank() ? null : out.trim();
+    }
+
+    static @Nullable String showAt(@NotNull Path root, @NotNull String rev, @NotNull String relPath) {
+        return git(root, List.of("show", rev + ":" + relPath));
+    }
+
+    /**
+     * {@code -W} shows the whole changed method, so a description list far below the added
+     * lines is still in the diff. Git's built-in Java/Kotlin function patterns are enabled with
+     * an attributes file; the repository's own {@code .gitattributes} still applies on top.
+     */
+    private static List<String> withFunctionContext(List<String> diffArgs) {
+        Path attributes = functionAttributesFile();
+        if (attributes == null) return diffArgs;
+        List<String> out = new ArrayList<>(List.of("-c", "core.attributesFile=" + attributes));
+        out.addAll(diffArgs);
+        return out;
+    }
+
+    private static volatile Path functionAttributes;
+
+    private static @Nullable Path functionAttributesFile() {
+        Path p = functionAttributes;
+        if (p != null && Files.isRegularFile(p)) return p;
+        try {
+            p = Files.createTempFile("prepushchecker-review", ".gitattributes");
+            Files.writeString(p, "*.java diff=java\n*.kt diff=kotlin\n*.kts diff=kotlin\n*.groovy diff=java\n*.scala diff=java\n");
+            p.toFile().deleteOnExit();
+            functionAttributes = p;
+            return p;
+        } catch (Exception e) {
+            LOG.debug("cannot write review attributes file", e);
+            return null;
+        }
+    }
+
+    private static @Nullable String git(@NotNull Path root, @NotNull List<String> args) {
+        List<String> cmd = new ArrayList<>();
+        cmd.add("git");
+        cmd.add("-c");
+        cmd.add("core.quotepath=off");
+        cmd.addAll(args);
+        try {
+            ProcessBuilder pb = new ProcessBuilder(cmd).directory(root.toFile());
+            pb.environment().put("GIT_TERMINAL_PROMPT", "0");
+            pb.environment().put("GIT_ASKPASS", "");
+            pb.environment().put("SSH_ASKPASS", "");
+            ProcessExecution.Result r = ProcessExecution.run(pb, TIMEOUT);
+            return r.isSuccess() ? r.stdout() : null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return null;
+        } catch (Exception e) {
+            LOG.debug("git " + args + " failed in " + root, e);
+            return null;
+        }
+    }
+}

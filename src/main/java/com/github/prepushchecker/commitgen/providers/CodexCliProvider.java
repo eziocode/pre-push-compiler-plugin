@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.ChatGPTOAuthFlow;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
@@ -7,6 +8,7 @@ import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.cli.AiCliCommand;
 import com.github.prepushchecker.commitgen.cli.AiCliRunner;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -18,11 +20,11 @@ import java.util.Map;
 /**
  * Delegates to the local <b>Codex CLI</b> ({@code codex exec}).
  *
- * <h3>How it works — same pattern as GH Copilot</h3>
  * <ol>
  *   <li>Resolves the {@code codex} binary via {@link CliPathResolver}.</li>
  *   <li>Runs {@code codex exec --sandbox read-only … -} in an empty temp dir with
- *       the prompt on stdin, using the CLI's own login ({@code codex login}).</li>
+ *       the prompt on stdin, using the CLI's own login ({@code codex login}). Never the bare
+ *       {@code codex} command, which starts the interactive terminal UI.</li>
  *   <li>Reads the final answer from {@code --output-last-message}, falling back
  *       to stdout.</li>
  *   <li>A manual API key saved in Settings is exported as {@code OPENAI_API_KEY}
@@ -38,16 +40,21 @@ public final class CodexCliProvider implements CommitMessageProvider {
             + "Install: npm install -g @openai/codex";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
+        return run(LABEL, request, s.codexCliPath, s.codexModel, s.codexExtraArgs);
+    }
+
+    /** Runs {@code codex exec} with explicit settings; also used by the "Other CLI" provider. */
+    static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
+                               @Nullable String configuredPath, @Nullable String model,
+                               @Nullable String extraArgs) throws Exception {
         CommitMessageSettings cfg = CommitMessageSettings.getInstance();
-        CommitMessageSettings.State s = cfg.settings();
-        String path = CliPathResolver.resolveOrNull(s.codexCliPath, CLI_NAME);
+        String path = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
         if (path == null) {
             throw new IllegalStateException(
-                "Codex CLI not found.\n" + AUTH_HINT
-                    + "\n\nOr set its path in Settings → Tools → "
-                    + "Pre-Push Checker — AI Commit Message Generator.");
+                label + " not found.\n" + AUTH_HINT
+                    + "\n\nOr set its path in " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
 
         Map<String, String> env = new HashMap<>();
@@ -61,14 +68,25 @@ public final class CodexCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             Path lastMessage = workDir.resolve("last-message.txt");
-            List<String> cmd = AiCliCommand.codex(path, s.codexModel, s.codexExtraArgs, lastMessage);
-            String stdout = AiCliRunner.run(LABEL, cmd,
-                AiCliCommand.combinePrompt(systemPrompt, userPrompt),
-                workDir, env, AiCliRunner.DEFAULT_TIMEOUT, AUTH_HINT);
+            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage);
+            String stdout;
+            try {
+                stdout = AiCliRunner.run(label, cmd,
+                    AiCliCommand.combinePrompt(request.system(), request.user(), request.structured()),
+                    workDir, env, request.timeout(), AUTH_HINT);
+            } catch (RuntimeException e) {
+                String msg = String.valueOf(e.getMessage());
+                if (model != null && !model.isBlank() && msg.contains("model") && msg.contains("not supported")) {
+                    throw new IllegalStateException(label + ": the model '" + model.trim() + "' is not available "
+                        + "for this Codex login.\nClear the Model field (codex then uses its default) or pick "
+                        + "another model in " + CommitMessageSettings.SETTINGS_PATH + ".", e);
+                }
+                throw e;
+            }
             String result = Files.isRegularFile(lastMessage)
                 ? Files.readString(lastMessage, StandardCharsets.UTF_8)
                 : stdout;
-            return AiCliRunner.requireText(LABEL, result, AUTH_HINT);
+            return AiCliRunner.finish(label, result, AUTH_HINT, request.structured());
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }

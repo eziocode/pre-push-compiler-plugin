@@ -1,11 +1,13 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.cli.AiCliCommand;
 import com.github.prepushchecker.commitgen.cli.AiCliRunner;
 import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
 import java.util.HashMap;
@@ -15,7 +17,6 @@ import java.util.Map;
 /**
  * Delegates to the local <b>Claude Code CLI</b> ({@code claude -p}).
  *
- * <h3>How it works — same pattern as GH Copilot</h3>
  * <ol>
  *   <li>Resolves the {@code claude} binary via {@link CliPathResolver}
  *       (configured path → shell PATH → well-known npm / ~/.claude/local dirs).</li>
@@ -34,29 +35,34 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
             + "Install: npm install -g @anthropic-ai/claude-code";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
+        return run(LABEL, request, s.claudeCliPath, s.claudeModel, s.claudeExtraArgs);
+    }
+
+    /** Runs {@code claude -p} with explicit settings; also used by the "Other CLI" provider. */
+    static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
+                               @Nullable String configuredPath, @Nullable String model,
+                               @Nullable String extraArgs) throws Exception {
         CommitMessageSettings cfg = CommitMessageSettings.getInstance();
-        CommitMessageSettings.State s = cfg.settings();
-        String path = CliPathResolver.resolveOrNull(s.claudeCliPath, CLI_NAME);
+        String path = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
         if (path == null) {
             throw new IllegalStateException(
-                "Claude CLI not found.\n" + AUTH_HINT
-                    + "\n\nOr set its path in Settings → Tools → "
-                    + "Pre-Push Checker — AI Commit Message Generator.");
+                label + " not found.\n" + AUTH_HINT
+                    + "\n\nOr set its path in " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
 
         Map<String, String> env = new HashMap<>();
         String fallbackKey = cfg.loadApiKey(Id.CLAUDE_CLI);
         if (fallbackKey != null && !fallbackKey.isBlank()) env.put("ANTHROPIC_API_KEY", fallbackKey);
 
-        List<String> cmd = AiCliCommand.claude(path, s.claudeModel, s.claudeExtraArgs);
+        List<String> cmd = AiCliCommand.claude(path, model, extraArgs);
         Path workDir = AiCliRunner.createWorkDir();
         try {
-            String out = AiCliRunner.run(LABEL, cmd,
-                AiCliCommand.combinePrompt(systemPrompt, userPrompt),
-                workDir, env, AiCliRunner.DEFAULT_TIMEOUT, AUTH_HINT);
-            return AiCliRunner.requireText(LABEL, out, AUTH_HINT);
+            String out = AiCliRunner.run(label, cmd,
+                AiCliCommand.combinePrompt(request.system(), request.user(), request.structured()),
+                workDir, env, request.timeout(), AUTH_HINT);
+            return AiCliRunner.finish(label, out, AUTH_HINT, request.structured());
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }

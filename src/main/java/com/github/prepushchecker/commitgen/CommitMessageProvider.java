@@ -40,7 +40,17 @@ public interface CommitMessageProvider {
      * @throws Exception on network, auth, subprocess, or API error
      */
     @NotNull
-    String generate(@NotNull String systemPrompt, @NotNull String userPrompt) throws Exception;
+    default String generate(@NotNull String systemPrompt, @NotNull String userPrompt) throws Exception {
+        return generate(AiRequest.commitMessage(systemPrompt, userPrompt));
+    }
+
+    /**
+     * Sends one request. For {@link AiRequest#structured()} requests the raw answer is returned
+     * (CLI noise included); the caller extracts the JSON with
+     * {@link AiOutputSanitizer#cleanStructured}.
+     */
+    @NotNull
+    String generate(@NotNull AiRequest request) throws Exception;
 
     @NotNull
     Id id();

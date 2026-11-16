@@ -97,6 +97,7 @@ final class PushStatsDialog extends DialogWrapper {
             row("  layer violations", mine.blockedLayer, all.blockedLayer),
             row("  forbidden jars", mine.blockedJar, all.blockedJar),
             row("  symbolic A/B", mine.blockedSymbolic, all.blockedSymbolic),
+            row("  AI review", mine.blockedReview, all.blockedReview),
             row("Fixed after a block", mine.fixedAfterBlock, all.fixedAfterBlock),
             row("Answered from cache", mine.cacheHits, all.cacheHits),
             row("Checked without the IDE", mine.externalVerdicts, all.externalVerdicts),

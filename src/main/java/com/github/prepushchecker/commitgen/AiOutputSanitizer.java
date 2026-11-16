@@ -122,6 +122,79 @@ public final class AiOutputSanitizer {
     }
 
     /**
+     * Extracts the JSON object answer of a structured request (review, fix) from raw provider
+     * output: terminal escapes, CLI JSON envelopes, thinking and tool-call blocks are removed,
+     * then the last JSON object that has {@code requiredKey} is returned (fenced or bare).
+     * Unlike {@link #clean}, no text is trimmed from inside the answer.
+     *
+     * @return the parsed object, or {@code null} when the output holds no such object
+     */
+    public static @Nullable Map<?, ?> cleanStructured(@Nullable String raw, @NotNull String requiredKey) {
+        if (raw == null || raw.isBlank()) return null;
+        String text = stripTerminalNoise(raw);
+        Map<?, ?> direct = objectWithKey(text.trim(), requiredKey);
+        if (direct != null) return direct;
+
+        String unwrapped = unwrapJson(text);
+        unwrapped = SELF_CLOSING_TAG.matcher(unwrapped).replaceAll("");
+        unwrapped = TAG_BLOCK.matcher(unwrapped).replaceAll("");
+        unwrapped = ORPHAN_THINK_CLOSE.matcher(unwrapped).replaceFirst("");
+        for (String candidate : List.of(unwrapped, text)) {
+            Map<?, ?> found = lastObjectWithKey(candidate, requiredKey);
+            if (found != null) return found;
+        }
+        return null;
+    }
+
+    private static @Nullable Map<?, ?> objectWithKey(@NotNull String json, @NotNull String key) {
+        if (!json.startsWith("{") || !json.endsWith("}")) return null;
+        Object parsed = JsonUtil.parse(json);
+        return parsed instanceof Map<?, ?> map && map.containsKey(key) ? map : null;
+    }
+
+    /** Scans for balanced top-level {@code {…}} spans (string-aware) and keeps the last match. */
+    private static @Nullable Map<?, ?> lastObjectWithKey(@NotNull String text, @NotNull String key) {
+        Map<?, ?> last = null;
+        int i = 0;
+        while (i < text.length()) {
+            int start = text.indexOf('{', i);
+            if (start < 0) break;
+            int end = matchingBrace(text, start);
+            if (end < 0) {
+                i = start + 1;
+                continue;
+            }
+            Map<?, ?> found = objectWithKey(text.substring(start, end + 1), key);
+            if (found != null) {
+                last = found;
+                i = end + 1;
+            } else {
+                i = start + 1;
+            }
+        }
+        return last;
+    }
+
+    private static int matchingBrace(@NotNull String text, int start) {
+        int depth = 0;
+        boolean inString = false;
+        for (int i = start; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (inString) {
+                if (c == '\\') i++;
+                else if (c == '"') inString = false;
+            } else if (c == '"') {
+                inString = true;
+            } else if (c == '{') {
+                depth++;
+            } else if (c == '}') {
+                if (--depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
      * Short, readable form of a raw HTTP body or CLI stderr for an error message:
      * escapes removed, a JSON error unwrapped to its message, capped at
      * {@link #MAX_ERROR_DETAIL} characters.
@@ -137,6 +210,11 @@ public final class AiOutputSanitizer {
             }
         }
         return truncate(text, MAX_ERROR_DETAIL);
+    }
+
+    /** Terminal escapes and control characters removed, for error messages. */
+    public static @NotNull String stripNoiseForErrors(@Nullable String raw) {
+        return raw == null ? "" : stripTerminalNoise(raw);
     }
 
     /** Caps {@code s} at {@code max} characters, adding an ellipsis when cut. */

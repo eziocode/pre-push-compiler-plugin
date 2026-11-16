@@ -1,6 +1,7 @@
 package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -22,18 +23,19 @@ public final class OpenAiProvider implements CommitMessageProvider {
     private static final String API_URL = "https://api.openai.com/v1/chat/completions";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
         CommitMessageSettings settings = CommitMessageSettings.getInstance();
         String apiKey = settings.loadApiKey(Id.OPENAI);
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException(
-                "OpenAI API key not configured. Go to Settings → Tools → AI Commit Message Generator.");
+                "OpenAI API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
         String model = settings.settings().openAiModel;
         String body = "{"
             + "\"model\":" + JsonUtil.quoted(model) + ","
-            + "\"max_tokens\":300,"
+            + "\"max_tokens\":" + request.maxOutputTokens() + ","
             + "\"messages\":["
             + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
             + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
@@ -42,16 +44,16 @@ public final class OpenAiProvider implements CommitMessageProvider {
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(API_URL))
             .header("Authorization", "Bearer " + apiKey)
             .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(60))
+            .timeout(request.timeout())
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 
         HttpResponse<String> response =
-            client.send(request, HttpResponse.BodyHandlers.ofString());
+            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
                 "OpenAI API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));

@@ -1,6 +1,7 @@
 package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -21,8 +22,9 @@ import java.time.Duration;
 public final class OllamaProvider implements CommitMessageProvider {
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String baseUrl = s.ollamaBaseUrl.replaceAll("/+$", "");
         String model   = s.ollamaModel;
@@ -39,16 +41,16 @@ public final class OllamaProvider implements CommitMessageProvider {
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(15))
             .build();
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(120))
+            .timeout(request.timeout().compareTo(Duration.ofSeconds(120)) > 0 ? request.timeout() : Duration.ofSeconds(120))
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 
         HttpResponse<String> response;
         try {
-            response = client.send(request, HttpResponse.BodyHandlers.ofString());
+            response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         } catch (java.net.ConnectException e) {
             throw new RuntimeException(
                 "Cannot connect to Ollama at " + baseUrl

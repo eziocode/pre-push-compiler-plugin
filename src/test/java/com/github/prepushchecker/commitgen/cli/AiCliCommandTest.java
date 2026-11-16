@@ -48,4 +48,30 @@ public class AiCliCommandTest extends TestCase {
             AiCliCommand.tokenize("-c \"a b\" '' \"x'y\""));
         assertTrue(AiCliCommand.tokenize("   ").isEmpty());
     }
+
+    public void testStructuredPromptAsksForJsonOnly() {
+        String p = AiCliCommand.combinePrompt("Review rules", "diff", true);
+        assertTrue(p.contains("ONLY the JSON object"));
+        assertFalse(p.contains("commit message"));
+        assertTrue(AiCliCommand.combinePrompt("s", "u").contains("ONLY the commit message"));
+    }
+
+    public void testEveryCustomPresetPassesPromptAsOneArgument() {
+        for (AiCli cli : AiCli.values()) {
+            if (!cli.isCustom()) continue;
+            String template = cli.defaultArgsTemplate();
+            assertTrue(cli + " preset must take {prompt}", AiCliCommand.usesPromptArg(template));
+            List<String> cmd = AiCliCommand.fromTemplate("/bin/" + cli.binaryName(), template, "m1", "a b");
+            assertTrue(cli + " " + cmd, cmd.contains("a b"));
+            assertTrue(cli + " " + cmd, cmd.contains("m1"));
+            assertFalse(cli + " " + cmd, AiCliCommand.fromTemplate("/bin/x", template, "", "p").contains(""));
+        }
+    }
+
+    public void testDedicatedClisHaveNoTemplate() {
+        for (AiCli cli : List.of(AiCli.CODEX, AiCli.CLAUDE, AiCli.GH, AiCli.LLM)) {
+            assertFalse(cli.isCustom());
+            assertEquals("", cli.defaultArgsTemplate());
+        }
+    }
 }

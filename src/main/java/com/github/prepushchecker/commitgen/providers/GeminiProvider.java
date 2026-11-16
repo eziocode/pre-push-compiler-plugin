@@ -1,6 +1,7 @@
 package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -23,13 +24,14 @@ public final class GeminiProvider implements CommitMessageProvider {
         "https://generativelanguage.googleapis.com/v1beta/models/";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
         CommitMessageSettings settings = CommitMessageSettings.getInstance();
         String apiKey = settings.loadApiKey(Id.GEMINI);
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException(
-                "Gemini API key not configured. Go to Settings → Tools → AI Commit Message Generator.");
+                "Gemini API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
         String model = settings.settings().geminiModel;
         // Key goes in a header, not the query string, so it cannot leak through URLs in logs or exceptions.
@@ -46,16 +48,16 @@ public final class GeminiProvider implements CommitMessageProvider {
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", "application/json")
             .header("x-goog-api-key", apiKey)
-            .timeout(Duration.ofSeconds(60))
+            .timeout(request.timeout())
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 
         HttpResponse<String> response =
-            client.send(request, HttpResponse.BodyHandlers.ofString());
+            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
                 "Gemini API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));

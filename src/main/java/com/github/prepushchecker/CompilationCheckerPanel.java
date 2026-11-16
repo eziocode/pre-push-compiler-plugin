@@ -72,8 +72,6 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
 
     private static final Icon REPAIR_HOOKS_ICON =
         IconLoader.getIcon("/icons/repairHooks.svg", CompilationCheckerPanel.class);
-    private static final String SETTINGS_VISIBLE_KEY = "prepushchecker.ui.settingsVisible";
-    private static final String SPLITTER_PROPORTION_KEY = "prepushchecker.ui.splitter";
     private static final int COUNTDOWN_REFRESH_MS = 30_000;
 
     private final Project project;
@@ -84,13 +82,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final com.intellij.ui.CollectionListModel<String> listModel = new com.intellij.ui.CollectionListModel<>();
     private final JBLabel statusLabel = new JBLabel(" ");
     private final JBLabel updatedLabel = new JBLabel("");
-    private final CheckBoxList<String> ignoredFilesList = new IgnoredFilesList();
     private final Runnable serviceListener = this::onServiceUpdate;
     private final Runnable bypassListener = this::onBypassUpdate;
     private final Runnable smartBuildListener = this::updateStatus;
-    private final OnePixelSplitter splitter =
-        new OnePixelSplitter(true, SPLITTER_PROPORTION_KEY, 0.45f);
-    private final JComponent settingsComponent;
 
     // Bypass bar
     private final JPanel bypassBar = new JPanel(new BorderLayout(JBUI.scale(8), 0));
@@ -121,7 +115,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         group.add(new GenerateCommitMsgAction());
         group.addSeparator();
         group.add(new PushStatsAction());
-        group.add(new ToggleSettingsAction());
+        group.add(createLayersGroup());
+        group.add(new OpenSettingsAction());
         group.add(new ReportAction());
         var toolbar = ActionManager.getInstance()
             .createActionToolbar("CompilationCheckerToolbar", group, true);
@@ -135,12 +130,8 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         header.add(createBypassBar(), BorderLayout.CENTER);
         add(header, BorderLayout.NORTH);
 
-        // ── Settings / results split ─────────────────────────────────────────
-        settingsComponent = createSettingsPanel();
-        splitter.setFirstComponent(settingsComponent);
-        splitter.setSecondComponent(createResultsPanel());
-        add(splitter, BorderLayout.CENTER);
-        applySettingsVisibility();
+        // Settings live in Settings → Tools → Pre-Push Checker; this tab shows results only.
+        add(createResultsPanel(), BorderLayout.CENTER);
 
         onServiceUpdate();
         onBypassUpdate();
@@ -356,159 +347,6 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
 
     // ── Settings ──────────────────────────────────────────────────────────────
 
-    private void applySettingsVisibility() {
-        boolean visible = PropertiesComponent.getInstance().getBoolean(SETTINGS_VISIBLE_KEY, true);
-        settingsComponent.setVisible(visible);
-        splitter.revalidate();
-        splitter.repaint();
-    }
-
-    private JComponent createSettingsPanel() {
-        JBCheckBox strictGuard = new JBCheckBox("Strict A/B dependency guard");
-        strictGuard.setSelected(PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project));
-
-        JBCheckBox smartBuild = new JBCheckBox("Smart background build");
-        smartBuild.setSelected(PrePushCheckerSettings.isSmartBuildEnabled(project));
-
-        JBCheckBox disableFallback = new JBCheckBox("Skip check when IDE is closed");
-        disableFallback.setSelected(PrePushCheckerSettings.isBuildToolFallbackDisabled(project));
-
-        JBCheckBox layerCheck = new JBCheckBox("Cross-layer import check");
-        layerCheck.setSelected(PrePushCheckerSettings.isLayerCheckEnabled(project));
-        JButton runLayerCheck = new JButton("Run Now");
-        runLayerCheck.addActionListener(event -> runLayerCheckNow());
-        JButton generateLayers = new JButton("Generate from build.xml…");
-        generateLayers.addActionListener(event -> generateLayerRules());
-        JButton editLayers = new JButton("Edit Layers…");
-        editLayers.addActionListener(event -> editLayerRules());
-        layerCheck.addActionListener(event -> {
-            PrePushCheckerSettings.setLayerCheckEnabled(project, layerCheck.isSelected());
-            runLayerCheck.setEnabled(layerCheck.isSelected());
-        });
-        runLayerCheck.setEnabled(layerCheck.isSelected());
-
-        // ── Clipboard SHA settings ────────────────────────────────────────────
-        JBCheckBox copySha = new JBCheckBox("Copy commit SHA automatically");
-        copySha.setSelected(PrePushCheckerSettings.isCopyCommitShaEnabled(project));
-
-        JRadioButton shaFull  = new JRadioButton("Full");
-        JRadioButton shaShort = new JRadioButton("Short (7)");
-        shaFull.setToolTipText("Full 40-character SHA");
-        shaShort.setToolTipText("Abbreviated 7-character SHA");
-        ButtonGroup shaFormatGroup = new ButtonGroup();
-        shaFormatGroup.add(shaFull);
-        shaFormatGroup.add(shaShort);
-        boolean isShort = PrePushCheckerSettings.getCopyCommitShaFormat(project)
-            == PrePushCheckerSettings.ShaFormat.SHORT;
-        shaFull.setSelected(!isShort);
-        shaShort.setSelected(isShort);
-
-        JRadioButton triggerPush   = new JRadioButton("Push");
-        JRadioButton triggerCommit = new JRadioButton("Commit");
-        ButtonGroup triggerGroup = new ButtonGroup();
-        triggerGroup.add(triggerPush);
-        triggerGroup.add(triggerCommit);
-        boolean isAfterCommit = PrePushCheckerSettings.getCopyCommitShaTrigger(project)
-            == PrePushCheckerSettings.ShaTrigger.AFTER_COMMIT;
-        triggerPush.setSelected(!isAfterCommit);
-        triggerCommit.setSelected(isAfterCommit);
-
-        // Wire up enable/disable
-        Runnable updateShaSubPanel = () -> {
-            boolean enabled = copySha.isSelected();
-            shaFull.setEnabled(enabled);
-            shaShort.setEnabled(enabled);
-            triggerPush.setEnabled(enabled);
-            triggerCommit.setEnabled(enabled);
-        };
-        updateShaSubPanel.run();
-
-        strictGuard.addActionListener(event ->
-            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, strictGuard.isSelected()));
-        smartBuild.addActionListener(event -> {
-            PrePushCheckerSettings.setSmartBuildEnabled(project, smartBuild.isSelected());
-            SmartBuildService.getInstance(project).settingChanged();
-        });
-        disableFallback.addActionListener(event -> {
-            PrePushCheckerSettings.setBuildToolFallbackDisabled(project, disableFallback.isSelected());
-            ApplicationManager.getApplication().executeOnPooledThread(
-                () -> PrePushCheckerSettings.syncSettingsFile(project));
-        });
-        copySha.addActionListener(event -> {
-            PrePushCheckerSettings.setCopyCommitShaEnabled(project, copySha.isSelected());
-            updateShaSubPanel.run();
-        });
-        shaFull.addActionListener(event ->
-            PrePushCheckerSettings.setCopyCommitShaFormat(project, PrePushCheckerSettings.ShaFormat.FULL));
-        shaShort.addActionListener(event ->
-            PrePushCheckerSettings.setCopyCommitShaFormat(project, PrePushCheckerSettings.ShaFormat.SHORT));
-        triggerPush.addActionListener(event ->
-            PrePushCheckerSettings.setCopyCommitShaTrigger(project, PrePushCheckerSettings.ShaTrigger.AFTER_PUSH));
-        triggerCommit.addActionListener(event ->
-            PrePushCheckerSettings.setCopyCommitShaTrigger(project, PrePushCheckerSettings.ShaTrigger.AFTER_COMMIT));
-
-        JPanel options = new WidthTrackingPanel();
-        options.setLayout(new BoxLayout(options, BoxLayout.Y_AXIS));
-        options.setBorder(JBUI.Borders.empty(4, 10, 8, 10));
-
-        addRow(options, new TitledSeparator("Validation"), 0);
-        addRow(options, withHelp(strictGuard,
-            "Validates committed HEAD in a clean temporary worktree when local source or "
-                + "build changes could hide failures in the pushed snapshot."), 0);
-        addRow(options, withHelp(smartBuild,
-            "Compiles changed sources in the background once the IDE has been idle for a while "
-                + "(or after a short pause in a long editing session). Never runs while debugging, "
-                + "indexing, in power save mode or during another build. Results are kept per "
-                + "branch, so pushing already-compiled sources skips the compile."), 0);
-        addRow(options, withHelp(disableFallback,
-            "Pushes from a terminal or another Git client are allowed without a check when "
-                + "the IDE is not running, instead of falling back to Maven/Gradle. Avoids "
-                + "false errors from annotation processors (e.g. Lombok) that the build tool "
-                + "cannot resolve without the IDE's setup."), 0);
-        addRow(options, withHelp(layerCheck,
-            "Blocks pushes where a file imports in-repo source from a later build layer, e.g. a "
-                + "core file importing a class only a later Ant <javac> target compiles. The IDE "
-                + "compiles everything as one module and misses this. Layers come from "
-                + LayerRules.FILE_NAME + " at the repository root; without it the check does "
-                + "nothing. Not run when the IDE is closed."), 0);
-        // Two short rows: three buttons in one row needed 533 px and clipped in a narrow tool window.
-        addRow(options, buttonRow(editLayers, runLayerCheck), 20);
-        addRow(options, buttonRow(generateLayers), 20);
-
-        addRow(options, new TitledSeparator("Commit SHA"), 0);
-        addRow(options, withHelp(copySha,
-            "Copies the HEAD commit SHA to the clipboard after the chosen event."), 0);
-        addRow(options, labeledRow("Format:", shaFull, shaShort), 20);
-        addRow(options, labeledRow("Copy after:", triggerPush, triggerCommit), 20);
-
-        addRow(options, new TitledSeparator("Ignored Files"), 0);
-        JBLabel ignoredHint = new JBLabel(
-            "Checked files still compile, but their errors don't block pushes.");
-        ignoredHint.setFont(JBUI.Fonts.smallFont());
-        ignoredHint.setForeground(UIUtil.getContextHelpForeground());
-        ignoredHint.setBorder(JBUI.Borders.emptyBottom(4));
-        addRow(options, ignoredHint, 0);
-        addRow(options, createIgnoredFilesPanel(), 0);
-
-        addRow(options, new TitledSeparator("Usage Statistics"), 0);
-        com.github.prepushchecker.stats.SharedStats stats =
-            com.github.prepushchecker.stats.SharedStats.getInstance();
-        JBCheckBox shareStats = new JBCheckBox("Share anonymous counts");
-        shareStats.setSelected(stats.getConsent() == com.github.prepushchecker.stats.SharedStats.Consent.YES);
-        shareStats.addActionListener(event -> stats.setConsent(shareStats.isSelected()));
-        addRow(options, withHelp(shareStats,
-            "Adds this IDE's Push Stats counts to the public total on the project's GitHub page: "
-                + "checks passed, pushes blocked, compile errors caught, timeouts, plugin and IDE "
-                + "version, with a random install ID. No code, file names, paths, messages or "
-                + "project names. Push Stats… shows this IDE's own counts."), 0);
-
-        JBScrollPane scroll = new JBScrollPane(options,
-            ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
-            ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
-        scroll.setBorder(JBUI.Borders.empty());
-        return scroll;
-    }
-
     /** Repository root holding the rules file, else the first project root. */
     private @Nullable String layerRepositoryRoot() {
         java.util.Set<String> roots = DiagnosticPathMatcher.roots(project);
@@ -708,225 +546,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
     }
 
-    private static void addRow(JPanel container, JComponent row, int indent) {
-        JComponent wrapped = row;
-        if (indent > 0) {
-            JPanel holder = new JPanel(new BorderLayout());
-            holder.setBorder(JBUI.Borders.emptyLeft(indent));
-            holder.add(row, BorderLayout.CENTER);
-            wrapped = holder;
-        }
-        wrapped.setAlignmentX(Component.LEFT_ALIGNMENT);
-        if (!(row instanceof JPanel && ((JPanel) row).getClientProperty("grow") != null)) {
-            // Wrap in a holder whose max height tracks the live preferred height, so rows
-            // never keep a stale height captured before fonts/insets were final.
-            JPanel fixed = new JPanel(new BorderLayout()) {
-                @Override
-                public Dimension getMaximumSize() {
-                    return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
-                }
-            };
-            fixed.setAlignmentX(Component.LEFT_ALIGNMENT);
-            fixed.add(wrapped, BorderLayout.CENTER);
-            wrapped = fixed;
-        }
-        container.add(wrapped);
-    }
-
-    private static JComponent withHelp(JComponent component, String help) {
-        // Help icon pinned east; the control clips instead of wrapping onto the next row.
-        JPanel row = new JPanel(new BorderLayout(JBUI.scale(4), 0));
-        component.setMinimumSize(new Dimension(0, 0));
-        row.add(component, BorderLayout.CENTER);
-        row.add(ContextHelpLabel.create(help), BorderLayout.EAST);
-        return row;
-    }
-
-    private static JComponent buttonRow(JComponent... controls) {
-        JPanel row = new JPanel();
-        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
-        for (int i = 0; i < controls.length; i++) {
-            if (i > 0) row.add(Box.createHorizontalStrut(JBUI.scale(8)));
-            row.add(controls[i]);
-        }
-        row.add(Box.createHorizontalGlue());
-        return row;
-    }
-
-    private static JComponent labeledRow(String label, JComponent... controls) {
-        JPanel row = new JPanel();
-        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
-        JBLabel title = new JBLabel(label);
-        title.setForeground(UIUtil.getContextHelpForeground());
-        row.add(title);
-        for (JComponent control : controls) {
-            row.add(Box.createHorizontalStrut(JBUI.scale(8)));
-            row.add(control);
-        }
-        row.add(Box.createHorizontalGlue());
-        return row;
-    }
-
-    private JComponent createIgnoredFilesPanel() {
-        ignoredFilesList.getEmptyText().setText("No ignored files");
-        ignoredFilesList.getEmptyText().appendLine("Add a file, or right-click an error \u2192 Ignore File");
-        ignoredFilesList.setCheckBoxListListener((index, value) -> {
-            String path = ignoredFilesList.getItemAt(index);
-            if (path != null) IgnoredCompilationFiles.getInstance(project).setEnabled(path, value);
-        });
-        refreshIgnoredFilesRows();
-
-        AnAction search = new AnAction("Search Project Files\u2026",
-                "Find a project file by name to ignore", AllIcons.Actions.Search) {
-            @Override
-            public @NotNull ActionUpdateThread getActionUpdateThread() {
-                return ActionUpdateThread.EDT;
-            }
-
-            @Override
-            public void actionPerformed(@NotNull AnActionEvent e) {
-                openSearchPopup();
-            }
-        };
-
-        JPanel decorated = ToolbarDecorator.createDecorator(ignoredFilesList)
-            .setAddAction(button -> FileChooser.chooseFiles(
-                projectScopedDescriptor(), project, projectRootForDialog(),
-                files -> {
-                    for (var file : files) addIgnoredFile(file.getPath());
-                }))
-            .setAddActionName("Add Files\u2026")
-            .setRemoveAction(button -> {
-                for (int index : ignoredFilesList.getSelectedIndices()) {
-                    String path = ignoredFilesList.getItemAt(index);
-                    if (path != null) IgnoredCompilationFiles.getInstance(project).remove(path);
-                }
-                refreshIgnoredFilesRows();
-            })
-            .addExtraAction(search)
-            .disableUpDownActions()
-            .setPreferredSize(new Dimension(0, JBUI.scale(130)))
-            .createPanel();
-        decorated.putClientProperty("grow", Boolean.TRUE);
-        return decorated;
-    }
-
-    private FileChooserDescriptor projectScopedDescriptor() {
-        List<VirtualFile> roots = new java.util.ArrayList<>();
-        LocalFileSystem lfs = LocalFileSystem.getInstance();
-        for (String root : DiagnosticPathMatcher.roots(project)) {
-            VirtualFile vf = lfs.findFileByPath(root);
-            if (vf != null) roots.add(vf);
-        }
-        FileChooserDescriptor descriptor = FileChooserDescriptorFactory
-            .createMultipleFilesNoJarsDescriptor()
-            .withTreeRootVisible(false)
-            .withTitle("Select Project Files to Ignore")
-            .withDescription("Compiler errors attributed to these files will not block pushes")
-            .withFileFilter(vf -> vf.isDirectory() || PushValidationPaths.isCompilableSource(vf.getPath()));
-        return roots.isEmpty() ? descriptor : descriptor.withRoots(roots);
-    }
-
-    private VirtualFile projectRootForDialog() {
-        String basePath = project.getBasePath();
-        return basePath == null ? null : LocalFileSystem.getInstance().findFileByPath(basePath);
-    }
-
-    private void openSearchPopup() {
-        ChooseByNamePopup.createPopup(
-            project, new GotoFileModel(project), (com.intellij.psi.PsiElement) null).invoke(
-            new ChooseByNamePopup.Callback() {
-                @Override
-                public void onClose() {}
-
-                @Override
-                public void elementChosen(Object element) {
-                    VirtualFile file = element instanceof PsiFile psiFile
-                        ? psiFile.getVirtualFile()
-                        : element instanceof VirtualFile vf ? vf : null;
-                    if (file != null) addIgnoredFile(file.getPath());
-                }
-            },
-            ModalityState.current(), false);
-    }
-
-    private void addIgnoredFile(String path) {
-        if (IgnoredCompilationFiles.getInstance(project).add(path)) {
-            refreshIgnoredFilesRows();
-        } else {
-            Messages.showWarningDialog(project,
-                "\"" + path + "\" cannot be ignored \u2014 it must be a .java/.kt/.kts/.groovy/.scala "
-                    + "file inside the project.",
-                "Cannot Ignore File");
-        }
-    }
-
-    private void refreshIgnoredFilesRows() {
-        ignoredFilesList.clear();
-        for (IgnoredCompilationFiles.Entry entry
-                : IgnoredCompilationFiles.getInstance(project).list()) {
-            ignoredFilesList.addItem(entry.path(), fileName(entry.path()), entry.enabled());
-        }
-    }
-
-    private static String fileName(String path) {
-        int slash = path.replace('\\', '/').lastIndexOf('/');
-        return slash >= 0 ? path.substring(slash + 1) : path;
-    }
-
-    private static String parentDir(String path) {
-        int slash = path.replace('\\', '/').lastIndexOf('/');
-        return slash > 0 ? path.substring(0, slash) : null;
-    }
-
     private void ignoreDiagnosticFile(String diagnostic) {
         String path = CompilationEntryRenderer.extractPath(diagnostic);
-        if (path != null) addIgnoredFile(path);
-    }
-
-    /** Follows the viewport width so rows shrink with the tool window instead of clipping. */
-    private static final class WidthTrackingPanel extends JPanel implements Scrollable {
-        @Override
-        public Dimension getPreferredScrollableViewportSize() {
-            return getPreferredSize();
-        }
-
-        @Override
-        public int getScrollableUnitIncrement(Rectangle visibleRect, int orientation, int direction) {
-            return JBUI.scale(16);
-        }
-
-        @Override
-        public int getScrollableBlockIncrement(Rectangle visibleRect, int orientation, int direction) {
-            return orientation == SwingConstants.VERTICAL ? visibleRect.height : visibleRect.width;
-        }
-
-        @Override
-        public boolean getScrollableTracksViewportWidth() {
-            return true;
-        }
-
-        @Override
-        public boolean getScrollableTracksViewportHeight() {
-            return false;
-        }
-    }
-
-    /** Ignored-files list: file name as the label, parent folder dimmed, full path on hover. */
-    private static final class IgnoredFilesList extends CheckBoxList<String> {
-        @Override
-        protected @Nullable String getSecondaryText(int index) {
-            String path = getItemAt(index);
-            return path == null ? null : parentDir(path);
-        }
-
-        @Override
-        public String getToolTipText(MouseEvent event) {
-            int index = locationToIndex(event.getPoint());
-            String path = index >= 0 ? getItemAt(index) : null;
-            return path == null ? null
-                : path + " \u2014 checked means compiler errors from this file are ignored";
-        }
+        if (path != null) IgnoredFilesEditor.addOrWarn(project, path);
     }
 
     // ── Toolbar actions ───────────────────────────────────────────────────────
@@ -972,10 +594,31 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
     }
 
-    private final class ToggleSettingsAction extends ToggleAction {
+    /** Layers menu: the cross-layer check's operations (its on/off switch is in Settings). */
+    private DefaultActionGroup createLayersGroup() {
+        DefaultActionGroup layers = new DefaultActionGroup("Layers", true);
+        layers.getTemplatePresentation().setIcon(AllIcons.Actions.GroupByModule);
+        layers.getTemplatePresentation().setDescription("Cross-layer import check: edit layers, run, generate");
+        layers.add(new SimpleAction("Edit Layers\u2026", "Order modules and jars as the build compiles them",
+            this::editLayerRules));
+        layers.add(new SimpleAction("Run Layer Check", "Check every file at HEAD against the layer rules",
+            this::runLayerCheckNow) {
+            @Override
+            public void update(@NotNull AnActionEvent e) {
+                e.getPresentation().setEnabled(PrePushCheckerSettings.isLayerCheckEnabled(project));
+            }
+        });
+        layers.add(new SimpleAction("Generate from build.xml\u2026", "One layer per Ant target with <javac>",
+            this::generateLayerRules));
+        return layers;
+    }
 
-        ToggleSettingsAction() {
-            super("Show Settings", "Show or hide the settings section", AllIcons.General.Settings);
+    private static class SimpleAction extends AnAction {
+        private final Runnable run;
+
+        SimpleAction(String text, String description, Runnable run) {
+            super(text, description, null);
+            this.run = run;
         }
 
         @Override
@@ -984,14 +627,25 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
 
         @Override
-        public boolean isSelected(@NotNull AnActionEvent e) {
-            return PropertiesComponent.getInstance().getBoolean(SETTINGS_VISIBLE_KEY, true);
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            run.run();
+        }
+    }
+
+    private final class OpenSettingsAction extends AnAction {
+        OpenSettingsAction() {
+            super("Settings\u2026", "Open Pre-Push Checker settings", AllIcons.General.Settings);
         }
 
         @Override
-        public void setSelected(@NotNull AnActionEvent e, boolean state) {
-            PropertiesComponent.getInstance().setValue(SETTINGS_VISIBLE_KEY, state, true);
-            applySettingsVisibility();
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.EDT;
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+                .showSettingsDialog(project, "Pre-Push Checker");
         }
     }
 

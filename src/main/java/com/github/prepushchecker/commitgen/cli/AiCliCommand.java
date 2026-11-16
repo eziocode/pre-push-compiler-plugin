@@ -119,10 +119,21 @@ public final class AiCliCommand {
 
     /** Joins system and user prompts into one block for CLIs that take a single prompt. */
     public static @NotNull String combinePrompt(@NotNull String systemPrompt, @NotNull String userPrompt) {
-        return systemPrompt.strip()
-            + "\n\nReply with ONLY the commit message text — no preamble, no code fences, "
-            + "do not run tools or edit files.\n\n---\n\n"
-            + userPrompt.strip() + "\n";
+        return combinePrompt(systemPrompt, userPrompt, false);
+    }
+
+    /**
+     * Joins the prompts for a single-prompt CLI. {@code structured} requests ask for the JSON
+     * object only; commit messages ask for plain text only. Both forbid running tools.
+     */
+    public static @NotNull String combinePrompt(@NotNull String systemPrompt, @NotNull String userPrompt,
+                                                boolean structured) {
+        String reply = structured
+            ? "Reply with ONLY the JSON object described above — no prose, no explanation, "
+                + "do not run tools or edit files."
+            : "Reply with ONLY the commit message text — no preamble, no code fences, "
+                + "do not run tools or edit files.";
+        return systemPrompt.strip() + "\n\n" + reply + "\n\n---\n\n" + userPrompt.strip() + "\n";
     }
 
     private static boolean isBlank(@Nullable String s) {

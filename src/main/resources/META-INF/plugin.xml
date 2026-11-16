@@ -58,6 +58,19 @@
             <li><b>API keys in PasswordSafe</b> — never written to plain XML state</li>
         </ul>
 
+        <h3>AI Code Review <em>(new in 2.10.0)</em></h3>
+        <p>Review changes against your team's own rules before they are pushed. Write the rules in
+        <code>.prepush-review.md</code> at the repository root, choose which files they cover, and
+        click <b>Review Changes with AI</b> next to the commit message button.</p>
+        <ul>
+            <li>Only covered files are sent to the AI; content that was reviewed is never reviewed again.</li>
+            <li>Findings in the <b>Code Review</b> tab: go to code, <b>Resolve</b>, or <b>Resolve with AI</b>
+                (shown as a diff, applied only when you accept).</li>
+            <li>Optional mandate (<code>mandatory: true</code> in the rule file): pushes of unreviewed files
+                or open findings are blocked, from the IDE and from the terminal.</li>
+            <li>On demand or on push.</li>
+        </ul>
+
         <h3>Requirements</h3>
         <ul>
             <li>IntelliJ IDEA 2023.3 or later</li>
@@ -67,6 +80,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.10.0 — AI code review, new settings, CLI fixes</h3>
+        <ul>
+            <li><b>AI code review</b> against a team rule file (<code>.prepush-review.md</code>): review
+                the checked files from the commit panel, resolve findings by hand or with AI, and
+                optionally make the review mandatory for pushes (IDE and terminal).</li>
+            <li><b>Settings moved</b> to Settings → Tools → Pre-Push Checker, with pages for AI Provider,
+                Commit Message and Code Review. The tool window shows results only.</li>
+            <li>AI Provider page: pick API key, local CLI or JetBrains AI; one <b>Choose CLI…</b> button
+                detects installed CLIs.</li>
+            <li>Fixed Codex errors <code>unexpected argument '--chat'</code> and
+                <code>stdin is not a terminal</code> when codex was set up as "Other local CLI".</li>
+            <li>Commit message generation now includes checked unversioned (new) files.</li>
+        </ul>
         <h3>2.9.0 — Cleaner AI output, faster pushes, shared stats</h3>
         <ul>
             <li>AI commit messages from custom CLIs no longer include tool calls, tool signatures,
@@ -1056,11 +1082,27 @@
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageSettings"/>
         <projectService
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageGeneratorService"/>
-        <applicationConfigurable
+        <!-- Settings → Tools → Pre-Push Checker (General) with AI Provider, Commit Message, Code Review -->
+        <projectConfigurable
             parentId="tools"
+            id="prepushchecker.settings"
+            instance="com.github.prepushchecker.PrePushGeneralConfigurable"
+            displayName="Pre-Push Checker"/>
+        <applicationConfigurable
+            parentId="prepushchecker.settings"
             id="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
-            instance="com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
-            displayName="Pre-Push Checker — AI Commit Message Generator"/>
+            instance="com.github.prepushchecker.commitgen.AiProviderConfigurable"
+            displayName="AI Provider"/>
+        <applicationConfigurable
+            parentId="prepushchecker.settings"
+            id="prepushchecker.commitMessage"
+            instance="com.github.prepushchecker.commitgen.CommitMessageConfigurable"
+            displayName="Commit Message"/>
+        <projectConfigurable
+            parentId="prepushchecker.settings"
+            id="prepushchecker.review"
+            instance="com.github.prepushchecker.review.CodeReviewConfigurable"
+            displayName="Code Review"/>
 
         <checkinHandlerFactory implementation="com.github.prepushchecker.CommitShaClipboardCheckinHandler"/>
         <registryKey key="prepushchecker.scope.modules.cap"
@@ -1098,6 +1140,13 @@
                 icon="AllIcons.Actions.Lightning">
             <!-- Appears in the Vcs.MessageActionGroup (commit message area context) -->
             <add-to-group group-id="Vcs.MessageActionGroup" anchor="last"/>
+        </action>
+        <action id="PrePushChecker.ReviewChanges"
+                class="com.github.prepushchecker.review.ReviewChangesAction"
+                text="Review Changes with AI (Pre-Push Checker)"
+                description="Pre-Push Checker: Review the checked files against the repository's review rules"
+                icon="AllIcons.Actions.ShowCode">
+            <add-to-group group-id="Vcs.MessageActionGroup" anchor="after" relative-to-action="CommitMessageGenerator.Generate"/>
         </action>
     </actions>
 

@@ -12,7 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-final class PrePushCheckerSettings {
+public final class PrePushCheckerSettings {
     private static final String STRICT_SNAPSHOT_GUARD_KEY =
         "prepushchecker.strictSnapshotGuard.enabled";
     private static final String STASH_SNAPSHOT_FALLBACK_KEY =
@@ -135,7 +135,7 @@ final class PrePushCheckerSettings {
      * Writes (or refreshes) the settings file read by the hook script at push time.
      * Called on project open and whenever a setting changes via the UI.
      */
-    static void syncSettingsFile(@NotNull Project project) {
+    public static void syncSettingsFile(@NotNull Project project) {
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) return;
         syncSettingsFile(project, basePath);
@@ -143,6 +143,26 @@ final class PrePushCheckerSettings {
                 : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
             String root = repository.getRoot().getPath();
             if (!root.equals(basePath)) syncSettingsFile(project, root);
+        }
+    }
+
+    /**
+     * Review settings the hook needs when the IDE is not running: whether review is on, the IDE
+     * mandate fallback (the rule file's own {@code mandatory:} is read by the hook directly), the
+     * rule file path and its scope as an extended regex.
+     */
+    private static void appendReviewSettings(@NotNull Project project, @NotNull String repositoryRoot,
+                                             @NotNull StringBuilder content) {
+        content.append("reviewEnabled=").append(com.github.prepushchecker.review.ReviewSettings.isEnabled(project)).append('\n');
+        content.append("reviewMandatory=")
+            .append(com.github.prepushchecker.review.ReviewSettings.isMandatoryFallback(project)).append('\n');
+        String ruleFile = com.github.prepushchecker.review.ReviewSettings.ruleFilePath(project);
+        if (!ruleFile.isBlank() && !ruleFile.contains("\n")) content.append("reviewRuleFile=").append(ruleFile).append('\n');
+        com.github.prepushchecker.review.ReviewRules rules =
+            com.github.prepushchecker.review.ReviewRules.load(Path.of(repositoryRoot), ruleFile);
+        if (rules != null) {
+            String include = com.github.prepushchecker.review.ReviewRules.toExtendedRegex(rules.includeGlobs());
+            if (!include.isEmpty() && !include.contains("\n")) content.append("reviewScopeRegex=").append(include).append('\n');
         }
     }
 
@@ -167,6 +187,7 @@ final class PrePushCheckerSettings {
             if (preferredJavaHome != null) {
                 content.append("preferredJavaHome=").append(preferredJavaHome).append('\n');
             }
+            appendReviewSettings(project, repositoryRoot, content);
             String text = content.toString();
             if (Files.isRegularFile(settingsFile)
                     && text.equals(Files.readString(settingsFile, StandardCharsets.UTF_8))) {

@@ -11,7 +11,7 @@ import java.util.List;
  * of the class (an unclosed {@code [} is literal). A trailing {@code /} means
  * {@code /**}, as in Ant. Paths and patterns use {@code /} separators.
  */
-final class AntPathPattern {
+public final class AntPathPattern {
     private final String source;
     private final String[] segments;
 
@@ -20,18 +20,18 @@ final class AntPathPattern {
         this.segments = segments;
     }
 
-    static @NotNull AntPathPattern compile(@NotNull String pattern) {
+    public static @NotNull AntPathPattern compile(@NotNull String pattern) {
         String normalized = pattern.trim().replace('\\', '/');
         while (normalized.startsWith("./")) normalized = normalized.substring(2);
         if (normalized.endsWith("/")) normalized = normalized + "**";
         return new AntPathPattern(normalized, split(normalized));
     }
 
-    boolean matches(@NotNull String path) {
+    public boolean matches(@NotNull String path) {
         return matchSegments(segments, 0, split(path.replace('\\', '/')), 0);
     }
 
-    @NotNull String source() {
+    public @NotNull String source() {
         return source;
     }
 

@@ -44,7 +44,7 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
     static final long ALLOWED_DEDUPE_MILLIS = TimeUnit.SECONDS.toMillis(30);
 
     /** What blocked a push. A push can have several. */
-    enum Kind { COMPILE, LAYER, FORBIDDEN_JAR, SYMBOLIC }
+    enum Kind { COMPILE, LAYER, FORBIDDEN_JAR, SYMBOLIC, REVIEW }
 
     /** Where the verdict was produced. */
     enum Source { IDE, EXTERNAL }
@@ -59,6 +59,7 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
         public long blockedLayer;
         public long blockedJar;
         public long blockedSymbolic;
+        public long blockedReview;
         public long externalVerdicts;
         public long cacheHits;
         public long timeouts;
@@ -160,6 +161,7 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
             return Kind.LAYER;
         }
         if (error.contains("defined only in unpushed local change")) return Kind.SYMBOLIC;
+        if (error.contains("] AI review") || error.startsWith("AI review could not complete")) return Kind.REVIEW;
         return Kind.COMPILE;
     }
 
@@ -308,6 +310,7 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
                 if (kinds.containsKey(Kind.LAYER)) counters.blockedLayer++;
                 if (kinds.containsKey(Kind.FORBIDDEN_JAR)) counters.blockedJar++;
                 if (kinds.containsKey(Kind.SYMBOLIC)) counters.blockedSymbolic++;
+                if (kinds.containsKey(Kind.REVIEW)) counters.blockedReview++;
             }
             case TIMEOUT -> counters.timeouts++;
             case STALE -> counters.stale++;
@@ -325,6 +328,7 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
         from.blockedLayer -= part.blockedLayer;
         from.blockedJar -= part.blockedJar;
         from.blockedSymbolic -= part.blockedSymbolic;
+        from.blockedReview -= part.blockedReview;
         from.externalVerdicts -= part.externalVerdicts;
         from.cacheHits -= part.cacheHits;
         from.timeouts -= part.timeouts;

@@ -56,7 +56,8 @@ public final class GenerateCommitMessageAction extends AnAction {
         boolean generating = isGenerating(project);
         // Disable (grey out) when there are no staged or local changes — same
         // visual behaviour as the Copilot commit-message button.
-        boolean hasChanges = !ChangeListManager.getInstance(project).getAllChanges().isEmpty();
+        ChangeListManager clm = ChangeListManager.getInstance(project);
+        boolean hasChanges = !clm.getAllChanges().isEmpty() || !clm.getUnversionedFilesPaths().isEmpty();
         e.getPresentation().setIcon(generating ? AllIcons.Actions.Suspend : AllIcons.Actions.Lightning);
         e.getPresentation().setEnabled(hasChanges && !generating);
         e.getPresentation().setDescription(generating
@@ -85,6 +86,10 @@ public final class GenerateCommitMessageAction extends AnAction {
         List<Change> includedChanges = commitWorkflowUi != null
             ? commitWorkflowUi.getIncludedChanges()
             : Collections.emptyList();
+        // Checked unversioned (new) files: git diff does not show them, so pass them separately.
+        List<java.nio.file.Path> includedUnversioned = commitWorkflowUi != null
+            ? includedUnversionedPaths(commitWorkflowUi)
+            : Collections.emptyList();
 
         ProgressManager.getInstance().run(
             // Cancellable: cancelling kills a running AI CLI (see AiCliRunner) and drops the result.
@@ -95,7 +100,7 @@ public final class GenerateCommitMessageAction extends AnAction {
                     indicator.setText("Contacting AI provider…");
                     try {
                         String message =
-                            CommitMessageGeneratorService.getInstance(project).generate(includedChanges);
+                            CommitMessageGeneratorService.getInstance(project).generate(includedChanges, includedUnversioned);
                         indicator.checkCanceled();
                         String finalMessage = message;
                         ApplicationManager.getApplication().invokeLater(() -> {
@@ -148,6 +153,15 @@ public final class GenerateCommitMessageAction extends AnAction {
             if (workflowUi != null) return workflowUi;
         } catch (Exception ignored) {}
         return null;
+    }
+
+    /** Paths of the unversioned files checked in the commit panel. */
+    public static @NotNull List<java.nio.file.Path> includedUnversionedPaths(@NotNull CommitWorkflowUi ui) {
+        List<java.nio.file.Path> out = new java.util.ArrayList<>();
+        for (com.intellij.openapi.vcs.FilePath fp : ui.getIncludedUnversionedFiles()) {
+            out.add(java.nio.file.Path.of(fp.getPath()));
+        }
+        return out;
     }
 
     private static boolean isGenerating(@NotNull Project project) {

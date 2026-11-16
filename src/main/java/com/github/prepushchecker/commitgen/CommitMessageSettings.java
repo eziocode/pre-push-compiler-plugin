@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen;
 
+import com.github.prepushchecker.commitgen.cli.AiCli;
 import com.intellij.credentialStore.CredentialAttributes;
 import com.intellij.credentialStore.Credentials;
 import com.intellij.ide.passwordSafe.PasswordSafe;
@@ -18,6 +19,12 @@ import org.jetbrains.annotations.Nullable;
  */
 @State(name = "CommitMessageSettings", storages = @Storage("commitMessageGenerator.xml"))
 public final class CommitMessageSettings implements PersistentStateComponent<CommitMessageSettings.State> {
+
+    /** Where users find the AI settings; used in error messages. */
+    public static final String SETTINGS_PATH = "Settings → Tools → Pre-Push Checker → AI Provider";
+
+    /** Default "Other CLI" template before 2.10.0; only valid for sahaa. */
+    static final String LEGACY_SAHAA_TEMPLATE = "--chat {model?-m {model}} {prompt}";
 
     public static final class State {
         public String selectedProvider = CommitMessageProvider.Id.OPENAI.name();
@@ -44,7 +51,7 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
         // Other local CLI (sahaa, gemini, cursor-agent, …)
         public String customCliBinary     = "sahaa"; // binary name used for auto-detect
         public String customCliPath       = "";      // blank = auto-detect customCliBinary
-        public String customCliArgs       = "--chat {model?-m {model}} {prompt}"; // prompt on stdin unless {prompt} used
+        public String customCliArgs       = "";      // blank = preset of the binary; prompt on stdin unless {prompt} used
         public String customCliModel      = "";
         public String customCliModelsArgs = "";      // args that list models, one per line
 
@@ -94,7 +101,59 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
 
     @Override
     public void loadState(@NotNull State s) {
+        migrate(s);
         this.state = s;
+    }
+
+    /**
+     * Fixes saved states that ran a CLI the wrong way:
+     * <ul>
+     *   <li>"Other CLI" set to a binary that has its own provider (codex, claude, llm, gh) moves
+     *       to that provider, taking the path and model along. This was the cause of
+     *       {@code codex --chat} and bare {@code codex} ("stdin is not a terminal").</li>
+     *   <li>The old sahaa default template saved for another binary is cleared, so that
+     *       binary's preset is used.</li>
+     * </ul>
+     */
+    static void migrate(@NotNull State s) {
+        AiCli known = AiCli.byBinary(s.customCliBinary);
+        if (LEGACY_SAHAA_TEMPLATE.equals(s.customCliArgs) && known != AiCli.SAHAA) {
+            s.customCliArgs = "";
+        }
+        if (known == null || known.isCustom()) return;
+        if (CommitMessageProvider.Id.CUSTOM_CLI.name().equals(s.selectedProvider)) {
+            s.selectedProvider = known.providerId().name();
+        }
+        String path = s.customCliPath == null ? "" : s.customCliPath;
+        String model = s.customCliModel == null ? "" : s.customCliModel;
+        switch (known) {
+            case CODEX -> {
+                if (isBlank(s.codexCliPath)) s.codexCliPath = path;
+                if (isBlank(s.codexModel)) s.codexModel = model;
+            }
+            case CLAUDE -> {
+                if (isBlank(s.claudeCliPath)) s.claudeCliPath = path;
+                if (isBlank(s.claudeModel)) s.claudeModel = model;
+            }
+            case LLM -> {
+                if (isBlank(s.llmCliPath)) s.llmCliPath = path;
+                if (isBlank(s.llmModel)) s.llmModel = model;
+            }
+            case GH -> {
+                if (isBlank(s.ghCliPath)) s.ghCliPath = path;
+                if (isBlank(s.ghModel)) s.ghModel = model;
+            }
+            default -> { }
+        }
+        s.customCliBinary = AiCli.SAHAA.binaryName();
+        s.customCliPath = "";
+        s.customCliArgs = "";
+        s.customCliModel = "";
+        s.customCliModelsArgs = "";
+    }
+
+    private static boolean isBlank(@Nullable String v) {
+        return v == null || v.isBlank();
     }
 
     public @NotNull State settings() {

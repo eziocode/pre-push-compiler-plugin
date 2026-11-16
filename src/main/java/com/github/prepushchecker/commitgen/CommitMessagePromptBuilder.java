@@ -64,16 +64,85 @@ final class CommitMessagePromptBuilder {
      */
     static @NotNull Prompt build(@NotNull Project project,
                                  @NotNull List<Change> selectedChanges) throws Exception {
+        return build(project, selectedChanges, List.of());
+    }
+
+    /**
+     * Like {@link #build(Project, List)}, plus checked unversioned (new, not yet added) files,
+     * which {@code git diff} does not show. They are added to the prompt as new-file diffs.
+     */
+    static @NotNull Prompt build(@NotNull Project project,
+                                 @NotNull List<Change> selectedChanges,
+                                 @NotNull List<Path> unversioned) throws Exception {
         flushOpenDocuments();
-        DiffContext diffContext = selectedChanges.isEmpty()
-            ? collectDiff(project)
-            : collectDiffForChanges(project, selectedChanges);
+        DiffContext diffContext;
+        if (selectedChanges.isEmpty() && !unversioned.isEmpty()) {
+            diffContext = null;
+        } else {
+            diffContext = selectedChanges.isEmpty()
+                ? collectDiff(project)
+                : collectDiffForChanges(project, selectedChanges);
+        }
+        if (diffContext != null) {
+            diffContext = new DiffContext(SensitivePaths.dropExcluded(diffContext.diff()),
+                diffContext.branchName(), diffContext.repoRoot());
+        }
+        String newFiles = newFilesDiff(project, unversioned);
+        if (!newFiles.isEmpty()) {
+            diffContext = diffContext == null
+                ? new DiffContext(newFiles, resolveBranchName(project), project.getBasePath())
+                : new DiffContext(diffContext.diff() + newFiles, diffContext.branchName(), diffContext.repoRoot());
+        }
         if (diffContext == null || diffContext.diff().isBlank()) {
             throw new IllegalStateException(
                 "No staged or uncommitted changes found to generate a commit message from.\n"
                     + "Stage or modify at least one file, then try again.");
         }
         return buildForDiff(project, diffContext.diff(), diffContext.branchName(), diffContext.repoRoot());
+    }
+
+    static final int MAX_NEW_FILE_CHARS = 20_000;
+
+    /** Unified "new file" diffs for unversioned files (text files only, capped). */
+    static @NotNull String newFilesDiff(@NotNull Project project, @NotNull List<Path> files) {
+        StringBuilder sb = new StringBuilder();
+        String base = project.getBasePath();
+        for (Path file : files) {
+            try {
+                if (SensitivePaths.isExcluded(file.toString())) continue;
+                if (!Files.isRegularFile(file) || Files.size(file) > 2_000_000) continue;
+                byte[] bytes = Files.readAllBytes(file);
+                boolean binary = false;
+                for (int i = 0; i < Math.min(bytes.length, 8000); i++) if (bytes[i] == 0) { binary = true; break; }
+                String rel = base != null && file.toAbsolutePath().startsWith(Path.of(base).toAbsolutePath())
+                    ? Path.of(base).toAbsolutePath().relativize(file.toAbsolutePath()).toString().replace('\\', '/')
+                    : file.getFileName().toString();
+                if (binary) {
+                    sb.append("diff --git a/").append(rel).append(" b/").append(rel)
+                        .append("\nnew file mode 100644\nBinary files /dev/null and b/").append(rel).append(" differ\n");
+                    continue;
+                }
+                sb.append(newFileDiff(rel, new String(bytes, StandardCharsets.UTF_8)));
+            } catch (Exception ignored) {
+                // unreadable file: leave it out of the prompt
+            }
+        }
+        return sb.toString();
+    }
+
+    static @NotNull String newFileDiff(@NotNull String rel, @NotNull String content) {
+        String text = content.replace("\r\n", "\n");
+        boolean cut = text.length() > MAX_NEW_FILE_CHARS;
+        if (cut) text = text.substring(0, MAX_NEW_FILE_CHARS);
+        List<String> lines = new ArrayList<>(List.of(text.split("\n", -1)));
+        if (!lines.isEmpty() && lines.get(lines.size() - 1).isEmpty()) lines.remove(lines.size() - 1);
+        StringBuilder sb = new StringBuilder();
+        sb.append("diff --git a/").append(rel).append(" b/").append(rel).append('\n')
+            .append("new file mode 100644\n--- /dev/null\n+++ b/").append(rel).append('\n')
+            .append("@@ -0,0 +1,").append(lines.size()).append(" @@\n");
+        for (String line : lines) sb.append('+').append(line).append('\n');
+        if (cut) sb.append("+… (file cut for length)\n");
+        return sb.toString();
     }
 
     static @NotNull Prompt buildForDiff(@NotNull Project project, @NotNull String diff) {

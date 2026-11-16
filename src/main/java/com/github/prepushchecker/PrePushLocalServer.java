@@ -71,6 +71,7 @@ public final class PrePushLocalServer implements Disposable {
     static final String PORT_FILE_RELATIVE = ".idea/pre-push-checker/server.port";
     private static final Logger LOG = Logger.getInstance(PrePushLocalServer.class);
     private static final long COMPILE_TIMEOUT_SECONDS = 300L;
+    private static final long REVIEW_BUDGET_SECONDS = 200L;
     private static final long MIN_COMPILE_SECONDS = 30L;
     private static final int BACKLOG = 4;
     private static final int MAX_REQUESTED_PATHS = 2_048;
@@ -269,6 +270,7 @@ public final class PrePushLocalServer implements Disposable {
             String repositoryRoot = "";
             String expectedHead = "";
             String updatesFingerprint = "";
+            String rangeBase = "";
             String presentedToken = "";
             List<String> requestedPaths = new ArrayList<>();
             boolean pathLimitExceeded = false;
@@ -295,6 +297,12 @@ public final class PrePushLocalServer implements Disposable {
                 }
                 if (versionTwo && trimmed.startsWith("UPDATES=")) {
                     updatesFingerprint = trimmed.substring("UPDATES=".length());
+                    continue;
+                }
+                if (versionTwo && trimmed.startsWith("RANGE=")) {
+                    // Remote side of the pushed range: the AI review diffs from here.
+                    String base = trimmed.substring("RANGE=".length()).trim();
+                    if (rangeBase.isEmpty() && base.matches("[0-9a-fA-F]{7,64}")) rangeBase = base;
                     continue;
                 }
                 if (versionTwo && trimmed.startsWith("PATH=")) {
@@ -327,7 +335,8 @@ public final class PrePushLocalServer implements Disposable {
                 normalizeRoot(repositoryRoot),
                 expectedHead.trim(),
                 updatesFingerprint.trim(),
-                pathLimitExceeded ? Collections.emptyList() : requestedPaths);
+                pathLimitExceeded ? Collections.emptyList() : requestedPaths,
+                rangeBase);
             PrePushValidationCoordinator.Outcome outcome = runCompile(request);
             if (outcome.status() == PrePushValidationCoordinator.Status.COMPLETED) {
                 com.github.prepushchecker.stats.SharedStats.getInstance().maybeAskConsent(project);
@@ -372,7 +381,8 @@ public final class PrePushLocalServer implements Disposable {
             request.repositoryRoot().isBlank() ? normalizedProjectRoot() : request.repositoryRoot(),
             request.expectedHead(),
             request.updatesFingerprint(),
-            normalizedPaths);
+            normalizedPaths,
+            request.rangeBase());
         SnapshotToken before = captureSnapshot(normalizedRequest);
         String requestKey = buildRequestKey(normalizedRequest, projectScope, before);
 
@@ -384,6 +394,16 @@ public final class PrePushLocalServer implements Disposable {
                 if (!request.expectedHead().isBlank()
                         && !request.expectedHead().equals(before.actualHead())) {
                     return null;
+                }
+                // AI review gate: cheap when every pushed file was already reviewed.
+                List<String> reviewErrors = runReviewGate(normalizedRequest);
+                if (!reviewErrors.isEmpty()) {
+                    if (!snapshotMatches(normalizedRequest, before)) {
+                        CompilationErrorService.getInstance(project).clearErrors();
+                        throw new PrePushValidationCoordinator.StaleSnapshotException(
+                            "repository changed during validation; retry push");
+                    }
+                    return reviewErrors;
                 }
                 // A clean IDE build says nothing about Ant layer order, so this runs first.
                 List<String> layerErrors = runLayerCheck(normalizedRequest);
@@ -451,6 +471,32 @@ public final class PrePushLocalServer implements Disposable {
         return "";
     }
 
+    /**
+     * AI review gate for the pushed files: blocking lines, or empty to go on. An on-push review
+     * may run here; it gets {@link #REVIEW_BUDGET_SECONDS} so the compile still has time.
+     */
+    private List<String> runReviewGate(ValidationRequest request) {
+        if (request.repositoryRoot().isBlank() || request.requestedPaths().isEmpty()) {
+            return Collections.emptyList();
+        }
+        try {
+            List<Path> paths = new ArrayList<>(request.requestedPaths().size());
+            for (String p : request.requestedPaths()) paths.add(Path.of(p));
+            List<String> lines = com.github.prepushchecker.review.ReviewService.getInstance(project).checkPush(
+                Path.of(request.repositoryRoot()), paths,
+                request.rangeBase().isBlank() ? null : request.rangeBase(),
+                com.intellij.openapi.progress.ProgressManager.getInstance().getProgressIndicator(),
+                java.time.Duration.ofSeconds(REVIEW_BUDGET_SECONDS));
+            if (!lines.isEmpty()) publishErrors(lines);
+            return lines;
+        } catch (ProcessCanceledException e) {
+            throw e;
+        } catch (RuntimeException e) {
+            LOG.warn("AI review gate failed; continuing with the compile check", e);
+            return Collections.emptyList();
+        }
+    }
+
     /** Cross-layer import violations for the pushed snapshot; empty when disabled or clean. */
     private List<String> runLayerCheck(ValidationRequest request) {
         if (!PrePushCheckerSettings.isLayerCheckEnabled(project)
@@ -503,8 +549,19 @@ public final class PrePushLocalServer implements Disposable {
             .append(new TreeSet<>(IgnoredCompilationFiles.getInstance(project).enabledPaths()))
             .append('\n');
         key.append("layers=").append(layerRulesStamp(request.repositoryRoot())).append('\n');
+        key.append("review=").append(reviewStamp(request.repositoryRoot())).append('\n');
         key.append(snapshot.fingerprint());
         return key.toString();
+    }
+
+    private String reviewStamp(String repositoryRoot) {
+        if (repositoryRoot.isBlank()) return "none";
+        try {
+            return com.github.prepushchecker.review.ReviewService.getInstance(project)
+                .gateStamp(Path.of(repositoryRoot));
+        } catch (RuntimeException e) {
+            return "unreadable";
+        }
     }
 
     private String layerRulesStamp(String repositoryRoot) {
@@ -667,7 +724,8 @@ public final class PrePushLocalServer implements Disposable {
         @NotNull String repositoryRoot,
         @NotNull String expectedHead,
         @NotNull String updatesFingerprint,
-        @NotNull List<String> requestedPaths
+        @NotNull List<String> requestedPaths,
+        @NotNull String rangeBase
     ) {
         private ValidationRequest {
             requestedPaths = List.copyOf(requestedPaths);

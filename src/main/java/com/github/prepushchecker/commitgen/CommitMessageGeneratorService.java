@@ -43,8 +43,14 @@ public final class CommitMessageGeneratorService {
      * changes (same as {@link #generate()}).
      */
     public @NotNull String generate(@NotNull List<Change> selectedChanges) throws Exception {
+        return generate(selectedChanges, List.of());
+    }
+
+    /** As {@link #generate(List)}, including checked unversioned files as new files. */
+    public @NotNull String generate(@NotNull List<Change> selectedChanges,
+                                    @NotNull List<java.nio.file.Path> unversioned) throws Exception {
         CommitMessagePromptBuilder.Prompt prompt =
-            CommitMessagePromptBuilder.build(project, selectedChanges);
+            CommitMessagePromptBuilder.build(project, selectedChanges, unversioned);
         CommitMessageProvider provider = resolveProvider();
         return AiOutputSanitizer.cleanOrThrow(provider.generate(prompt.system(), prompt.user()));
     }
@@ -56,7 +62,7 @@ public final class CommitMessageGeneratorService {
     }
 
     /** The provider selected in settings (OpenAI when the stored value is unknown). */
-    static @NotNull CommitMessageProvider resolveProvider() {
+    public static @NotNull CommitMessageProvider resolveProvider() {
         CommitMessageSettings settings = CommitMessageSettings.getInstance();
         CommitMessageProvider.Id id;
         try {
@@ -68,7 +74,7 @@ public final class CommitMessageGeneratorService {
     }
 
     /** Creates the provider for {@code id}; the single place that maps ids to implementations. */
-    static @NotNull CommitMessageProvider providerFor(@NotNull CommitMessageProvider.Id id) {
+    public static @NotNull CommitMessageProvider providerFor(@NotNull CommitMessageProvider.Id id) {
         return switch (id) {
             case INTELLIJ_AI -> new IntelliJAiProvider();
             case OPENAI      -> new OpenAiProvider();

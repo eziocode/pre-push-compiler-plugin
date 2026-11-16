@@ -135,4 +135,19 @@ public class AiCliRunnerTest extends TestCase {
         assertTrue(Duration.ofNanos(System.nanoTime() - start).toSeconds() < 10);
         canceller.join();
     }
+
+    public void testErrorSummaryPrefersCliErrorOverEchoedPrompt() {
+        String out = "OpenAI Codex v0.169.0\n--------\nuser\nWrite in English, concise. Reply with ONLY the commit message text\n"
+            + "diff --git a/A.java b/A.java\n+    throw new IllegalStateException(\"file not found\");\n"
+            + "ERROR: The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.\n";
+        assertEquals("ERROR: The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account.",
+            AiCliRunner.errorSummary(out));
+    }
+
+    public void testErrorSummaryFallsBackToTheEnd() {
+        String out = "x".repeat(3000) + "\nlast words";
+        String s = AiCliRunner.errorSummary(out);
+        assertTrue(s, s.endsWith("last words"));
+        assertTrue(AiCliRunner.errorSummary("Error: stdin is not a terminal").contains("stdin is not a terminal"));
+    }
 }

@@ -3,6 +3,7 @@ package com.github.prepushchecker.commitgen.providers;
 import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -38,10 +39,22 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         "https://api.githubcopilot.com/chat/completions";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        String ghPath = CliPathResolver.resolve(s.ghCliPath, CLI_NAME);
+        return run(request, s.ghCliPath, s.ghModel);
+    }
+
+    /** Calls the Copilot API with a {@code gh} token; also used by the "Other CLI" provider. */
+    static @NotNull String run(@NotNull AiRequest request, @Nullable String configuredPath,
+                               @Nullable String model) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
+        String ghPath = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
+        if (ghPath == null) {
+            throw new IllegalStateException(
+                "GitHub CLI (gh) not found.\nInstall: brew install gh && gh auth login"
+                    + "\n\nOr set its path in " + CommitMessageSettings.SETTINGS_PATH + ".");
+        }
         String token  = getGhToken(ghPath);
 
         if (token == null || token.isBlank()) {
@@ -52,8 +65,8 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         }
 
         String body = "{"
-            + "\"model\":" + JsonUtil.quoted(s.ghModel == null || s.ghModel.isBlank() ? "gpt-4o" : s.ghModel.trim()) + ","
-            + "\"max_tokens\":300,"
+            + "\"model\":" + JsonUtil.quoted(model == null || model.isBlank() ? "gpt-4o" : model.trim()) + ","
+            + "\"max_tokens\":" + request.maxOutputTokens() + ","
             + "\"messages\":["
             + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
             + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
@@ -62,7 +75,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(COPILOT_API_URL))
             .header("Authorization",          "Bearer " + token)
             .header("Content-Type",           "application/json")
@@ -70,12 +83,12 @@ public final class GhCopilotProvider implements CommitMessageProvider {
             .header("Editor-Version",         "vscode/1.85.0")
             .header("Editor-Plugin-Version",  "copilot-chat/0.12.0")
             .header("User-Agent",             "GithubCopilot/1.155.0")
-            .timeout(Duration.ofSeconds(60))
+            .timeout(request.timeout())
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 
         HttpResponse<String> response =
-            client.send(request, HttpResponse.BodyHandlers.ofString());
+            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() == 401 || response.statusCode() == 403) {
             throw new RuntimeException(

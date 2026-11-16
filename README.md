@@ -38,6 +38,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 - **Auto-copy commit SHA to clipboard** — when validation allows a push, or after an IDE commit, the HEAD commit SHA is copied in full or short form; push-time copying is silent
 - **Push Stats** — local counters of pushes checked, allowed and blocked (by cause), per project and overall, in the tool window; manual and background builds are not counted, and nothing leaves your machine
 - **Gradle & Maven support** — detects Gradle wrapper, system Gradle, Maven wrapper, and system Maven automatically
+- **AI code review** — reviews changes against your team's rule file before push; optional mandate blocks unreviewed files (see below)
 
 ---
 
@@ -61,11 +62,11 @@ Generate a ready-to-use git commit message from your staged changes with a singl
 | **Other local CLI** | CLI's own login | sahaa, Gemini CLI, Cursor Agent, Copilot CLI, opencode — editable args template (`{model}`, `{model?…}`, `{prompt}`) |
 
 Local CLIs are auto-detected from their binary (shell PATH, Homebrew, npm/nvm/bun/volta, `~/.local/bin`, `~/.claude/local`).
-Use **Detect Installed CLIs…** in Settings to scan all of them, or the per-provider **Auto-detect** button; if a CLI is not found you can browse to its executable. The **⟳ Models** button fills the model dropdown from the CLI.
+In **Settings → Tools → Pre-Push Checker → AI Provider**, choose **Local CLI** and click **Choose CLI…**: it lists every installed CLI with path, version and sign-in state, or lets you browse to any executable. **Refresh models** fills the model list from the CLI; path, arguments, fallback key and Codex sign-in are under **Advanced**. A CLI that has its own provider (codex, claude, llm, gh) always runs the way that provider runs it, even when picked as "Other local CLI".
 
 ### Usage
 
-1. Open **Settings → Tools → AI Commit Message Generator** to choose a provider, enter your API key (stored securely in PasswordSafe), and configure commit message rules.
+1. Open **Settings → Tools → Pre-Push Checker → AI Provider** to choose a provider and enter your API key (stored securely in PasswordSafe). Commit message rules are on the **Commit Message** page.
 2. In the **Compilation Checker** tool window, click the ⚡ **Generate Commit Message with AI** button.
    *Or* open the Git Commit dialog and choose **Generate Commit Message with AI** from the commit message area action menu.
 3. The generated message is injected into the commit message field (commit dialog) or shown in a copy dialog (tool window).
@@ -81,7 +82,7 @@ Use **Detect Installed CLIs…** in Settings to scan all of them, or the per-pro
 | Auto-detect scope from file paths | ✓ enabled |
 | Extra instructions | *(empty)* |
 
-All rules are configurable per project in **Settings → Tools → AI Commit Message Generator**.
+All rules are configurable per project in **Settings → Tools → Pre-Push Checker → Commit Message**.
 
 ### Project-level rules file (shared with your team)
 
@@ -94,9 +95,44 @@ Place a markdown file at **`.github/commit-instructions.md`** (or `COMMIT_RULES.
 └── COMMIT_RULES.md              ← auto-detected fallback
 ```
 
-You can also specify a custom path in **Settings → Tools → AI Commit Message Generator → Rules file path**.
+You can also specify a custom path in **Settings → Tools → Pre-Push Checker → Commit Message → Rules file**.
 
 A starter template is included at `.github/commit-instructions.md` in this repository.
+
+---
+
+## AI Code Review
+
+Reviews changes against rules your team writes, before they are pushed. Built for cases a compiler
+cannot catch, such as a test case whose steps changed while its report description did not.
+
+1. Create the rule file: **Settings → Tools → Pre-Push Checker → Code Review → Create rule file**,
+   or write `.prepush-review.md` at the repository root and commit it:
+
+   ```markdown
+   ---
+   mandatory: true                    # block pushes until reviewed and resolved
+   paths: ["**/testcases/**/*.java"]  # only these files are reviewed
+   exclude: ["**/generated/**"]
+   ---
+   When steps are added to or removed from an existing test case, the report description
+   (the list passed to addRowToReport, or description.add(...)) must describe them.
+   ```
+
+2. In the commit panel, check the files and click **Review Changes with AI** (next to the commit
+   message button). Unversioned files are included. Only files the rule file covers are sent to the
+   AI provider chosen on the **AI Provider** page.
+3. Findings appear in the **Code Review** tab of the Compilation Checker tool window. Per finding:
+   **Go to code**, **Resolve** (you fixed it or it does not apply), or **Resolve with AI** (the fix
+   is shown as a diff and applied only when you accept; it can be undone).
+
+**Pushes.** The plugin remembers which content was reviewed (by git blob id), so unchanged content is
+never reviewed twice. When review is mandatory, a push is blocked only for the covered files that
+were not reviewed or still have open findings; the block message names them, and **Review Now** in
+the notification reviews exactly those files. **Code Review → When to review → On push** reviews
+unreviewed files during the push instead. Mandatory comes from the rule file's `mandatory:` line
+(for everyone) or, when the file does not say, from the IDE setting. A terminal push with IntelliJ
+closed and a mandatory review is blocked with a message to review from IntelliJ.
 
 ---
 
@@ -174,9 +210,9 @@ User-authored hook logic and the repository's `core.hooksPath` setting are prese
 Open **View → Tool Windows → Compilation Checker** (or click the side panel icon) to:
 
 - View errors from the last pre-push check or manual run, rendered as `FileName:line:col — message` with the full path available on hover
-- Toggle **Enable strict A/B dependency guard** for the project. It is off by default; when enabled, pushes are blocked if relevant local source/build changes could make the live working tree differ from the pushed snapshot.
-- Configure **clipboard SHA settings** — "Copy commit SHA to clipboard automatically" checkbox with sub-options for SHA format (`Full / Short`) and copy trigger (`After Push / After Commit`). When "After Commit" is selected, the SHA is copied right after an IDE commit before the push step.
-- Manage **Ignored Compilation Files**. Use **Add Files…** or right-click a navigable error and choose **Ignore File**. Checked entries remain compiled, but errors attributed to that exact project-relative file do not block local pushes. Uncheck to block again; **Remove** deletes the entry. Rules stay in local workspace state and apply across branch switches.
+- See AI review findings in the **Code Review** tab
+- **Layers** menu — Edit Layers…, Run Layer Check, Generate from build.xml…
+- **Settings…** button — opens **Settings → Tools → Pre-Push Checker**: strict A/B dependency guard, smart build, skip-when-closed, cross-layer check, clipboard SHA (format and trigger), **Ignored Files** (checked entries still compile, but their errors do not block pushes; right-click an error → **Ignore File** adds one) and usage statistics
 - See file-type icons for quick visual identification
 - **Run Check** button (hammer icon) — triggers a full project compile on demand
 - **Recheck / Repair Git Hooks** button (refresh icon) — verifies the terminal hook path and repairs missing, edited, or duplicated plugin-managed hook content
@@ -207,7 +243,7 @@ Open **View → Tool Windows → Compilation Checker** (or click the side panel 
 
 The plugin can add this IDE's anonymous Push Stats counts to a public total, so the project page
 can show how many compile errors the checker catches across all users. It asks once, on the first checked push; nothing is sent until
-you agree. Change it under *Usage Statistics* in the Compilation Checker tool window settings.
+you agree. Change it under *Usage Statistics* in Settings → Tools → Pre-Push Checker.
 
 Sent: checks passed, pushes blocked, compile errors caught, timeouts, plugin version, IDE build and
 a random install ID. Never sent: code, file names, paths, error messages, user or machine names.

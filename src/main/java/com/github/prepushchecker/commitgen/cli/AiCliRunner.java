@@ -3,6 +3,7 @@ package com.github.prepushchecker.commitgen.cli;
 import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CliPathResolver;
+import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressIndicatorProvider;
@@ -97,8 +98,8 @@ public final class AiCliRunner {
         } catch (IOException e) {
             throw new RuntimeException(
                 "Cannot start " + label + " at '" + command.get(0) + "'.\n"
-                    + "Set the CLI path in Settings → Tools → "
-                    + "Pre-Push Checker — AI Commit Message Generator, or use Auto-detect.", e);
+                    + "Set the CLI path in " + CommitMessageSettings.SETTINGS_PATH
+                    + " (Choose CLI…).", e);
         }
 
         if (result.timedOut()) {
@@ -106,10 +107,10 @@ public final class AiCliRunner {
                 label + " timed out after " + timeout.toSeconds() + " seconds.\n" + authHint);
         }
         if (result.exitCode() != 0) {
-            String detail = result.stderr().isBlank() ? result.stdout() : result.stderr();
+            String detail = errorSummary(result.stderr() + "\n" + result.stdout());
             throw new RuntimeException(
                 label + " exited with code " + result.exitCode()
-                    + (detail.isBlank() ? "" : ":\n" + AiOutputSanitizer.errorDetail(tail(detail.trim(), 2000)))
+                    + (detail.isBlank() ? "" : ":\n" + detail)
                     + "\n\n" + authHint);
         }
         return result.stdout().trim();
@@ -165,6 +166,57 @@ public final class AiCliRunner {
                 : " returned an empty response.") + "\n" + authHint);
         }
         return cleaned;
+    }
+
+    /**
+     * Final step of a CLI provider: commit messages are cleaned with {@link #requireText};
+     * structured answers (review, fix) are returned raw for
+     * {@link AiOutputSanitizer#cleanStructured}, after an empty-output check.
+     */
+    public static @NotNull String finish(@NotNull String label, @Nullable String text,
+                                         @NotNull String authHint, boolean structured) {
+        if (!structured) return requireText(label, text, authHint);
+        if (text == null || text.isBlank()) {
+            throw new RuntimeException(label + " returned an empty response.\n" + authHint);
+        }
+        return text;
+    }
+
+    /** A line the CLI itself marks as an error ({@code ERROR: …}, {@code Error: …}, {@code fatal: …}). */
+    private static final java.util.regex.Pattern ERROR_PREFIX = java.util.regex.Pattern.compile(
+        "(?i)^(?:\\[[^]]*]\\s*)?(?:error|fatal|panic)\\b\\s*[:\\-].*");
+    /** Typical failure wording, trusted only near the end of the output. */
+    private static final java.util.regex.Pattern ERROR_PHRASE = java.util.regex.Pattern.compile(
+        "(?i).*\\b(?:not supported|not logged in|not signed in|unauthori[sz]ed|invalid api key|"
+            + "rate limit|usage limit|quota|permission denied|stdin is not a terminal)\\b.*");
+    private static final int PHRASE_WINDOW = 15;
+
+    /**
+     * The part of a failed CLI's output worth showing. CLIs such as codex echo the whole prompt
+     * before the real error, so the CLI's own error lines win, then failure wording in the last
+     * lines, then the end of the output; never the start.
+     */
+    static @NotNull String errorSummary(@NotNull String output) {
+        String clean = AiOutputSanitizer.stripNoiseForErrors(output);
+        java.util.List<String> lines = new java.util.ArrayList<>();
+        for (String line : clean.split("\n")) {
+            String t = line.strip();
+            if (!t.isEmpty() && t.length() <= 400) lines.add(t);
+        }
+        java.util.LinkedHashSet<String> picked = new java.util.LinkedHashSet<>();
+        for (String t : lines) if (ERROR_PREFIX.matcher(t).matches()) picked.add(t);
+        if (picked.isEmpty()) {
+            for (String t : lines.subList(Math.max(0, lines.size() - PHRASE_WINDOW), lines.size())) {
+                if (ERROR_PHRASE.matcher(t).matches()) picked.add(t);
+            }
+        }
+        if (!picked.isEmpty()) {
+            java.util.List<String> list = new java.util.ArrayList<>(picked);
+            return String.join("\n", list.subList(Math.max(0, list.size() - 3), list.size()));
+        }
+        String end = clean.strip();
+        if (end.startsWith("{") || end.startsWith("[")) end = AiOutputSanitizer.errorDetail(end);
+        return tail(end, AiOutputSanitizer.MAX_ERROR_DETAIL);
     }
 
     private static @NotNull String tail(@NotNull String s, int max) {

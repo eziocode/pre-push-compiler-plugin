@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.extensions.PluginId;
@@ -30,8 +31,9 @@ public final class IntelliJAiProvider implements CommitMessageProvider {
     };
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
         checkPluginAvailable();
 
         Class<?> serviceClass = findServiceClass();

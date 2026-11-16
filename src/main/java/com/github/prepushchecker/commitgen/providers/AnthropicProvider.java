@@ -1,6 +1,7 @@
 package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -23,19 +24,20 @@ public final class AnthropicProvider implements CommitMessageProvider {
     private static final String ANTHROPIC_VERSION = "2023-06-01";
 
     @Override
-    public @NotNull String generate(@NotNull String systemPrompt, @NotNull String userPrompt)
-            throws Exception {
+    public @NotNull String generate(@NotNull AiRequest request) throws Exception {
+        String systemPrompt = request.system();
+        String userPrompt = request.user();
         CommitMessageSettings settings = CommitMessageSettings.getInstance();
         String apiKey = settings.loadApiKey(Id.ANTHROPIC);
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException(
-                "Anthropic API key not configured. Go to Settings → Tools → AI Commit Message Generator.");
+                "Anthropic API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
         String model = settings.settings().anthropicModel;
         // Anthropic API supports a top-level "system" field
         String body = "{"
             + "\"model\":" + JsonUtil.quoted(model) + ","
-            + "\"max_tokens\":300,"
+            + "\"max_tokens\":" + request.maxOutputTokens() + ","
             + "\"system\":" + JsonUtil.quoted(systemPrompt) + ","
             + "\"messages\":["
             + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
@@ -44,17 +46,17 @@ public final class AnthropicProvider implements CommitMessageProvider {
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest request = HttpRequest.newBuilder()
+        HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(API_URL))
             .header("x-api-key", apiKey)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("Content-Type", "application/json")
-            .timeout(Duration.ofSeconds(60))
+            .timeout(request.timeout())
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 
         HttpResponse<String> response =
-            client.send(request, HttpResponse.BodyHandlers.ofString());
+            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
                 "Anthropic API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));

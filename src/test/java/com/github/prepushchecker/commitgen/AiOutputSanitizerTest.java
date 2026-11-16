@@ -183,4 +183,36 @@ public class AiOutputSanitizerTest extends TestCase {
         assertTrue(detail.endsWith("…"));
         assertEquals("boom", AiOutputSanitizer.errorDetail("\u001B[31mboom\u001B[0m"));
     }
+
+    public void testStructuredBareJson() {
+        java.util.Map<?, ?> m = AiOutputSanitizer.cleanStructured(
+            "{\"findings\":[{\"file\":\"A.java\",\"line\":3}]}", "findings");
+        assertNotNull(m);
+        assertEquals(1, ((java.util.List<?>) m.get("findings")).size());
+    }
+
+    public void testStructuredInsideCliNoiseAndFence() {
+        String raw = "\u001B[2m[model] gpt-5 mode=chat\u001B[0m\n"
+            + "<thinking>check {\"findings\": \"no\"} draft</thinking>\n"
+            + "Sure, here is the review:\n```json\n"
+            + "{\"findings\":[{\"file\":\"B.java\",\"message\":\"Use } inside string\"}]}\n```\n"
+            + "tokens: 120 in / 40 out";
+        java.util.Map<?, ?> m = AiOutputSanitizer.cleanStructured(raw, "findings");
+        assertNotNull(m);
+        java.util.Map<?, ?> f = (java.util.Map<?, ?>) ((java.util.List<?>) m.get("findings")).get(0);
+        assertEquals("B.java", f.get("file"));
+        assertEquals("Use } inside string", f.get("message"));
+    }
+
+    public void testStructuredInsideClaudeResultEnvelope() {
+        String raw = "{\"type\":\"result\",\"result\":\"{\\\"findings\\\":[]}\"}";
+        java.util.Map<?, ?> m = AiOutputSanitizer.cleanStructured(raw, "findings");
+        assertNotNull(m);
+        assertTrue(((java.util.List<?>) m.get("findings")).isEmpty());
+    }
+
+    public void testStructuredMissingKeyIsNull() {
+        assertNull(AiOutputSanitizer.cleanStructured("{\"other\":1} no answer", "findings"));
+        assertNull(AiOutputSanitizer.cleanStructured("", "findings"));
+    }
 }

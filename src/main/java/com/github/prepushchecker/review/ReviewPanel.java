@@ -1,0 +1,342 @@
+package com.github.prepushchecker.review;
+
+import com.intellij.icons.AllIcons;
+import com.intellij.openapi.Disposable;
+import com.intellij.openapi.actionSystem.ActionManager;
+import com.intellij.openapi.actionSystem.ActionToolbar;
+import com.intellij.openapi.actionSystem.ActionUpdateThread;
+import com.intellij.openapi.actionSystem.AnAction;
+import com.intellij.openapi.actionSystem.AnActionEvent;
+import com.intellij.openapi.actionSystem.DefaultActionGroup;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.fileEditor.OpenFileDescriptor;
+import com.intellij.openapi.options.ShowSettingsUtil;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.ui.Messages;
+import com.intellij.openapi.vcs.FilePath;
+import com.intellij.openapi.vcs.changes.ChangeListManager;
+import com.intellij.openapi.vfs.LocalFileSystem;
+import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.ColoredTreeCellRenderer;
+import com.intellij.ui.JBColor;
+import com.intellij.ui.OnePixelSplitter;
+import com.intellij.ui.ScrollPaneFactory;
+import com.intellij.ui.SimpleTextAttributes;
+import com.intellij.ui.components.ActionLink;
+import com.intellij.ui.components.JBLabel;
+import com.intellij.ui.components.JBTextArea;
+import com.intellij.ui.treeStructure.Tree;
+import com.intellij.util.ui.JBUI;
+import com.intellij.util.ui.UIUtil;
+import com.intellij.util.ui.tree.TreeUtil;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
+
+import javax.swing.BoxLayout;
+import javax.swing.JPanel;
+import javax.swing.JTree;
+import javax.swing.tree.DefaultMutableTreeNode;
+import javax.swing.tree.DefaultTreeModel;
+import javax.swing.tree.TreePath;
+import java.awt.BorderLayout;
+import java.awt.FlowLayout;
+import java.awt.event.KeyAdapter;
+import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+/** "Code Review" tab: findings grouped by file, with Go to code / Resolve / Resolve with AI. */
+public final class ReviewPanel extends JPanel implements Disposable {
+
+    private final Project project;
+    private final ReviewStateStore store;
+    private final DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode();
+    private final DefaultTreeModel model = new DefaultTreeModel(rootNode);
+    private final Tree tree = new Tree(model);
+    private final JBLabel status = new JBLabel();
+    private final JBLabel detailTitle = new JBLabel();
+    private final JBTextArea detailText = new JBTextArea();
+    private final JPanel detailButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, JBUI.scale(12), 0));
+    private final JPanel details = new JPanel(new BorderLayout(0, JBUI.scale(4)));
+    private final Runnable listener = this::reload;
+
+    public ReviewPanel(@NotNull Project project) {
+        super(new BorderLayout());
+        this.project = project;
+        this.store = ReviewStateStore.getInstance(project);
+
+        DefaultActionGroup group = new DefaultActionGroup();
+        group.add(new ReviewLocalChangesAction());
+        group.add(new ClearAction());
+        group.addSeparator();
+        group.add(new OpenSettingsAction());
+        ActionToolbar toolbar = ActionManager.getInstance().createActionToolbar("PrePushReviewToolbar", group, true);
+        toolbar.setTargetComponent(this);
+
+        JPanel header = new JPanel();
+        header.setLayout(new BoxLayout(header, BoxLayout.Y_AXIS));
+        header.add(toolbar.getComponent());
+        status.setBorder(JBUI.Borders.empty(2, 8, 4, 8));
+        status.setForeground(UIUtil.getContextHelpForeground());
+        JPanel statusRow = new JPanel(new BorderLayout());
+        statusRow.add(status, BorderLayout.CENTER);
+        header.add(statusRow);
+        add(header, BorderLayout.NORTH);
+
+        tree.setRootVisible(false);
+        tree.setShowsRootHandles(true);
+        tree.setCellRenderer(new Renderer());
+        tree.getEmptyText().setText("No reviews yet");
+        tree.getEmptyText().appendSecondaryText("Review changes from the commit panel",
+            SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES, e -> new ReviewLocalChangesAction().run());
+        tree.addTreeSelectionListener(e -> showDetails());
+        tree.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent e) {
+                if (e.getClickCount() == 2) navigate(selectedFinding());
+            }
+        });
+        tree.addKeyListener(new KeyAdapter() {
+            @Override
+            public void keyPressed(KeyEvent e) {
+                if (e.getKeyCode() == KeyEvent.VK_ENTER) navigate(selectedFinding());
+            }
+        });
+
+        detailTitle.setBorder(JBUI.Borders.empty(6, 8, 0, 8));
+        detailText.setEditable(false);
+        detailText.setLineWrap(true);
+        detailText.setWrapStyleWord(true);
+        detailText.setOpaque(false);
+        detailText.setBorder(JBUI.Borders.empty(0, 8));
+        detailButtons.setBorder(JBUI.Borders.empty(2, 4, 6, 8));
+        detailButtons.add(new ActionLink("Go to code", (java.awt.event.ActionListener) e -> navigate(selectedFinding())));
+        detailButtons.add(new ActionLink("Resolve", (java.awt.event.ActionListener) e -> resolveSelected()));
+        ActionLink aiLink = new ActionLink("Resolve with AI", (java.awt.event.ActionListener) e -> fixSelected());
+        aiLink.setIcon(AllIcons.Actions.IntentionBulb, false);
+        detailButtons.add(aiLink);
+        details.add(detailTitle, BorderLayout.NORTH);
+        details.add(ScrollPaneFactory.createScrollPane(detailText, true), BorderLayout.CENTER);
+        details.add(detailButtons, BorderLayout.SOUTH);
+
+        OnePixelSplitter splitter = new OnePixelSplitter(true, "prepushchecker.review.splitter", 0.65f);
+        splitter.setFirstComponent(ScrollPaneFactory.createScrollPane(tree, true));
+        splitter.setSecondComponent(details);
+        add(splitter, BorderLayout.CENTER);
+
+        store.addListener(listener);
+        reload();
+    }
+
+    @Override
+    public void dispose() {
+        store.removeListener(listener);
+    }
+
+    // ── Model ────────────────────────────────────────────────────────────────
+
+    private void reload() {
+        String selectedId = selectedFinding() != null ? selectedFinding().id : null;
+        rootNode.removeAllChildren();
+        int open = 0;
+        int resolved = 0;
+        int files = 0;
+        for (ReviewStateStore.FileReview review : store.reviews()) {
+            files++;
+            DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(review);
+            for (ReviewFinding f : review.findings) {
+                fileNode.add(new DefaultMutableTreeNode(f));
+                if (f.isOpen()) open++; else resolved++;
+            }
+            rootNode.add(fileNode);
+        }
+        model.reload();
+        TreeUtil.expandAll(tree);
+        if (selectedId != null) select(selectedId);
+        status.setText(files == 0 ? "Review runs on the files checked in the commit panel."
+            : open + " open · " + resolved + " resolved · " + files + " file(s) reviewed");
+        status.setForeground(open > 0 ? JBColor.namedColor("Label.errorForeground", JBColor.RED)
+            : UIUtil.getContextHelpForeground());
+        showDetails();
+    }
+
+    private void select(String findingId) {
+        TreeUtil.treeNodeTraverser(rootNode).traverse().forEach(n -> {
+            if (n instanceof DefaultMutableTreeNode d && d.getUserObject() instanceof ReviewFinding f && f.id.equals(findingId)) {
+                tree.setSelectionPath(new TreePath(d.getPath()));
+            }
+        });
+    }
+
+    private @Nullable ReviewFinding selectedFinding() {
+        TreePath path = tree.getSelectionPath();
+        if (path == null) return null;
+        Object o = ((DefaultMutableTreeNode) path.getLastPathComponent()).getUserObject();
+        return o instanceof ReviewFinding f ? f : null;
+    }
+
+    private void showDetails() {
+        ReviewFinding f = selectedFinding();
+        if (f == null) {
+            details.setVisible(false);
+            return;
+        }
+        details.setVisible(true);
+        detailTitle.setText((f.rule.isBlank() ? "Finding" : f.rule) + (f.resolved ? "  (resolved)" : ""));
+        detailTitle.setIcon(f.resolved ? AllIcons.RunConfigurations.TestPassed : AllIcons.General.Warning);
+        String text = f.message + (f.suggestion.isBlank() ? "" : "\n\nSuggested fix: " + f.suggestion);
+        detailText.setText(text);
+        detailText.setCaretPosition(0);
+        for (int i = 1; i < detailButtons.getComponentCount(); i++) detailButtons.getComponent(i).setVisible(!f.resolved);
+    }
+
+    // ── Actions ──────────────────────────────────────────────────────────────
+
+    private void navigate(@Nullable ReviewFinding f) {
+        if (f == null) return;
+        VirtualFile vf = LocalFileSystem.getInstance().findFileByPath(f.path);
+        if (vf == null) return;
+        new OpenFileDescriptor(project, vf, Math.max(0, f.line - 1), 0).navigate(true);
+    }
+
+    private void resolveSelected() {
+        ReviewFinding f = selectedFinding();
+        if (f == null || f.resolved) return;
+        FileDocumentManager.getInstance().saveAllDocuments();
+        resolveInBackground(project, f.id, "manual");
+    }
+
+    private void fixSelected() {
+        ReviewFinding f = selectedFinding();
+        if (f == null || f.resolved) return;
+        ReviewFixer.fixWithAi(project, f);
+    }
+
+    /** Marks a finding resolved; approval moves to the file's current content (hashed off the EDT). */
+    static void resolveInBackground(@NotNull Project project, @NotNull String findingId, @NotNull String by) {
+        ReviewStateStore store = ReviewStateStore.getInstance(project);
+        ReviewFinding f = store.finding(findingId);
+        if (f == null) return;
+        String path = f.path;
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            Path file = Path.of(path);
+            Path root = ReviewGit.repoRoot(file);
+            if (root != null) root = ReviewGit.canonical(root);
+            String id = null;
+            if (root != null) {
+                Map<String, String> ids = ReviewGit.hashObjects(root, List.of(ReviewGit.relative(root, file)));
+                id = ids.values().stream().findFirst().orElse(null);
+            }
+            store.resolve(findingId, by, id);
+        });
+    }
+
+    private final class ReviewLocalChangesAction extends AnAction {
+        ReviewLocalChangesAction() {
+            super("Review Local Changes", "Review every changed and new file against the review rules",
+                AllIcons.Actions.Execute);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            e.getPresentation().setEnabled(!ReviewService.getInstance(project).isRunning());
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            run();
+        }
+
+        void run() {
+            ChangeListManager clm = ChangeListManager.getInstance(project);
+            List<Path> files = new ArrayList<>();
+            ReviewChangesAction.addChanges(files, clm.getAllChanges());
+            for (FilePath fp : clm.getUnversionedFilesPaths()) files.add(Path.of(fp.getPath()));
+            FileDocumentManager.getInstance().saveAllDocuments();
+            ReviewService.getInstance(project).reviewInBackground(files, null);
+        }
+    }
+
+    private final class ClearAction extends AnAction {
+        ClearAction() {
+            super("Clear Reviews", "Forget every review; files must be reviewed again before a mandatory push",
+                AllIcons.Actions.GC);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            e.getPresentation().setEnabled(!store.reviews().isEmpty());
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            if (Messages.showOkCancelDialog(project, "Forget all reviews? Files must be reviewed again before "
+                    + "a push when review is mandatory.", "Clear Reviews", "Clear", Messages.getCancelButton(),
+                Messages.getQuestionIcon()) == Messages.OK) {
+                store.clear();
+            }
+        }
+    }
+
+    private final class OpenSettingsAction extends AnAction {
+        OpenSettingsAction() {
+            super("Review Settings…", "Rule file, review mode and mandate", AllIcons.General.Settings);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.BGT;
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, "Code Review");
+        }
+    }
+
+    private final class Renderer extends ColoredTreeCellRenderer {
+        @Override
+        public void customizeCellRenderer(@NotNull JTree tree, Object value, boolean selected, boolean expanded,
+                                          boolean leaf, int row, boolean hasFocus) {
+            Object o = value instanceof DefaultMutableTreeNode n ? n.getUserObject() : null;
+            if (o instanceof ReviewStateStore.FileReview r) {
+                Path p = Path.of(r.path);
+                append(p.getFileName().toString(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                String base = project.getBasePath();
+                String dir = p.getParent() == null ? "" : p.getParent().toString().replace('\\', '/');
+                if (base != null && dir.startsWith(base)) dir = dir.substring(base.length()).replaceFirst("^/", "");
+                if (!dir.isEmpty()) append("  " + dir, SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                long open = r.findings.stream().filter(ReviewFinding::isOpen).count();
+                if (open > 0) {
+                    setIcon(AllIcons.General.Warning);
+                    append("  " + open + " open", SimpleTextAttributes.ERROR_ATTRIBUTES);
+                } else {
+                    setIcon(AllIcons.RunConfigurations.TestPassed);
+                    append(r.findings.isEmpty() ? "  no issues" : "  all resolved", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                }
+            } else if (o instanceof ReviewFinding f) {
+                setIcon(f.resolved ? AllIcons.Actions.Checked : AllIcons.General.BalloonWarning);
+                if (f.line > 0) append(f.line + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                String msg = f.message.length() > 160 ? f.message.substring(0, 160) + "…" : f.message;
+                append(msg, f.resolved
+                    ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_STRIKEOUT, UIUtil.getInactiveTextColor())
+                    : SimpleTextAttributes.REGULAR_ATTRIBUTES);
+            }
+        }
+    }
+}
