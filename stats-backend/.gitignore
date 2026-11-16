@@ -1,0 +1,4 @@
+node_modules/
+.catalystrc
+.build/
+*.log

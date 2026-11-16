@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pre-Push Compilation Checker</title>
+<meta name="description" content="IntelliJ plugin that blocks git pushes when compilation errors exist. Live, anonymous usage totals from all users who opted in.">
+<style>
+  :root {
+    --bg: #f7f7f5;
+    --surface: #ffffff;
+    --text: #1b1d1f;
+    --muted: #5c6166;
+    --border: #e3e3df;
+    --accent: #2f6fde;
+    --good: #1f8a4c;
+    --warn: #b4541a;
+    --radius: 14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #121315;
+      --surface: #1b1d20;
+      --text: #ececea;
+      --muted: #9da3a8;
+      --border: #2b2e32;
+      --accent: #78a6ff;
+      --good: #5ccc8a;
+      --warn: #f09a5f;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #121315;
+    --surface: #1b1d20;
+    --text: #ececea;
+    --muted: #9da3a8;
+    --border: #2b2e32;
+    --accent: #78a6ff;
+    --good: #5ccc8a;
+    --warn: #f09a5f;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  main { max-width: 920px; margin: 0 auto; padding: 56px 16px 64px; }
+  header h1 { font-size: clamp(1.7rem, 4.5vw, 2.4rem); line-height: 1.15; margin: 0 0 12px; letter-spacing: -0.02em; }
+  header p { margin: 0; color: var(--muted); max-width: 60ch; }
+  .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+  .btn {
+    display: inline-flex; align-items: center; min-height: 40px; padding: 0 16px;
+    border-radius: 999px; border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); text-decoration: none; font-weight: 600; font-size: 0.95rem;
+  }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :root[data-theme="dark"] .btn.primary { color: #0c1220; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #0c1220; } }
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  section.stats { margin-top: 48px; }
+  .stats-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 14px; }
+  .stats-head h2 { font-size: 1.05rem; margin: 0; }
+  .meta { color: var(--muted); font-size: 0.85rem; }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  @media (max-width: 760px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 18px 18px 16px; min-width: 0;
+  }
+  .tile .label { color: var(--muted); font-size: 0.85rem; }
+  .tile .value {
+    display: block; margin-top: 6px; font-size: clamp(1.6rem, 5vw, 2.2rem); font-weight: 700;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em; overflow-wrap: anywhere;
+  }
+  .tile.good .value { color: var(--good); }
+  .tile.warn .value { color: var(--warn); }
+  .tile .hint { display: block; margin-top: 4px; color: var(--muted); font-size: 0.8rem; }
+  .value.loading { color: var(--muted) !important; }
+
+  .note { margin-top: 18px; color: var(--muted); font-size: 0.85rem; max-width: 70ch; }
+  .note a, footer a { color: var(--accent); }
+  footer { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Pre-Push Compilation Checker</h1>
+    <p>An IntelliJ IDEA plugin that compiles your changes before <code>git push</code> and blocks the push when there are compilation errors, so broken code never reaches the remote.</p>
+    <div class="actions">
+      <a class="btn primary" href="https://plugins.jetbrains.com/plugin/31297-pre-push-compilation-checker/">Get it on JetBrains Marketplace</a>
+      <a class="btn" href="https://github.com/eziocode/pre-push-compiler-plugin">Source on GitHub</a>
+    </div>
+  </header>
+
+  <section class="stats" aria-labelledby="stats-title">
+    <div class="stats-head">
+      <h2 id="stats-title">Across all users</h2>
+      <span class="meta" id="stats-meta" aria-live="polite">Loading…</span>
+    </div>
+    <div class="grid">
+      <div class="tile">
+        <span class="label">Users</span>
+        <span class="value loading" data-key="users">—</span>
+        <span class="hint">installs sharing counts</span>
+      </div>
+      <div class="tile good">
+        <span class="label">Successful compiles</span>
+        <span class="value loading" data-key="compilesOk">—</span>
+        <span class="hint">pushes checked and clean</span>
+      </div>
+      <div class="tile warn">
+        <span class="label">Issues caught</span>
+        <span class="value loading" data-key="issuesCaught">—</span>
+        <span class="hint">compile errors stopped before push</span>
+      </div>
+      <div class="tile">
+        <span class="label">Blocked pushes</span>
+        <span class="value loading" data-key="blocked">—</span>
+        <span class="hint">pushes held back with errors</span>
+      </div>
+    </div>
+    <p class="note">Counts come only from users who chose <em>Share</em> when the plugin asked. The plugin sends a random install id, plugin and IDE version, and four numbers — never code, file names, project names or repository details. You can turn it off any time in the plugin's settings under <em>Usage statistics</em>.</p>
+  </section>
+
+  <footer>
+    Totals refresh live when available; otherwise they come from a snapshot updated every 6 hours.
+  </footer>
+</main>
+
+<script>
+  // Live endpoint (Catalyst function); see stats-backend/README.md.
+  var TOTALS_URL = 'https://crmqaautomation-60066298984.development.catalystserverless.in/server/prepush_stats/totals';
+  var SNAPSHOT_URL = 'stats.json';
+  var KEYS = ['users', 'compilesOk', 'issuesCaught', 'blocked'];
+
+  function fetchJson(url, timeoutMs) {
+    var ctrl = 'AbortController' in window ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { ctrl.abort(); }, timeoutMs) : null;
+    return fetch(url, { cache: 'no-cache', signal: ctrl ? ctrl.signal : undefined })
+      .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function (data) {
+        if (!data || typeof data.users !== 'number') throw new Error('bad shape');
+        return data;
+      })
+      .finally(function () { if (timer) clearTimeout(timer); });
+  }
+
+  function ago(iso) {
+    var t = Date.parse(iso);
+    if (isNaN(t)) return '';
+    var s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 90) return 'just now';
+    var m = Math.round(s / 60); if (m < 90) return m + ' min ago';
+    var h = Math.round(m / 60); if (h < 36) return h + ' h ago';
+    return Math.round(h / 24) + ' days ago';
+  }
+
+  function render(data, source) {
+    var fmt = new Intl.NumberFormat();
+    KEYS.forEach(function (k) {
+      var el = document.querySelector('[data-key="' + k + '"]');
+      var v = Number(data[k]);
+      el.textContent = isFinite(v) ? fmt.format(v) : '—';
+      el.classList.remove('loading');
+    });
+    var when = ago(data.updatedAt);
+    document.getElementById('stats-meta').textContent =
+      (source === 'live' ? 'Live' : 'Snapshot') + (when ? ' · updated ' + when : '');
+  }
+
+  function fail() {
+    document.getElementById('stats-meta').textContent = 'Stats unavailable right now';
+  }
+
+  var live = TOTALS_URL.indexOf('<') === -1
+    ? fetchJson(TOTALS_URL, 4000).then(function (d) { render(d, 'live'); })
+    : Promise.reject(new Error('endpoint not configured'));
+
+  live.catch(function () {
+    return fetchJson(SNAPSHOT_URL, 4000).then(function (d) { render(d, 'snapshot'); });
+  }).catch(fail);
+</script>
+</body>
+</html>

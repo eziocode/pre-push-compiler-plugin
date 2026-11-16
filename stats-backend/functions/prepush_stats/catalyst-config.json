@@ -1,0 +1,11 @@
+{
+  "deployment": {
+    "name": "prepush_stats",
+    "type": "advancedio",
+    "stack": "node20",
+    "env_variables": {}
+  },
+  "execution": {
+    "main": "index.js"
+  }
+}
