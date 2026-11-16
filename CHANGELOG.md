@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-11-16
+
 ### Fixed
 
 - **Same code review result on every AI provider.** The default steps/description rule only
