@@ -7,7 +7,7 @@ import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
-import com.intellij.openapi.progress.EmptyProgressIndicator;
+import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.LocalFileSystem;
@@ -47,7 +47,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Per-project TCP-loopback server that lets external git clients (terminal, Sublime Merge, …)
@@ -72,6 +71,7 @@ public final class PrePushLocalServer implements Disposable {
     static final String PORT_FILE_RELATIVE = ".idea/pre-push-checker/server.port";
     private static final Logger LOG = Logger.getInstance(PrePushLocalServer.class);
     private static final long COMPILE_TIMEOUT_SECONDS = 300L;
+    private static final long MIN_COMPILE_SECONDS = 30L;
     private static final int BACKLOG = 4;
     private static final int MAX_REQUESTED_PATHS = 2_048;
     private static final int CLIENT_SO_TIMEOUT_MS = 305 * 1000;
@@ -131,6 +131,15 @@ public final class PrePushLocalServer implements Disposable {
      * atomic moves (e.g. some network mounts).
      */
     private void writePortFileAtomically(Path portFile, int port) throws IOException {
+        String content = port + "\n" + authToken + "\n";
+        try {
+            if (Files.isRegularFile(portFile)
+                    && content.equals(Files.readString(portFile, StandardCharsets.UTF_8))) {
+                return; // unchanged
+            }
+        } catch (IOException unreadable) {
+            // rewrite below
+        }
         Path tmp = portFile.resolveSibling(portFile.getFileName().toString() + ".tmp");
         Files.deleteIfExists(tmp);
         try {
@@ -140,7 +149,7 @@ public final class PrePushLocalServer implements Disposable {
         } catch (UnsupportedOperationException nonPosix) {
             Files.createFile(tmp);
         }
-        Files.writeString(tmp, port + "\n" + authToken + "\n", StandardCharsets.UTF_8);
+        Files.writeString(tmp, content, StandardCharsets.UTF_8);
         try {
             Files.move(tmp, portFile,
                 StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -320,6 +329,9 @@ public final class PrePushLocalServer implements Disposable {
                 updatesFingerprint.trim(),
                 pathLimitExceeded ? Collections.emptyList() : requestedPaths);
             PrePushValidationCoordinator.Outcome outcome = runCompile(request);
+            if (outcome.status() == PrePushValidationCoordinator.Status.COMPLETED) {
+                com.github.prepushchecker.stats.SharedStats.getInstance().maybeAskConsent(project);
+            }
             if (outcome.status() == PrePushValidationCoordinator.Status.TIMEOUT) {
                 out.write("TIMEOUT validation-timeout\n");
             } else if (outcome.status() == PrePushValidationCoordinator.Status.STALE) {
@@ -349,7 +361,7 @@ public final class PrePushLocalServer implements Disposable {
     private PrePushValidationCoordinator.Outcome runCompile(ValidationRequest request) {
         ApplicationManager.getApplication().invokeAndWait(
             () -> FileDocumentManager.getInstance().saveAllDocuments(),
-            ModalityState.defaultModalityState());
+            ModalityState.any());
 
         List<String> normalizedPaths = restrictToProjectRoots(
             normalizeRequestedPaths(request.requestedPaths()));
@@ -449,11 +461,7 @@ public final class PrePushLocalServer implements Disposable {
             project, request.repositoryRoot(), request.requestedPaths());
         List<String> blocking = DiagnosticPathMatcher.filterIgnored(project, raw);
         if (blocking.isEmpty()) return Collections.emptyList();
-        ApplicationManager.getApplication().invokeAndWait(() -> {
-            if (!project.isDisposed()) {
-                CompilationErrorService.getInstance(project).setErrors(raw);
-            }
-        }, ModalityState.defaultModalityState());
+        publishErrors(raw);
         return blocking;
     }
 
@@ -576,47 +584,59 @@ public final class PrePushLocalServer implements Disposable {
     }
 
     private List<String> runCompileSingleFlight(List<String> requestedPaths) throws TimeoutException {
+        long startNanos = System.nanoTime();
+        ProgressIndicator owner = PrePushValidationCoordinator.ownerIndicator();
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
-            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, null);
+            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, owner);
         if (strictSnapshot.wasChecked()) {
             List<String> rawSnapshotErrors = strictSnapshot.errors();
             List<String> snapshotErrors = DiagnosticPathMatcher.filterIgnored(project, rawSnapshotErrors);
-            ApplicationManager.getApplication().invokeAndWait(() -> {
-                if (!project.isDisposed()) {
-                    CompilationErrorService.getInstance(project).setErrors(rawSnapshotErrors);
-                }
-            }, ModalityState.defaultModalityState());
+            publishErrors(rawSnapshotErrors);
             return snapshotErrors;
         }
 
-        AtomicReference<CompileScope> scopeRef = new AtomicReference<>();
-        AtomicReference<CompilerManager> compilerRef = new AtomicReference<>();
-        ApplicationManager.getApplication().invokeAndWait(() -> {
-            if (project.isDisposed()) {
-                throw new IllegalStateException("project disposed");
-            }
-            FileDocumentManager.getInstance().saveAllDocuments();
-            CompilerManager compiler = CompilerManager.getInstance(project);
-            List<VirtualFile> files = resolveFiles(requestedPaths);
-            if (!files.isEmpty()) {
-                LocalFileSystem.getInstance().refreshFiles(files);
-            }
-            CompileScope scope = files.isEmpty()
-                ? compiler.createProjectCompileScope(project)
-                : CompilationSupport.buildPushScope(project, files, compiler);
-            compilerRef.set(compiler);
-            scopeRef.set(scope);
-        }, ModalityState.defaultModalityState());
+        // One budget for the whole request: whatever the strict guard used is gone.
+        long remainingSeconds = COMPILE_TIMEOUT_SECONDS
+            - TimeUnit.NANOSECONDS.toSeconds(System.nanoTime() - startNanos);
+        if (remainingSeconds < MIN_COMPILE_SECONDS) {
+            throw new TimeoutException("Not enough time left to compile after the snapshot check.");
+        }
 
-        CompilerManager compiler = compilerRef.get();
-        CompileScope scope = scopeRef.get();
+        // Only the save needs the EDT. ModalityState.any(): an open dialog must not stall a push.
+        ApplicationManager.getApplication().invokeAndWait(() -> {
+            if (!project.isDisposed()) {
+                FileDocumentManager.getInstance().saveAllDocuments();
+            }
+        }, ModalityState.any());
+        if (project.isDisposed()) {
+            throw new IllegalStateException("project disposed");
+        }
+        owner.checkCanceled();
+
+        // VFS refresh and scope building run here, on the validation thread, not the EDT.
+        List<VirtualFile> files = resolveFiles(requestedPaths);
+        if (!files.isEmpty()) {
+            LocalFileSystem.getInstance().refreshFiles(files);
+        }
+        CompilerManager compiler = CompilerManager.getInstance(project);
+        CompileScope scope = files.isEmpty()
+            ? ReadActions.compute(() -> compiler.createProjectCompileScope(project))
+            : CompilationSupport.buildPushScope(project, files, compiler);
         return IdeCompilationRunner.runWithRecovery(
             project,
-            new EmptyProgressIndicator(),
+            owner,
             compiler,
             notification -> compiler.make(scope, notification),
-            COMPILE_TIMEOUT_SECONDS,
+            remainingSeconds,
             TimeUnit.SECONDS);
+    }
+
+    private void publishErrors(List<String> errors) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (!project.isDisposed()) {
+                CompilationErrorService.getInstance(project).setErrors(errors);
+            }
+        }, ModalityState.any());
     }
 
     private static List<VirtualFile> resolveFiles(List<String> paths) {

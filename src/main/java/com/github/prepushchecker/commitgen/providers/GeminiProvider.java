@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -57,12 +58,12 @@ public final class GeminiProvider implements CommitMessageProvider {
             client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "Gemini API error " + response.statusCode() + ": " + response.body());
+                "Gemini API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
         }
         String text = JsonUtil.extractStringAtPath(
             response.body(), "candidates", 0, "content", "parts", 0, "text");
         if (text == null) {
-            throw new RuntimeException("Unexpected Gemini response: " + response.body());
+            throw new RuntimeException("Unexpected Gemini response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return text.trim();
     }

@@ -32,9 +32,9 @@ import java.util.function.Supplier;
  * in the Compilation Checker settings.
  */
 public final class CommitShaClipboardCheckinHandler extends CheckinHandlerFactory {
-    private static final int STABLE_READS_REQUIRED = 3;
+    private static final int STABLE_READS_REQUIRED = 2;
     private static final int MAX_SHA_READS = 30;
-    private static final long SHA_READ_DELAY_MILLIS = 100L;
+    private static final long SHA_READ_DELAY_MILLIS = 250L; // each read spawns git: ~40 per commit, not ~100
     private static final long SHA_WATCH_DURATION_MILLIS = 10_000L;
     private static final ConcurrentHashMap<Project, Long> WATCH_GENERATIONS = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<Project, Future<?>> WATCHERS = new ConcurrentHashMap<>();

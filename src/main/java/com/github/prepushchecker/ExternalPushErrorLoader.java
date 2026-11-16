@@ -44,6 +44,11 @@ public final class ExternalPushErrorLoader {
     private static final Logger LOG = Logger.getInstance(ExternalPushErrorLoader.class);
     private static final String NOTIFICATION_GROUP_ID = "Pre-Push Compilation Checker";
     private static final String EXIT_TRAILER = "[pre-push-checker] exit=";
+    private static final String STATUS_TRAILER = "[pre-push-checker] status=";
+    private static final String SOURCE_TRAILER = "[pre-push-checker] source=";
+    /** A log older than this when the IDE starts describes an old push; don't re-announce it. */
+    static final long STARTUP_MAX_AGE_MILLIS = java.util.concurrent.TimeUnit.MINUTES.toMillis(10);
+    private static final String LAST_SEEN_KEY = "prepushchecker.hookLog.lastSeenMtime.";
 
     // Per-project "last parsed" fingerprint (size + mtime) to avoid re-parsing the same log
     // when the VFS fires multiple events for one write.
@@ -91,8 +96,9 @@ public final class ExternalPushErrorLoader {
             return;
         }
 
-        // Initial load — covers the case where the user pushed externally before opening the IDE.
-        loadFromLogIfFailed(project, logFile);
+        // Initial load — covers the case where the user pushed externally just before opening
+        // the IDE. Old logs (or ones already seen in an earlier session) are not re-announced.
+        loadFromLog(project, logFile, true);
 
         // Listen for future hook runs while the IDE is open.
         VirtualFileManager.getInstance().addAsyncFileListener(
@@ -111,6 +117,10 @@ public final class ExternalPushErrorLoader {
     }
 
     static void loadFromLogIfFailed(@NotNull Project project, @NotNull Path logFile) {
+        loadFromLog(project, logFile, false);
+    }
+
+    static void loadFromLog(@NotNull Project project, @NotNull Path logFile, boolean startup) {
         if (project.isDisposed() || !Files.isRegularFile(logFile)) {
             return;
         }
@@ -124,14 +134,35 @@ public final class ExternalPushErrorLoader {
             }
             LAST_PARSED.put(key, new long[] { size, mtime });
 
+            com.intellij.ide.util.PropertiesComponent props =
+                com.intellij.ide.util.PropertiesComponent.getInstance(project);
+            String seenKey = LAST_SEEN_KEY + Integer.toHexString(logFile.toAbsolutePath().toString().hashCode());
+            long lastSeen = props.getLong(seenKey, 0L);
+            props.setValue(seenKey, Long.toString(mtime));
+
             HookLogParseResult parsedLog = parseHookLog(project, logFile);
             Integer exitCode = parsedLog.exitCode();
             if (exitCode == null) {
                 return;
             }
+            // Counted even when old: PushStats dedupes by log stamp across restarts.
             recordExternalStats(project, logFile, mtime, exitCode, parsedLog);
+            if (startup && (mtime == lastSeen
+                    || System.currentTimeMillis() - mtime > STARTUP_MAX_AGE_MILLIS)) {
+                return; // an old push: don't re-announce it or replace current errors
+            }
             if (exitCode == 0) {
                 CompilationErrorService.getInstance(project).clearErrors();
+                return;
+            }
+
+            String status = parsedLog.status();
+            if ("TIMEOUT".equals(status) || "STALE".equals(status)) {
+                String message = "TIMEOUT".equals(status)
+                    ? "Pre-push check timed out; the push was stopped. Retry the push."
+                    : "Repository changed during the pre-push check; the push was stopped. Retry the push.";
+                CompilationErrorService.getInstance(project).setErrors(List.of(message));
+                notifyCheckIncomplete(project, message);
                 return;
             }
 
@@ -158,7 +189,7 @@ public final class ExternalPushErrorLoader {
         int exitCode,
         @NotNull HookLogParseResult parsedLog
     ) {
-        if (parsedLog.ideHandled()) return;
+        if (parsedLog.fromIde()) return;
         try {
             PushStats stats = PushStats.getInstance();
             if (!stats.claimLogStamp(logFile.toAbsolutePath().toString(), mtime)) return;
@@ -185,6 +216,8 @@ public final class ExternalPushErrorLoader {
         try (BufferedReader reader = Files.newBufferedReader(logFile, StandardCharsets.UTF_8)) {
             Integer exitCode = null;
             boolean ideHandled = false;
+            String status = null;
+            boolean fromIde = false;
             List<String> compilerLines = new ArrayList<>();
 
             String raw;
@@ -196,11 +229,20 @@ public final class ExternalPushErrorLoader {
                     exitCode = parseExitCode(line);
                     continue;
                 }
+                if (line.startsWith(STATUS_TRAILER)) {
+                    status = line.substring(STATUS_TRAILER.length()).trim();
+                    continue;
+                }
+                if (line.startsWith(SOURCE_TRAILER)) {
+                    fromIde = "ide".equals(line.substring(SOURCE_TRAILER.length()).trim());
+                    continue;
+                }
 
                 if (isIdeVerdictLine(line)) ideHandled = true;
                 compilerLines.add(line);
             }
-            return new HookLogParseResult(exitCode, parseErrors(project, compilerLines), compilerLines, ideHandled);
+            return new HookLogParseResult(
+                exitCode, status, fromIde || ideHandled, parseErrors(project, compilerLines), compilerLines);
         }
     }
 
@@ -325,35 +367,13 @@ public final class ExternalPushErrorLoader {
         }
     }
 
-    private static final class HookLogParseResult {
-        private final Integer exitCode;
-        private final List<String> errors;
-        private final List<String> rawLines;
-        private final boolean ideHandled;
-
-        private HookLogParseResult(@Nullable Integer exitCode, @NotNull List<String> errors,
-                                   @NotNull List<String> rawLines, boolean ideHandled) {
-            this.exitCode = exitCode;
-            this.errors = errors;
-            this.rawLines = rawLines;
-            this.ideHandled = ideHandled;
-        }
-
-        private boolean ideHandled() {
-            return ideHandled;
-        }
-
-        private @Nullable Integer exitCode() {
-            return exitCode;
-        }
-
-        private @NotNull List<String> errors() {
-            return errors;
-        }
-
-        private @NotNull List<String> rawLines() {
-            return rawLines;
-        }
+    private record HookLogParseResult(
+        @Nullable Integer exitCode,
+        @Nullable String status,
+        boolean fromIde,
+        @NotNull List<String> errors,
+        @NotNull List<String> rawLines
+    ) {
     }
 
     @Nullable
@@ -389,6 +409,16 @@ public final class ExternalPushErrorLoader {
             }
         }
         return normalizedPath;
+    }
+
+    private static void notifyCheckIncomplete(@NotNull Project project, @NotNull String message) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            NotificationGroupManager.getInstance()
+                .getNotificationGroup(NOTIFICATION_GROUP_ID)
+                .createNotification("Pre-push check did not finish", message, NotificationType.WARNING)
+                .notify(project);
+        });
     }
 
     private static void notifyUser(@NotNull Project project, int errorCount) {

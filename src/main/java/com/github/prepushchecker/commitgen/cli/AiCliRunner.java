@@ -1,7 +1,11 @@
 package com.github.prepushchecker.commitgen.cli;
 
 import com.github.prepushchecker.ProcessExecution;
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CliPathResolver;
+import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressIndicatorProvider;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -12,6 +16,13 @@ import java.time.Duration;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 /**
@@ -22,10 +33,20 @@ import java.util.stream.Stream;
  * killed on timeout — the failure mode that made earlier subprocess-based
  * providers hang. The process runs in an empty temp directory so agentic
  * CLIs do not index or modify the user's repository.</p>
+ *
+ * <p>When called under a progress indicator (a cancellable background task),
+ * cancelling the task kills the CLI process tree right away.</p>
  */
 public final class AiCliRunner {
 
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(120);
+    private static final long CANCEL_POLL_MILLIS = 100;
+    private static final AtomicInteger THREAD_COUNTER = new AtomicInteger(1);
+    private static final ExecutorService RUNNER = Executors.newCachedThreadPool(r -> {
+        Thread t = new Thread(r, "PrePushChecker-AiCli-" + THREAD_COUNTER.getAndIncrement());
+        t.setDaemon(true);
+        return t;
+    });
 
     private AiCliRunner() {}
 
@@ -71,7 +92,8 @@ public final class AiCliRunner {
 
         ProcessExecution.Result result;
         try {
-            result = ProcessExecution.run(pb, timeout, stdin == null ? "" : stdin);
+            result = runCancellable(pb, timeout, stdin == null ? "" : stdin,
+                ProgressIndicatorProvider.getGlobalProgressIndicator());
         } catch (IOException e) {
             throw new RuntimeException(
                 "Cannot start " + label + " at '" + command.get(0) + "'.\n"
@@ -87,28 +109,62 @@ public final class AiCliRunner {
             String detail = result.stderr().isBlank() ? result.stdout() : result.stderr();
             throw new RuntimeException(
                 label + " exited with code " + result.exitCode()
-                    + (detail.isBlank() ? "" : ":\n" + tail(detail.trim(), 2000))
+                    + (detail.isBlank() ? "" : ":\n" + AiOutputSanitizer.errorDetail(tail(detail.trim(), 2000)))
                     + "\n\n" + authHint);
         }
         return result.stdout().trim();
     }
 
-    /** Throws when the CLI produced no usable text. */
-    public static @NotNull String requireText(@NotNull String label, @Nullable String text,
-                                              @NotNull String authHint) {
-        String cleaned = stripCodeFence(text == null ? "" : text.trim());
-        if (cleaned.isBlank()) {
-            throw new RuntimeException(label + " returned an empty response.\n" + authHint);
+    /**
+     * Runs the process on a helper thread and waits on this one, so a cancelled
+     * {@code indicator} interrupts the helper; {@link ProcessExecution} then
+     * kills the process tree in its cleanup.
+     */
+    static @NotNull ProcessExecution.Result runCancellable(@NotNull ProcessBuilder pb,
+                                                           @NotNull Duration timeout,
+                                                           @Nullable String stdin,
+                                                           @Nullable ProgressIndicator indicator)
+            throws IOException, InterruptedException {
+        if (indicator == null) return ProcessExecution.run(pb, timeout, stdin);
+        Future<ProcessExecution.Result> future = RUNNER.submit(() -> ProcessExecution.run(pb, timeout, stdin));
+        try {
+            while (true) {
+                if (indicator.isCanceled()) {
+                    future.cancel(true);
+                    throw new ProcessCanceledException();
+                }
+                try {
+                    return future.get(CANCEL_POLL_MILLIS, TimeUnit.MILLISECONDS);
+                } catch (TimeoutException ignored) {
+                    // poll again
+                }
+            }
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof IOException io) throw io;
+            if (cause instanceof InterruptedException ie) throw ie;
+            if (cause instanceof RuntimeException re) throw re;
+            throw new IOException(cause);
+        } catch (InterruptedException e) {
+            future.cancel(true);
+            throw e;
         }
-        return cleaned;
     }
 
-    /** Removes a single wrapping ``` fence, which chatty CLIs sometimes add. */
-    static @NotNull String stripCodeFence(@NotNull String text) {
-        if (!text.startsWith("```") || !text.endsWith("```") || text.length() < 6) return text;
-        int firstNewline = text.indexOf('\n');
-        if (firstNewline < 0) return text;
-        return text.substring(firstNewline + 1, text.length() - 3).trim();
+    /**
+     * Cleans CLI output (thinking, tool calls, transcript lines, JSON events …)
+     * with {@link AiOutputSanitizer} and throws when no usable text is left.
+     */
+    public static @NotNull String requireText(@NotNull String label, @Nullable String text,
+                                              @NotNull String authHint) {
+        String cleaned = AiOutputSanitizer.clean(text);
+        if (cleaned.isBlank()) {
+            boolean hadOutput = text != null && !text.isBlank();
+            throw new RuntimeException(label + (hadOutput
+                ? ": " + AiOutputSanitizer.EMPTY_RESULT_MESSAGE
+                : " returned an empty response.") + "\n" + authHint);
+        }
+        return cleaned;
     }
 
     private static @NotNull String tail(@NotNull String s, int max) {

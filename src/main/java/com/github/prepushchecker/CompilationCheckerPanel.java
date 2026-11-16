@@ -79,7 +79,9 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final Project project;
     private final @Nullable ToolWindow toolWindow;
     private final @Nullable Icon baseToolWindowIcon;
-    private final DefaultListModel<String> listModel = new DefaultListModel<>();
+    private final java.util.concurrent.atomic.AtomicBoolean runCheckInProgress =
+        new java.util.concurrent.atomic.AtomicBoolean();
+    private final com.intellij.ui.CollectionListModel<String> listModel = new com.intellij.ui.CollectionListModel<>();
     private final JBLabel statusLabel = new JBLabel(" ");
     private final JBLabel updatedLabel = new JBLabel("");
     private final CheckBoxList<String> ignoredFilesList = new IgnoredFilesList();
@@ -297,14 +299,17 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
 
     private void onServiceUpdate() {
         List<String> errors = CompilationErrorService.getInstance(project).getErrors();
-        listModel.clear();
-        errors.forEach(listModel::addElement);
-        updateStatus();
+        // One replace event instead of a clear plus one add event per row.
+        listModel.replaceAll(errors);
+        updateStatus(errors);
     }
 
     private void updateStatus() {
+        updateStatus(CompilationErrorService.getInstance(project).getErrors());
+    }
+
+    private void updateStatus(List<String> errors) {
         CompilationErrorService service = CompilationErrorService.getInstance(project);
-        List<String> errors = service.getErrors();
         long infra = errors.stream().filter(CompilationEntryRenderer::isInfrastructureMessage).count();
         String text;
         Icon icon;
@@ -362,10 +367,6 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         JBCheckBox strictGuard = new JBCheckBox("Strict A/B dependency guard");
         strictGuard.setSelected(PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project));
 
-        JBCheckBox stashFallback = new JBCheckBox("Allow stash fallback");
-        stashFallback.setSelected(PrePushCheckerSettings.isStashSnapshotFallbackEnabled(project));
-        stashFallback.setEnabled(strictGuard.isSelected());
-
         JBCheckBox smartBuild = new JBCheckBox("Smart background build");
         smartBuild.setSelected(PrePushCheckerSettings.isSmartBuildEnabled(project));
 
@@ -422,20 +423,16 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         };
         updateShaSubPanel.run();
 
-        strictGuard.addActionListener(event -> {
-            boolean selected = strictGuard.isSelected();
-            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, selected);
-            stashFallback.setEnabled(selected);
-        });
-        stashFallback.addActionListener(event ->
-            PrePushCheckerSettings.setStashSnapshotFallbackEnabled(project, stashFallback.isSelected()));
+        strictGuard.addActionListener(event ->
+            PrePushCheckerSettings.setStrictSnapshotGuardEnabled(project, strictGuard.isSelected()));
         smartBuild.addActionListener(event -> {
             PrePushCheckerSettings.setSmartBuildEnabled(project, smartBuild.isSelected());
             SmartBuildService.getInstance(project).settingChanged();
         });
         disableFallback.addActionListener(event -> {
             PrePushCheckerSettings.setBuildToolFallbackDisabled(project, disableFallback.isSelected());
-            PrePushCheckerSettings.syncSettingsFile(project);
+            ApplicationManager.getApplication().executeOnPooledThread(
+                () -> PrePushCheckerSettings.syncSettingsFile(project));
         });
         copySha.addActionListener(event -> {
             PrePushCheckerSettings.setCopyCommitShaEnabled(project, copySha.isSelected());
@@ -458,10 +455,6 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         addRow(options, withHelp(strictGuard,
             "Validates committed HEAD in a clean temporary worktree when local source or "
                 + "build changes could hide failures in the pushed snapshot."), 0);
-        addRow(options, withHelp(stashFallback,
-            "Used only when a snapshot worktree cannot be created: stashes local changes, "
-                + "compiles HEAD, then restores them. Off by default because worktree "
-                + "validation is safer."), 20);
         addRow(options, withHelp(smartBuild,
             "Compiles changed sources in the background once the IDE has been idle for a while "
                 + "(or after a short pause in a long editing session). Never runs while debugging, "
@@ -496,6 +489,18 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         ignoredHint.setBorder(JBUI.Borders.emptyBottom(4));
         addRow(options, ignoredHint, 0);
         addRow(options, createIgnoredFilesPanel(), 0);
+
+        addRow(options, new TitledSeparator("Usage Statistics"), 0);
+        com.github.prepushchecker.stats.SharedStats stats =
+            com.github.prepushchecker.stats.SharedStats.getInstance();
+        JBCheckBox shareStats = new JBCheckBox("Share anonymous counts");
+        shareStats.setSelected(stats.getConsent() == com.github.prepushchecker.stats.SharedStats.Consent.YES);
+        shareStats.addActionListener(event -> stats.setConsent(shareStats.isSelected()));
+        addRow(options, withHelp(shareStats,
+            "Adds this IDE's Push Stats counts to the public total on the project's GitHub page: "
+                + "checks passed, pushes blocked, compile errors caught, timeouts, plugin and IDE "
+                + "version, with a random install ID. No code, file names, paths, messages or "
+                + "project names. Push Stats… shows this IDE's own counts."), 0);
 
         JBScrollPane scroll = new JBScrollPane(options,
             ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
@@ -584,8 +589,14 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                     List<String> errors = DiagnosticPathMatcher.filterIgnored(project, raw);
                     ApplicationManager.getApplication().invokeLater(() -> {
                         if (project.isDisposed()) return;
-                        // Keep existing compile results unless there is something to show.
-                        if (!errors.isEmpty()) CompilationErrorService.getInstance(project).setErrors(raw);
+                        // Replace earlier layer results (a clean run clears them); keep compile errors.
+                        CompilationErrorService service = CompilationErrorService.getInstance(project);
+                        List<String> merged = new java.util.ArrayList<>();
+                        for (String entry : service.getErrors()) {
+                            if (!CrossLayerImportCheck.isLayerDiagnostic(entry)) merged.add(entry);
+                        }
+                        merged.addAll(raw);
+                        service.setErrors(merged);
                         NotificationGroupManager.getInstance()
                             .getNotificationGroup("Pre-Push Compilation Checker")
                             .createNotification("Cross-layer import check",
@@ -997,7 +1008,13 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         }
 
         @Override
+        public void update(@NotNull AnActionEvent e) {
+            e.getPresentation().setEnabled(!runCheckInProgress.get());
+        }
+
+        @Override
         public void actionPerformed(@NotNull AnActionEvent e) {
+            if (!runCheckInProgress.compareAndSet(false, true)) return;
             ProgressManager.getInstance().run(
                 new Task.Backgroundable(project, "Running Compilation Check", true) {
                     @Override
@@ -1009,6 +1026,11 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                             compiler,
                             notification -> compiler.make(
                                 compiler.createProjectCompileScope(project), notification));
+                    }
+
+                    @Override
+                    public void onFinished() {
+                        runCheckInProgress.set(false);
                     }
                 });
         }
@@ -1093,7 +1115,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
     private final class ReportAction extends AnAction {
 
         private static final String ISSUES_NEW_URL =
-            "https://github.com/eziocode/IntelliJ-Plugins/issues/new";
+            "https://github.com/eziocode/pre-push-compiler-plugin/issues/new";
 
         ReportAction() {
             // Not a warning glyph: it sat next to the bypass warning and read as a status icon.
@@ -1144,7 +1166,7 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
         public void actionPerformed(@NotNull AnActionEvent e) {
             com.intellij.openapi.progress.ProgressManager.getInstance().run(
                 new com.intellij.openapi.progress.Task.Backgroundable(
-                        project, "Generating Commit Message with AI", false) {
+                        project, "Generating Commit Message with AI", true) {
                     @Override
                     public void run(
                             @NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
@@ -1153,10 +1175,11 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                         try {
                             String message =
                                 CommitMessageGeneratorService.getInstance(project).generate();
+                            indicator.checkCanceled();
                             String finalMessage = message;
                             com.intellij.openapi.application.ApplicationManager
                                 .getApplication().invokeLater(() -> {
-                                    if (project.isDisposed()) return;
+                                    if (project.isDisposed() || indicator.isCanceled()) return;
                                     com.intellij.openapi.ui.Messages.showMultilineInputDialog(
                                         project,
                                         "Generated commit message (copy into your commit dialog):",
@@ -1165,7 +1188,10 @@ final class CompilationCheckerPanel extends JPanel implements Disposable {
                                         AllIcons.Actions.Lightning,
                                         null);
                                 }, com.intellij.openapi.application.ModalityState.defaultModalityState());
+                        } catch (com.intellij.openapi.progress.ProcessCanceledException cancelled) {
+                            throw cancelled;
                         } catch (Exception ex) {
+                            if (indicator.isCanceled()) return;
                             com.intellij.openapi.application.ApplicationManager
                                 .getApplication().invokeLater(() -> {
                                     if (project.isDisposed()) return;

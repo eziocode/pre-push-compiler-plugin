@@ -75,6 +75,14 @@ final class CrossLayerImportCheck {
         return toProjectPaths(project, root, run(root, relative, false));
     }
 
+    /** {@code true} for an entry this check produced (violations, jar diagnostics, rules errors). */
+    static boolean isLayerDiagnostic(@NotNull String entry) {
+        return entry.contains("] Layer violation: ")
+            || entry.contains("Forbidden jar: ")
+            || entry.contains("] Layer rules error: ")
+            || entry.contains("] Layer rules unreadable: ");
+    }
+
     /** Scans every layered file at HEAD (tool window action). */
     static @NotNull List<String> scanAll(@NotNull Project project, @NotNull String repositoryRoot) {
         Path root = Path.of(repositoryRoot);
@@ -426,7 +434,28 @@ final class CrossLayerImportCheck {
     }
 
     /** Streams the full listing: ProcessExecution caps output, which would silently drop files. */
+    /** Last {@code ls-tree} result per repository, keyed by HEAD and roots: pushes reuse it. */
+    private static final Map<Path, Map.Entry<String, Set<String>>> HEAD_FILES_CACHE =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
     private static @NotNull Set<String> listHeadJavaFiles(@NotNull Path repositoryRoot, @NotNull List<String> roots) {
+        String head = GitOperations.headSha(repositoryRoot.toString());
+        String key = head == null ? null : head + "|" + roots;
+        if (key != null) {
+            Map.Entry<String, Set<String>> cached = HEAD_FILES_CACHE.get(repositoryRoot);
+            if (cached != null && cached.getKey().equals(key)) return cached.getValue();
+        }
+        Set<String> files = listHeadJavaFilesUncached(repositoryRoot, roots);
+        if (key != null && !files.isEmpty()) {
+            HEAD_FILES_CACHE.put(repositoryRoot,
+                Map.entry(key, java.util.Collections.unmodifiableSet(new LinkedHashSet<>(files))));
+        }
+        return files;
+    }
+
+    private static @NotNull Set<String> listHeadJavaFilesUncached(
+        @NotNull Path repositoryRoot, @NotNull List<String> roots
+    ) {
         List<String> command = new ArrayList<>(List.of("git", "ls-tree", "-r", "-z", "--name-only", "HEAD", "--"));
         for (String root : roots) command.add(root.isEmpty() ? "." : root);
         Set<String> files = new LinkedHashSet<>();

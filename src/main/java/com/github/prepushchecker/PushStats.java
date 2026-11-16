@@ -27,8 +27,8 @@ import java.util.function.LongSupplier;
  * and why, and how often the clean-verdict cache answered. Only a push attempt that this plugin
  * validated is counted. Manual builds, smart background builds and bypassed pushes are not.
  *
- * <p>Nothing leaves the machine. State is stored in {@code prePushStats.xml} and is not synced
- * between machines. Every counted verdict also writes one {@code [push-stats]} line to idea.log.
+ * <p>Stored in {@code prePushStats.xml} and not synced between machines. Anonymous counts are
+ * shared only with the user's consent (see {@code stats.SharedStats}). Every counted verdict also writes one {@code [push-stats]} line to idea.log.
  */
 @Service(Service.Level.APP)
 @State(name = "PrePushStats", storages = @Storage(value = "prePushStats.xml", roamingType = RoamingType.DISABLED))
@@ -212,6 +212,13 @@ public final class PushStats implements PersistentStateComponent<PushStats.State
         addEvent(projectName, result, kinds, source, branch, now);
         LOG.info("[push-stats] project=" + projectName + " verdict=" + result
             + " kinds=" + describe(kinds) + " cacheHit=" + cacheHit + " source=" + source);
+        // Opt-in public total: fed from here so it follows the same dedupe rules.
+        com.github.prepushchecker.stats.SharedStats.counted(switch (result) {
+            case ALLOWED -> com.github.prepushchecker.stats.SharedStats.Verdict.ALLOWED;
+            case BLOCKED -> com.github.prepushchecker.stats.SharedStats.Verdict.BLOCKED;
+            case TIMEOUT -> com.github.prepushchecker.stats.SharedStats.Verdict.TIMEOUT;
+            default -> com.github.prepushchecker.stats.SharedStats.Verdict.OTHER;
+        }, result == Result.BLOCKED ? errors.size() : 0);
         return true;
     }
 

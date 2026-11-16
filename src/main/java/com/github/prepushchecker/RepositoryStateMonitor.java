@@ -1,6 +1,5 @@
 package com.github.prepushchecker;
 
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
@@ -25,6 +24,15 @@ public final class RepositoryStateMonitor {
         this.project = project;
     }
 
+    /** Git fires GIT_REPO_CHANGE in bursts (fetch, index refresh, commit). Coalesce them. */
+    private static final long DEBOUNCE_MILLIS = 2_000L;
+    /** Hook repair spawns several git processes; once a minute per root is plenty. */
+    private static final long REPAIR_INTERVAL_MILLIS = 60_000L;
+
+    private final java.util.Map<String, java.util.concurrent.ScheduledFuture<?>> pending =
+        new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.Map<String, Long> lastRepairAt = new java.util.concurrent.ConcurrentHashMap<>();
+
     public void start() {
         if (!started.compareAndSet(false, true)) return;
         project.getMessageBus().connect(project).subscribe(
@@ -32,24 +40,39 @@ public final class RepositoryStateMonitor {
             repository -> {
                 if (project.isDisposed()) return;
                 // Restores the snapshot verdict of the new state, or clears stale errors.
+                // SmartBuildService debounces on its own.
                 SmartBuildService.getInstance(project).repositoryChanged();
-                String root = repository.getRoot().getPath();
-                PrePushLocalServer server = project.getService(PrePushLocalServer.class);
-                if (server != null) server.publishPortFile(root);
-                ExternalPushErrorLoader.watchRepository(project, root);
-                ApplicationManager.getApplication().executeOnPooledThread(() -> {
-                    try {
-                        if (project.isDisposed()) return;
-                        PrePushCheckerSettings.syncSettingsFile(project, root);
-                        GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(root);
-                        if (!result.isSuccess()) {
-                            HookNotifier.showNotInstalled(project, List.of(result));
-                        }
-                    } catch (Throwable failure) {
-                        LOG.warn("Could not refresh pre-push integration for " + root, failure);
-                    }
-                });
+                scheduleRefresh(repository.getRoot().getPath());
             });
+    }
+
+    private void scheduleRefresh(@NotNull String root) {
+        pending.compute(root, (key, previous) -> {
+            if (previous != null) previous.cancel(false);
+            return com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService()
+                .schedule(() -> refresh(root), DEBOUNCE_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        });
+    }
+
+    private void refresh(@NotNull String root) {
+        pending.remove(root);
+        try {
+            if (project.isDisposed()) return;
+            PrePushLocalServer server = project.getService(PrePushLocalServer.class);
+            if (server != null) server.publishPortFile(root);
+            ExternalPushErrorLoader.watchRepository(project, root);
+            PrePushCheckerSettings.syncSettingsFile(project, root);
+            long now = System.currentTimeMillis();
+            Long last = lastRepairAt.get(root);
+            if (last != null && now - last < REPAIR_INTERVAL_MILLIS) return;
+            lastRepairAt.put(root, now);
+            GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(root);
+            if (!result.isSuccess()) {
+                HookNotifier.showNotInstalled(project, List.of(result));
+            }
+        } catch (Throwable failure) {
+            LOG.warn("Could not refresh pre-push integration for " + root, failure);
+        }
     }
 
     public static void runStartup(@NotNull Project project) {

@@ -1,6 +1,5 @@
 package com.github.prepushchecker;
 
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessage;
@@ -8,7 +7,6 @@ import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
-import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.VirtualFile;
@@ -35,8 +33,9 @@ final class CompilationSupport {
         @NotNull Collection<VirtualFile> files,
         @NotNull CompilerManager compilerManager
     ) {
-        return ApplicationManager.getApplication().runReadAction(
-            (Computable<CompileScope>) () -> {
+        // Background threads only (ReadActions). Callers: the pre-push validation thread.
+        return ReadActions.compute(
+            () -> {
                 ProjectFileIndex fileIndex = ProjectFileIndex.getInstance(project);
                 ModuleManager moduleManager = ModuleManager.getInstance(project);
                 Set<Module> modules = new LinkedHashSet<>();

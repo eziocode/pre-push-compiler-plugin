@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -55,11 +56,11 @@ public final class OllamaProvider implements CommitMessageProvider {
         }
         if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "Ollama error " + response.statusCode() + ": " + response.body());
+                "Ollama error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
         }
         String content = JsonUtil.extractStringAtPath(response.body(), "message", "content");
         if (content == null) {
-            throw new RuntimeException("Unexpected Ollama response: " + response.body());
+            throw new RuntimeException("Unexpected Ollama response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return content.trim();
     }

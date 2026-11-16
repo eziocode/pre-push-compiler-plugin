@@ -6,3 +6,5 @@ graphify-out/
 .graphify_cache/
 .intellijPlatform/
 .github/commit-instructions.md
+node_modules/
+.catalystrc

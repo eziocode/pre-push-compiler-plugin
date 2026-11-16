@@ -5,7 +5,6 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.projectRoots.Sdk;
 import com.intellij.openapi.roots.ProjectRootManager;
-import com.intellij.openapi.util.Computable;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
@@ -168,7 +167,12 @@ final class PrePushCheckerSettings {
             if (preferredJavaHome != null) {
                 content.append("preferredJavaHome=").append(preferredJavaHome).append('\n');
             }
-            Files.writeString(settingsFile, content.toString(), StandardCharsets.UTF_8);
+            String text = content.toString();
+            if (Files.isRegularFile(settingsFile)
+                    && text.equals(Files.readString(settingsFile, StandardCharsets.UTF_8))) {
+                return; // unchanged: no write, no VFS event
+            }
+            Files.writeString(settingsFile, text, StandardCharsets.UTF_8);
         } catch (IOException ignored) {
             // Non-fatal; hook falls back to default (fallback enabled).
         }
@@ -222,11 +226,21 @@ final class PrePushCheckerSettings {
     private static String resolveProjectJavaHome(@NotNull Project project) {
         // Project SDK belongs to the IntelliJ project model. ProjectActivity executes on a
         // background coroutine in current IDEs, so this lookup needs explicit read access.
-        String homePath = ApplicationManager.getApplication().runReadAction(
-            (Computable<String>) () -> {
-                Sdk sdk = ProjectRootManager.getInstance(project).getProjectSdk();
-                return sdk == null ? null : sdk.getHomePath();
-            });
+        java.util.concurrent.Callable<String> sdkHome = () -> {
+            Sdk sdk = ProjectRootManager.getInstance(project).getProjectSdk();
+            return sdk == null ? null : sdk.getHomePath();
+        };
+        String homePath;
+        if (ApplicationManager.getApplication().isDispatchThread()) {
+            // The EDT may read the project model directly; ReadActions is background-only.
+            try {
+                homePath = sdkHome.call();
+            } catch (Exception e) {
+                homePath = null;
+            }
+        } else {
+            homePath = ReadActions.compute(sdkHome);
+        }
         if (homePath == null || homePath.isBlank()) return null;
         Path javaBin = Path.of(homePath, "bin", "java");
         if (!Files.isExecutable(javaBin)) return null;

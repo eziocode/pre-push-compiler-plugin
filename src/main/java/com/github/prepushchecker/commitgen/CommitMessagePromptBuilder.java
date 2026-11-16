@@ -6,21 +6,20 @@ import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ContentRevision;
+import com.github.prepushchecker.ProcessExecution;
 import git4idea.repo.GitRepository;
 import git4idea.repo.GitRepositoryManager;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -115,9 +114,10 @@ final class CommitMessagePromptBuilder {
             FileDocumentManager.getInstance().saveAllDocuments();
             return;
         }
+        // any(): a modal dialog (e.g. the commit dialog) must not block the save and hang this task.
         ApplicationManager.getApplication().invokeAndWait(
             () -> FileDocumentManager.getInstance().saveAllDocuments(),
-            ModalityState.defaultModalityState()
+            ModalityState.any()
         );
     }
 
@@ -667,6 +667,8 @@ final class CommitMessagePromptBuilder {
      * Runs {@code git <args>} in the given directory and returns stdout.
      * Returns {@code null} on error (non-zero exit, exception, or timeout).
      */
+    private static final Duration GIT_TIMEOUT = Duration.ofSeconds(30);
+
     @Nullable
     static String runGitInDir(@NotNull String dir, String... args) {
         String[] cmd = new String[args.length + 1];
@@ -677,17 +679,10 @@ final class CommitMessagePromptBuilder {
             pb.directory(Path.of(dir).toFile());
             pb.redirectErrorStream(false);
             CliPathResolver.injectAugmentedPath(pb);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining("\n"));
-            }
-            // drain stderr silently
-            proc.getErrorStream().transferTo(java.io.OutputStream.nullOutputStream());
-            boolean done = proc.waitFor(30, TimeUnit.SECONDS);
-            if (!done) { proc.destroyForcibly(); return null; }
-            return proc.exitValue() == 0 ? out : null;
+            // Output is drained on separate threads, so the timeout holds even when git
+            // writes more than the pipe buffer or hangs (e.g. on an index lock).
+            ProcessExecution.Result result = ProcessExecution.run(pb, GIT_TIMEOUT);
+            return result.isSuccess() ? result.stdout() : null;
         } catch (Exception e) {
             return null;
         }

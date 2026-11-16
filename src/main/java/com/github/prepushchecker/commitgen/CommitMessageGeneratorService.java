@@ -46,23 +46,29 @@ public final class CommitMessageGeneratorService {
         CommitMessagePromptBuilder.Prompt prompt =
             CommitMessagePromptBuilder.build(project, selectedChanges);
         CommitMessageProvider provider = resolveProvider();
-        return provider.generate(prompt.system(), prompt.user());
+        return AiOutputSanitizer.cleanOrThrow(provider.generate(prompt.system(), prompt.user()));
     }
 
     /** Convenience overload for testing with a custom diff string. */
     public @NotNull String generateForDiff(@NotNull String diff) throws Exception {
         CommitMessagePromptBuilder.Prompt prompt = CommitMessagePromptBuilder.buildForDiff(project, diff);
-        return resolveProvider().generate(prompt.system(), prompt.user());
+        return AiOutputSanitizer.cleanOrThrow(resolveProvider().generate(prompt.system(), prompt.user()));
     }
 
-    private @NotNull CommitMessageProvider resolveProvider() {
+    /** The provider selected in settings (OpenAI when the stored value is unknown). */
+    static @NotNull CommitMessageProvider resolveProvider() {
         CommitMessageSettings settings = CommitMessageSettings.getInstance();
         CommitMessageProvider.Id id;
         try {
             id = CommitMessageProvider.Id.valueOf(settings.settings().selectedProvider);
-        } catch (IllegalArgumentException e) {
+        } catch (IllegalArgumentException | NullPointerException e) {
             id = CommitMessageProvider.Id.OPENAI;
         }
+        return providerFor(id);
+    }
+
+    /** Creates the provider for {@code id}; the single place that maps ids to implementations. */
+    static @NotNull CommitMessageProvider providerFor(@NotNull CommitMessageProvider.Id id) {
         return switch (id) {
             case INTELLIJ_AI -> new IntelliJAiProvider();
             case OPENAI      -> new OpenAiProvider();

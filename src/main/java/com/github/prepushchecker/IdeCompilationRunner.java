@@ -22,6 +22,8 @@ final class IdeCompilationRunner {
     private static final Logger LOG = Logger.getInstance(IdeCompilationRunner.class);
     private static final long WAIT_SLICE_MILLIS = 250L;
     private static final long DEFAULT_TIMEOUT_SECONDS = 300L;
+    private static final java.util.regex.Pattern THROWABLE =
+        java.util.regex.Pattern.compile("\\b(?:java|kotlin)\\.[\\w.]*(?:exception|error)\\b");
 
     private IdeCompilationRunner() {
     }
@@ -54,12 +56,19 @@ final class IdeCompilationRunner {
         @NotNull TimeUnit unit
     ) throws TimeoutException {
         try {
-            long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
+            long startNanos = System.nanoTime();
+            long deadlineNanos = startNanos + unit.toNanos(timeout);
             AttemptResult initial =
                 runCompilation(project, indicator, initialCompilation, deadlineNanos);
             RecoveryOutcome outcome = recover(project, initial, () -> {
-                LOG.info("IDE compilation reported errors; rebuilding project once "
-                    + "before publishing an authoritative result.");
+                long remaining = deadlineNanos - System.nanoTime();
+                if (remaining < (deadlineNanos - startNanos) / 2) {
+                    LOG.info("IDE compilation failed without file locations, but too little "
+                        + "time is left for a clean rebuild; reporting the incremental result.");
+                    return initial;
+                }
+                LOG.info("IDE compilation failed without file locations; rebuilding project "
+                    + "once before publishing an authoritative result.");
                 indicator.setText("Rebuilding project to verify compiler errors");
                 return runCompilation(
                     project, indicator, compilerManager::rebuild, deadlineNanos);
@@ -92,6 +101,11 @@ final class IdeCompilationRunner {
         }
     }
 
+    /**
+     * A clean rebuild wipes the JPS caches and recompiles the whole project. That is only worth
+     * its cost when the incremental build failed without telling us where (internal compiler or
+     * JPS cache trouble). Ordinary file-located errors are real and are returned immediately.
+     */
     static @NotNull RecoveryOutcome recover(
         @NotNull AttemptResult initial,
         @NotNull AttemptSupplier cleanRebuild
@@ -99,7 +113,10 @@ final class IdeCompilationRunner {
         if (initial.aborted() || initial.errorCount() <= 0) {
             return new RecoveryOutcome(initial, false, "");
         }
-        return new RecoveryOutcome(cleanRebuild.get(), true, "initial compiler errors");
+        if (!looksLikeInfrastructureFailure(initial.errors())) {
+            return new RecoveryOutcome(initial, false, "file-located compiler errors");
+        }
+        return new RecoveryOutcome(cleanRebuild.get(), true, "compiler infrastructure failure");
     }
 
     static @NotNull RecoveryOutcome recover(
@@ -112,7 +129,26 @@ final class IdeCompilationRunner {
             return new RecoveryOutcome(initial, false,
                 initial.errorCount() > 0 ? "only ignored compiler errors" : "");
         }
-        return new RecoveryOutcome(cleanRebuild.get(), true, "initial blocking compiler errors");
+        return recover(initial, cleanRebuild);
+    }
+
+    static boolean looksLikeInfrastructureFailure(@NotNull List<String> errors) {
+        if (errors.isEmpty()) return true;
+        for (String error : errors) {
+            if (error == null) continue;
+            String lower = error.toLowerCase(java.util.Locale.ROOT);
+            if (lower.startsWith("[unknown]")
+                    || lower.contains("unknown compiler error")
+                    || lower.contains("internal error")
+                    || lower.contains("cannot start compiler")
+                    || lower.contains("caches are corrupted")
+                    || lower.contains("cache corrupted")
+                    || (!lower.startsWith("[") && THROWABLE.matcher(lower).find())
+                    || lower.contains("outofmemoryerror")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static @NotNull AttemptResult runCompilation(
@@ -148,10 +184,9 @@ final class IdeCompilationRunner {
                 latch.countDown();
             });
 
-        ModalityState modality = indicator.getModalityState();
-        application.invokeAndWait(
-            startCompilation,
-            modality != null ? modality : ModalityState.defaultModalityState());
+        // ModalityState.any(): starting the build only schedules it; an open modal dialog
+        // (Settings, commit) must not hold a push check hostage until it is closed.
+        application.invokeAndWait(startCompilation, ModalityState.any());
 
         try {
             while (true) {

@@ -7,6 +7,7 @@ import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
@@ -86,7 +87,8 @@ public final class GenerateCommitMessageAction extends AnAction {
             : Collections.emptyList();
 
         ProgressManager.getInstance().run(
-            new Task.Backgroundable(project, "Generating Commit Message with AI", false) {
+            // Cancellable: cancelling kills a running AI CLI (see AiCliRunner) and drops the result.
+            new Task.Backgroundable(project, "Generating Commit Message with AI", true) {
                 @Override
                 public void run(@NotNull ProgressIndicator indicator) {
                     indicator.setIndeterminate(true);
@@ -94,9 +96,10 @@ public final class GenerateCommitMessageAction extends AnAction {
                     try {
                         String message =
                             CommitMessageGeneratorService.getInstance(project).generate(includedChanges);
+                        indicator.checkCanceled();
                         String finalMessage = message;
                         ApplicationManager.getApplication().invokeLater(() -> {
-                            if (project.isDisposed()) return;
+                            if (project.isDisposed() || indicator.isCanceled()) return;
                             if (commitWorkflowUi != null) {
                                 commitWorkflowUi.getCommitMessageUi().setText(finalMessage);
                             } else {
@@ -110,7 +113,10 @@ public final class GenerateCommitMessageAction extends AnAction {
                                     null);
                             }
                         }, ModalityState.any());
+                    } catch (ProcessCanceledException cancelled) {
+                        throw cancelled;
                     } catch (Exception ex) {
+                        if (indicator.isCanceled()) return;
                         ApplicationManager.getApplication().invokeLater(() -> {
                             if (project.isDisposed()) return;
                             String msg = ex.getMessage() != null

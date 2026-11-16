@@ -2,6 +2,7 @@ package com.github.prepushchecker.commitgen.providers;
 
 import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -86,13 +87,13 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         }
         if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "GitHub Copilot API error " + response.statusCode() + ": " + response.body());
+                "GitHub Copilot API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
         }
 
         String content = JsonUtil.extractStringAtPath(
             response.body(), "choices", 0, "message", "content");
         if (content == null) {
-            throw new RuntimeException("Unexpected Copilot response: " + response.body());
+            throw new RuntimeException("Unexpected Copilot response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return content.trim();
     }

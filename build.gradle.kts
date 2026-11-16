@@ -23,6 +23,7 @@ dependencies {
         bundledPlugin("Git4Idea")
         bundledPlugin("com.intellij.java")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
+        pluginVerifier("1.410")
     }
     testImplementation("junit:junit:4.13.2")
 }

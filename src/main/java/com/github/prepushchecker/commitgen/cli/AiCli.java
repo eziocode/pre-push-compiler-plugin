@@ -30,7 +30,7 @@ public enum AiCli {
     CURSOR_AGENT("Cursor Agent", CommitMessageProvider.Id.CUSTOM_CLI, "cursor-agent",
         "-p --output-format text {model?--model {model}} {prompt}", "curl https://cursor.com/install -fsS | bash"),
     COPILOT("GitHub Copilot CLI", CommitMessageProvider.Id.CUSTOM_CLI, "copilot",
-        "{model?--model {model}} -p {prompt}", "npm install -g @github/copilot"),
+        "-s {model?--model {model}} -p {prompt}", "npm install -g @github/copilot"),
     OPENCODE("opencode", CommitMessageProvider.Id.CUSTOM_CLI, "opencode",
         "run {model?-m {model}} {prompt}", "npm install -g opencode-ai");
 

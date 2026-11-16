@@ -5,6 +5,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.util.ProgressIndicatorBase;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -76,7 +77,22 @@ public final class PrePushValidationCoordinator implements Disposable {
 
     private static final class Flight {
         private final CompletableFuture<Outcome> future = new CompletableFuture<>();
+        /** Canceled once no caller is waiting any more, so abandoned work stops early. */
+        private final ProgressIndicatorBase ownerIndicator = new ProgressIndicatorBase();
         private int requestCount = 1;
+        private int activeWaiters = 1;
+    }
+
+    private static final ThreadLocal<ProgressIndicator> OWNER_INDICATOR = new ThreadLocal<>();
+
+    /**
+     * The indicator of the validation running on the current coordinator thread. It is canceled
+     * when every caller waiting for the result has timed out or given up, so a long compile does
+     * not keep the queue blocked for the next push. Outside a validation it is a fresh indicator.
+     */
+    static @NotNull ProgressIndicator ownerIndicator() {
+        ProgressIndicator indicator = OWNER_INDICATOR.get();
+        return indicator != null ? indicator : new ProgressIndicatorBase();
     }
 
     public PrePushValidationCoordinator(@NotNull Project project) {
@@ -118,6 +134,7 @@ public final class PrePushValidationCoordinator implements Disposable {
         }
 
         CompletableFuture<Outcome> future;
+        Flight waitingFlight;
         synchronized (flights) {
             Flight flight = flights.get(key);
             if (flight == null) {
@@ -127,17 +144,21 @@ public final class PrePushValidationCoordinator implements Disposable {
                 executor.execute(() -> execute(key, cacheProbe, validation, ownerFlight));
             } else {
                 flight.requestCount++;
+                flight.activeWaiters++;
             }
             future = flight.future;
+            waitingFlight = flight;
         }
 
         long deadline = System.nanoTime() + unit.toNanos(timeout);
         while (true) {
             if (waiterIndicator != null && waiterIndicator.isCanceled()) {
+                abandon(waitingFlight);
                 return Outcome.canceled();
             }
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0L) {
+                abandon(waitingFlight);
                 return Outcome.timeout();
             }
             try {
@@ -147,11 +168,28 @@ public final class PrePushValidationCoordinator implements Disposable {
                 // Recheck waiter cancellation and the overall deadline.
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
+                abandon(waitingFlight);
                 return Outcome.canceled();
             } catch (ExecutionException impossible) {
                 Throwable cause = impossible.getCause();
                 return Outcome.failure(messageOf(cause));
             }
+        }
+    }
+
+    private void abandon(@NotNull Flight flight) {
+        synchronized (flights) {
+            flight.activeWaiters--;
+            if (flight.activeWaiters <= 0 && !flight.future.isDone()) {
+                flight.ownerIndicator.cancel();
+            }
+        }
+    }
+
+    boolean isOwnerCanceledForTest(@NotNull String key) {
+        synchronized (flights) {
+            Flight flight = flights.get(key);
+            return flight != null && flight.ownerIndicator.isCanceled();
         }
     }
 
@@ -162,21 +200,28 @@ public final class PrePushValidationCoordinator implements Disposable {
         Flight flight
     ) {
         Outcome outcome;
+        OWNER_INDICATOR.set(flight.ownerIndicator);
         try {
-            if (project.isDisposed()) {
+            if (flight.ownerIndicator.isCanceled()) {
+                outcome = Outcome.timeout();
+            } else if (project.isDisposed()) {
                 outcome = Outcome.failure("project disposed");
             } else {
                 List<String> cached = cacheProbe.probe();
                 outcome = Outcome.completed(cached != null ? cached : validation.run());
             }
         } catch (ProcessCanceledException canceled) {
-            outcome = Outcome.failure("validation owner canceled");
+            outcome = flight.ownerIndicator.isCanceled()
+                ? Outcome.timeout()
+                : Outcome.failure("validation owner canceled");
         } catch (StaleSnapshotException stale) {
             outcome = Outcome.stale(messageOf(stale));
         } catch (TimeoutException timeout) {
             outcome = Outcome.timeout();
         } catch (Throwable failure) {
             outcome = Outcome.failure(messageOf(failure));
+        } finally {
+            OWNER_INDICATOR.remove();
         }
         flight.future.complete(outcome);
         synchronized (flights) {

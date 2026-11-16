@@ -3,7 +3,7 @@
 > An IntelliJ IDEA plugin that blocks git pushes when compilation errors exist — before they reach your remote.
 
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
-![Version](https://img.shields.io/badge/version-2.8.0-blue)
+![Version](https://img.shields.io/badge/version-2.9.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
 [![Issues caught](https://img.shields.io/endpoint?url=https%3A%2F%2Feziocode.github.io%2Fpre-push-compiler-plugin%2Fbadge-issues.json)](https://eziocode.github.io/pre-push-compiler-plugin/)
 [![Compiles OK](https://img.shields.io/endpoint?url=https%3A%2F%2Feziocode.github.io%2Fpre-push-compiler-plugin%2Fbadge-compiles.json)](https://eziocode.github.io/pre-push-compiler-plugin/)
@@ -203,6 +203,17 @@ Open **View → Tool Windows → Compilation Checker** (or click the side panel 
 
 ---
 
+## Usage statistics
+
+The plugin can add this IDE's anonymous Push Stats counts to a public total, so the project page
+can show how many compile errors the checker catches across all users. It asks once, on the first checked push; nothing is sent until
+you agree. Change it under *Usage Statistics* in the Compilation Checker tool window settings.
+
+Sent: checks passed, pushes blocked, compile errors caught, timeouts, plugin version, IDE build and
+a random install ID. Never sent: code, file names, paths, error messages, user or machine names.
+
+---
+
 ## License
 
 MIT © [eziocode](https://github.com/eziocode)
@@ -211,4 +222,4 @@ MIT © [eziocode](https://github.com/eziocode)
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.6.0**.
+See [CHANGELOG.md](CHANGELOG.md) for the full release history. Latest release: **2.9.0**.

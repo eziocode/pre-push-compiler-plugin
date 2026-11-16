@@ -1166,38 +1166,24 @@ public final class CommitMessageSettingsConfigurable implements Configurable {
 
         new Thread(() -> {
             try {
-                com.github.prepushchecker.commitgen.CommitMessageProvider provider =
-                    buildProvider(selected);
-                String result = provider.generate(
-                    "You are a test. Reply with exactly one word: OK",
-                    "Test prompt.");
+                // Same provider mapping and output cleaning as real generation.
+                String result = AiOutputSanitizer.cleanOrThrow(
+                    CommitMessageGeneratorService.providerFor(selected).generate(
+                        "You are a test. Reply with exactly one word: OK",
+                        "Test prompt."));
+                String shown = AiOutputSanitizer.truncate(result, AiOutputSanitizer.MAX_ERROR_DETAIL);
                 SwingUtilities.invokeLater(() ->
                     Messages.showInfoMessage(
-                        "Connection successful!\n\nResponse: " + result.trim(),
+                        "Connection successful!\n\nResponse: " + shown,
                         "Test Connection"));
             } catch (Exception ex) {
+                String msg = ex.getMessage() != null ? ex.getMessage() : ex.toString();
                 SwingUtilities.invokeLater(() ->
                     Messages.showErrorDialog(
-                        ex.getMessage() != null ? ex.getMessage() : ex.toString(),
+                        AiOutputSanitizer.truncate(msg, 2 * AiOutputSanitizer.MAX_ERROR_DETAIL),
                         "Connection Failed"));
             }
         }, "CommitMsgGen-TestConnection").start();
-    }
-
-    private static com.github.prepushchecker.commitgen.CommitMessageProvider buildProvider(
-            @NotNull CommitMessageProvider.Id id) {
-        return switch (id) {
-            case INTELLIJ_AI -> new com.github.prepushchecker.commitgen.providers.IntelliJAiProvider();
-            case OPENAI      -> new com.github.prepushchecker.commitgen.providers.OpenAiProvider();
-            case ANTHROPIC   -> new com.github.prepushchecker.commitgen.providers.AnthropicProvider();
-            case GEMINI      -> new com.github.prepushchecker.commitgen.providers.GeminiProvider();
-            case OLLAMA      -> new com.github.prepushchecker.commitgen.providers.OllamaProvider();
-            case CODEX_CLI   -> new com.github.prepushchecker.commitgen.providers.CodexCliProvider();
-            case GH_COPILOT  -> new com.github.prepushchecker.commitgen.providers.GhCopilotProvider();
-            case LLM_CLI     -> new com.github.prepushchecker.commitgen.providers.LlmCliProvider();
-            case CLAUDE_CLI  -> new com.github.prepushchecker.commitgen.providers.ClaudeCliProvider();
-            case CUSTOM_CLI  -> new com.github.prepushchecker.commitgen.providers.CustomCliProvider();
-        };
     }
 
     @Override

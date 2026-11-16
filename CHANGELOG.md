@@ -10,6 +10,62 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.9.0] - 2026-11-16
+
+### Fixed
+
+- **AI commit messages from custom CLIs.** The "Other local CLI" provider pasted the CLI's whole
+  output into the commit message: tool calls, tool signatures, thinking blocks, JSON event lines,
+  status lines. Output from every provider is now cleaned before it is shown; output that is only
+  noise is reported as an error instead of being pasted. Test Connection uses the same path.
+- **A compile error no longer triggers a full project rebuild on push.** Errors with a file and
+  line are returned straight away. The one-time clean rebuild now runs only when the compiler
+  failed without saying where (JPS or compiler crash), and only when half the time budget is left.
+- **An abandoned check no longer blocks the next push.** When the hook gives up waiting, the
+  running validation is cancelled instead of finishing in the background.
+- **An open dialog no longer stalls a push.** Saving documents and starting the build no longer
+  wait for modal dialogs to close; file refresh and compile-scope building moved off the UI thread.
+- **Strict A/B guard** shares one time budget with the follow-up compile (snapshot build capped at
+  3 minutes) and no longer blocks a push on symbolic matches alone: a changed signature is not a
+  "new" declaration, and matches are confirmed by the snapshot build when it can run.
+- **Timeouts and "repository changed" results** are shown as such, not as "N compilation
+  error(s) detected" built from raw log lines.
+- **No stale "Push blocked" notification on IDE start** for a push that happened more than 10
+  minutes ago or was already shown.
+- **Errors stay on screen after fetches.** Background git activity (fetch, index refresh) no
+  longer clears the error list; only a new HEAD or branch does.
+- **Smart build ignores other projects' edits.** Typing in another open project no longer marks
+  this one stale and schedules a build.
+- **Layer "Run Now"** replaces earlier layer results, so a clean run clears old violations, and
+  keeps compile errors.
+- "Compilation failed with an unknown compiler error" is shown as a failed compile, not as
+  "check could not complete". **Run Compilation Check** cannot be started twice at once.
+- When the IDE answered but could not run the check, the hook log says why instead of
+  "IntelliJ not running".
+- Report Issue opens this project's issue tracker.
+
+### Changed
+
+- Repository changes are coalesced (2 s) before the port file, settings file and hook are
+  refreshed; the hook repair (several git processes) runs at most once a minute per repository.
+  Port and settings files are only rewritten when their content changes.
+- The commit-SHA watcher polls git every 250 ms instead of 100 ms.
+- The cross-layer check reuses its `git ls-tree` listing while HEAD is unchanged; the jar package
+  cache evicts least-recently-used jars instead of clearing itself at 4000 entries.
+- Removed **Allow stash fallback**: the strict guard never stashes or touches the working tree.
+  When no clean worktree can be created, the guard is skipped.
+
+### Added
+
+- **Shared usage statistics (opt-in).** On the first checked push the plugin asks once whether to
+  add this IDE's Push Stats counts to a public total: checks passed, pushes blocked, compile errors
+  caught, timeouts, plugin and IDE version, and a random install ID. No code, file names, paths,
+  messages or project names. Nothing is sent until you agree. The totals across all users are shown
+  on the project's GitHub page. Toggle it under *Usage Statistics* in the tool window settings.
+  Push Stats themselves still stay on the machine.
+
+---
+
 ## [2.8.0] - 2026-10-28
 
 ### Added

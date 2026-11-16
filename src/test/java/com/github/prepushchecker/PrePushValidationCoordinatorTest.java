@@ -45,6 +45,40 @@ public class PrePushValidationCoordinatorTest extends BasePlatformTestCase {
         }
     }
 
+    public void testSoleWaiterTimeoutCancelsOwnerIndicator() throws Exception {
+        PrePushValidationCoordinator coordinator =
+            PrePushValidationCoordinator.getInstance(getProject());
+        ExecutorService caller = Executors.newSingleThreadExecutor();
+        CountDownLatch validationStarted = new CountDownLatch(1);
+        AtomicReference<Boolean> sawCancel = new AtomicReference<>(false);
+        try {
+            Future<PrePushValidationCoordinator.Outcome> timedOut = caller.submit(() ->
+                coordinator.request("abandon", () -> null, () -> {
+                    validationStarted.countDown();
+                    var indicator = PrePushValidationCoordinator.ownerIndicator();
+                    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+                    while (!indicator.isCanceled() && System.nanoTime() < deadline) {
+                        Thread.sleep(5);
+                    }
+                    sawCancel.set(indicator.isCanceled());
+                    return List.of();
+                }, null, 50, TimeUnit.MILLISECONDS));
+            assertTrue(validationStarted.await(5, TimeUnit.SECONDS));
+            assertEquals(
+                PrePushValidationCoordinator.Status.TIMEOUT,
+                timedOut.get(5, TimeUnit.SECONDS).status());
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (coordinator.requestCountForTest("abandon") != 0
+                    && System.nanoTime() < deadline) {
+                Thread.yield();
+            }
+            assertTrue(sawCancel.get());
+        } finally {
+            caller.shutdownNow();
+        }
+    }
+
     public void testExactKeyRequestsShareOneValidationAndOutcome() throws Exception {
         PrePushValidationCoordinator coordinator =
             PrePushValidationCoordinator.getInstance(getProject());

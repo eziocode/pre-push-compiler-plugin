@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -56,11 +57,11 @@ public final class AnthropicProvider implements CommitMessageProvider {
             client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "Anthropic API error " + response.statusCode() + ": " + response.body());
+                "Anthropic API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
         }
         String text = JsonUtil.extractStringAtPath(response.body(), "content", 0, "text");
         if (text == null) {
-            throw new RuntimeException("Unexpected Anthropic response: " + response.body());
+            throw new RuntimeException("Unexpected Anthropic response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return text.trim();
     }

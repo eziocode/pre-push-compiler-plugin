@@ -1,14 +1,15 @@
 package com.github.prepushchecker.commitgen.providers;
 
-import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
+import com.github.prepushchecker.commitgen.cli.AiCliRunner;
 import org.jetbrains.annotations.NotNull;
 
-import java.time.Duration;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Delegates to Simon Willison's <b>{@code llm}</b> CLI for generation.
@@ -54,40 +55,16 @@ public final class LlmCliProvider implements CommitMessageProvider {
         }
         cmd.add(userPrompt);
 
-        ProcessBuilder pb = new ProcessBuilder(cmd);
-        pb.redirectErrorStream(false);
-        CliPathResolver.injectAugmentedPath(pb);   // ensures python3 etc. are on PATH
-
-        ProcessExecution.Result processResult;
+        String hint = "Run 'llm models' to check available models and 'llm keys set <provider>' to configure auth."
+            + "\nInstall: pip install llm — Docs: https://llm.datasette.io";
+        Path workDir = AiCliRunner.createWorkDir();
         try {
-            processResult = ProcessExecution.run(pb, Duration.ofSeconds(120));
-        } catch (java.io.IOException e) {
-            throw new RuntimeException(
-                "Cannot start llm CLI at '" + resolvedPath + "'.\n"
-                    + "Install: pip install llm\n"
-                    + "Docs:    https://llm.datasette.io", e);
+            String out = AiCliRunner.run("llm CLI", cmd, null, workDir, Map.of(),
+                AiCliRunner.DEFAULT_TIMEOUT, hint);
+            return AiCliRunner.requireText("llm CLI", out, hint);
+        } finally {
+            AiCliRunner.deleteQuietly(workDir);
         }
-
-        if (processResult.timedOut()) {
-            throw new RuntimeException("llm CLI timed out after 120 seconds.");
-        }
-        int exit = processResult.exitCode();
-        String stdout = processResult.stdout();
-        String stderr = processResult.stderr();
-        if (exit != 0) {
-            String detail = stderr.isBlank() ? stdout : stderr;
-            throw new RuntimeException(
-                "llm CLI exited with code " + exit
-                    + (detail.isBlank() ? "" : ": " + detail.trim())
-                    + "\nRun 'llm models' to check available models and 'llm keys set <provider>' to configure auth.");
-        }
-        String result = stdout.trim();
-        if (result.isBlank()) {
-            throw new RuntimeException(
-                "llm CLI returned an empty response. "
-                    + "Run 'llm keys set openai' (or your provider) to set up credentials.");
-        }
-        return result;
     }
 
     @Override

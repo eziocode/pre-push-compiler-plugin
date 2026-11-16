@@ -127,7 +127,8 @@ public final class SmartBuildService implements Disposable {
             @Override
             public void after(@NotNull List<? extends VFileEvent> events) {
                 for (VFileEvent event : events) {
-                    if (isCompileRelevant(event.getPath())) {
+                    // VFS events are application-wide: ignore other open projects' files.
+                    if (isCompileRelevant(event.getPath()) && isInThisProject(event.getPath())) {
                         sourcesChanged();
                         return;
                     }
@@ -167,7 +168,10 @@ public final class SmartBuildService implements Disposable {
             @Override
             public void documentChanged(@NotNull DocumentEvent event) {
                 VirtualFile file = FileDocumentManager.getInstance().getFile(event.getDocument());
-                if (file != null && isCompileRelevant(file.getPath())) sourcesChanged();
+                if (file != null && isCompileRelevant(file.getPath())
+                        && isInThisProject(file.getPath())) {
+                    sourcesChanged();
+                }
             }
         }, this);
 
@@ -212,8 +216,15 @@ public final class SmartBuildService implements Disposable {
     /** Called from {@link RepositoryStateMonitor} on any Git repository change. */
     void repositoryChanged() {
         if (!started.get()) start();
+        projectRoots = null; // repositories may have been added or removed
         generation.incrementAndGet();
-        clearErrorsOnMiss = true;
+        // Fetches, index refreshes and the strict guard's temporary worktrees also land here.
+        // Only a new HEAD or branch makes the errors on screen describe other code.
+        String headState = currentHeadState();
+        if (!headState.equals(lastHeadState)) {
+            lastHeadState = headState;
+            clearErrorsOnMiss = true;
+        }
         pruneRequested = true;
         lookupRequested = true;
         schedule(REPO_CHANGE_DEBOUNCE_MS);
@@ -524,6 +535,41 @@ public final class SmartBuildService implements Disposable {
     private boolean isGitBusy() {
         for (GitRepository repository : GitRepositoryManager.getInstance(project).getRepositories()) {
             if (BUSY_GIT_STATES.contains(repository.getState().name())) return true;
+        }
+        return false;
+    }
+
+    private volatile List<String> projectRoots;
+    private volatile String lastHeadState = "";
+
+    private @NotNull String currentHeadState() {
+        StringBuilder state = new StringBuilder();
+        for (GitRepository repository : GitRepositoryManager.getInstance(project).getRepositories()) {
+            state.append(repository.getRoot().getPath()).append('=')
+                .append(repository.getCurrentBranchName()).append('@')
+                .append(repository.getCurrentRevision()).append(';');
+        }
+        return state.toString();
+    }
+
+    /** String prefix test against the project base path and git roots (cached). */
+    private boolean isInThisProject(@Nullable String path) {
+        if (path == null) return false;
+        List<String> roots = projectRoots;
+        if (roots == null) {
+            List<String> computed = new java.util.ArrayList<>();
+            String base = project.getBasePath();
+            if (base != null && !base.isBlank()) computed.add(base.replace('\\', '/'));
+            for (GitRepository repository : GitRepositoryManager.getInstance(project).getRepositories()) {
+                computed.add(repository.getRoot().getPath().replace('\\', '/'));
+            }
+            roots = List.copyOf(computed);
+            projectRoots = roots;
+        }
+        if (roots.isEmpty()) return true;
+        String p = path.replace('\\', '/');
+        for (String root : roots) {
+            if (p.equals(root) || p.startsWith(root.endsWith("/") ? root : root + "/")) return true;
         }
         return false;
     }

@@ -1,6 +1,5 @@
 package com.github.prepushchecker;
 
-import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
@@ -8,7 +7,6 @@ import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ModuleRootManager;
 import com.intellij.openapi.roots.ProjectFileIndex;
-import com.intellij.openapi.util.Computable;
 import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
@@ -40,7 +38,7 @@ final class PrePushSnapshotGuard {
     private static final int MAX_SNAPSHOT_OUTPUT_LINES = 25;
     private static final long WAIT_SLICE_MILLIS = 250L;
     private static final long GIT_TIMEOUT_MILLIS = TimeUnit.SECONDS.toMillis(60);
-    private static final long SNAPSHOT_BUILD_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(5);
+    private static final long SNAPSHOT_BUILD_TIMEOUT_MILLIS = TimeUnit.MINUTES.toMillis(3);
 
     private static final Pattern LOMBOK_GENERATED_SYMBOL = Pattern.compile(
         "symbol:\\s+(method\\s+(get|set|is)[A-Za-z0-9_]*|class\\s+[A-Za-z0-9_.$]*Builder)",
@@ -71,12 +69,16 @@ final class PrePushSnapshotGuard {
         for (LocalRelevantChange change : risk.localChanges()) {
             unpushedPaths.add(change.path());
         }
+        // The symbolic scan is a heuristic. Its matches only decide the outcome when the
+        // authoritative clean-snapshot build below cannot run.
         List<String> symbolicMatches = SymbolicAbCheck.detect(project, risk.pushedPaths(), unpushedPaths);
         if (!symbolicMatches.isEmpty()) {
             LOG.info("Strict A/B symbolic check found " + symbolicMatches.size()
-                + " reference(s) to unpushed-only declarations.");
-            return SnapshotValidationResult.checked(symbolicMatches);
+                + " reference(s) to unpushed-only declarations; confirming with a snapshot build.");
         }
+        SnapshotValidationResult unavailable = symbolicMatches.isEmpty()
+            ? SnapshotValidationResult.notChecked()
+            : SnapshotValidationResult.checked(symbolicMatches);
 
         String basePath = project.getBasePath();
         if (basePath == null || basePath.isBlank()) {
@@ -99,19 +101,15 @@ final class PrePushSnapshotGuard {
                 tempRoot.resolve("worktree-add.log")
             );
             if (!checkout.succeeded()) {
-                if (PrePushCheckerSettings.isStashSnapshotFallbackEnabled(project)) {
-                    LOG.info("Strict A/B worktree validation unavailable; using explicit stash fallback.");
-                    return validateWithStashFallback(
-                        project, projectRoot, risk.pushedPaths(), indicator, tempRoot);
-                }
-                LOG.info("Strict A/B dependency check skipped because a clean worktree could not be created.");
-                return SnapshotValidationResult.notChecked();
+                // Never stash or otherwise touch the user's working tree during a push.
+                LOG.info("Strict A/B snapshot build skipped because a clean worktree could not be created.");
+                return unavailable;
             }
 
             CommandResult build = runSnapshotBuild(project, worktree, risk.pushedPaths(), indicator, tempRoot);
             if (build.skipped()) {
                 LOG.info("Strict A/B dependency check skipped because no runnable snapshot build command was found.");
-                return SnapshotValidationResult.notChecked();
+                return unavailable;
             }
             if (build.succeeded()) {
                 LOG.info("Strict A/B dependency check passed against a clean HEAD snapshot.");
@@ -258,7 +256,7 @@ final class PrePushSnapshotGuard {
         @NotNull List<String> pushedPaths,
         @NotNull List<LocalRelevantChange> localChanges
     ) {
-        return ApplicationManager.getApplication().runReadAction((Computable<ModuleRisk>) () -> {
+        return ReadActions.compute(() -> {
             ProjectFileIndex index = ProjectFileIndex.getInstance(project);
             ModuleManager moduleManager = ModuleManager.getInstance(project);
             Set<Module> pushedModules = new LinkedHashSet<>();
@@ -402,104 +400,6 @@ final class PrePushSnapshotGuard {
             indicator,
             outputRoot.resolve("snapshot-build-recovery.log")
         );
-    }
-
-    private static @NotNull SnapshotValidationResult validateWithStashFallback(
-        @NotNull Project project,
-        @NotNull Path projectRoot,
-        @NotNull Collection<String> pushedPaths,
-        @Nullable ProgressIndicator indicator,
-        @NotNull Path outputRoot
-    ) throws IOException, InterruptedException {
-        CommandResult stash = runCommand(
-            projectRoot,
-            List.of(
-                "git",
-                "stash",
-                "push",
-                "--include-untracked",
-                "--message",
-                "prepushchecker-strict-ab-snapshot"
-            ),
-            GIT_TIMEOUT_MILLIS,
-            indicator,
-            outputRoot.resolve("stash-push.log")
-        );
-        if (!stash.succeeded()) {
-            return SnapshotValidationResult.checked(commandFailure(
-                "Strict A/B stash fallback could not save local changes.",
-                stash,
-                project,
-                projectRoot
-            ));
-        }
-        if (!createdStash(stash.outputLines())) {
-            return SnapshotValidationResult.notChecked();
-        }
-
-        CommandResult build = null;
-        CommandResult restore = null;
-        Exception restoreFailure = null;
-        try {
-            build = runSnapshotBuild(project, projectRoot, pushedPaths, indicator, outputRoot);
-        } finally {
-            try {
-                restore = runCommand(
-                    projectRoot,
-                    List.of("git", "stash", "pop", "--index"),
-                    GIT_TIMEOUT_MILLIS,
-                    null,
-                    outputRoot.resolve("stash-pop.log")
-                );
-            } catch (IOException | InterruptedException e) {
-                restoreFailure = e;
-                if (e instanceof InterruptedException) {
-                    Thread.currentThread().interrupt();
-                }
-            }
-        }
-
-        if (restoreFailure != null) {
-            return SnapshotValidationResult.checked(List.of(
-                "[snapshot] Strict A/B stash fallback could not restore local changes: "
-                    + restoreFailure.getMessage()));
-        }
-        if (restore != null && !restore.succeeded()) {
-            return SnapshotValidationResult.checked(commandFailure(
-                "Strict A/B stash fallback could not restore local changes.",
-                restore,
-                project,
-                projectRoot
-            ));
-        }
-        if (build == null || build.skipped()) {
-            return SnapshotValidationResult.notChecked();
-        }
-        if (build.succeeded()) {
-            LOG.info("Strict A/B stash fallback check passed against HEAD.");
-            return SnapshotValidationResult.checked(List.of());
-        }
-        List<String> failureMessages = snapshotBuildFailureMessages(
-            "Strict A/B stash fallback failed when compiling HEAD without local changes.",
-            build,
-            project,
-            projectRoot,
-            pushedPaths
-        );
-        if (failureMessages.isEmpty()) {
-            LOG.info("Strict A/B stash fallback compile failed, but no parsed errors matched pushed files.");
-            return SnapshotValidationResult.notChecked();
-        }
-        return SnapshotValidationResult.checked(failureMessages);
-    }
-
-    private static boolean createdStash(@NotNull List<String> outputLines) {
-        for (String line : outputLines) {
-            if (line != null && line.contains("Saved working directory")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     static @NotNull List<String> resolveBuildCommand(

@@ -12,7 +12,6 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
@@ -22,8 +21,15 @@ import java.util.zip.ZipFile;
  * the few jars that contain its package.
  */
 final class JarClassIndex implements CrossLayerImportCheck.JarLookup, Closeable {
-    private static final Map<String, Set<String>> PACKAGES_BY_JAR = new ConcurrentHashMap<>();
     private static final int MAX_CACHED_JARS = 4000;
+    /** LRU by access: big trees evict the least used jar instead of wiping the whole cache. */
+    private static final Map<String, Set<String>> PACKAGES_BY_JAR = java.util.Collections.synchronizedMap(
+        new java.util.LinkedHashMap<>(256, 0.75f, true) {
+            @Override
+            protected boolean removeEldestEntry(Map.Entry<String, Set<String>> eldest) {
+                return size() > MAX_CACHED_JARS;
+            }
+        });
 
     private final List<LayerJars.Jar> jars;
     private final Map<LayerJars.Jar, Set<String>> packages = new HashMap<>();
@@ -71,7 +77,6 @@ final class JarClassIndex implements CrossLayerImportCheck.JarLookup, Closeable 
             Set<String> cached = PACKAGES_BY_JAR.get(key);
             if (cached != null) return cached;
             Set<String> computed = readPackages(j);
-            if (PACKAGES_BY_JAR.size() >= MAX_CACHED_JARS) PACKAGES_BY_JAR.clear();
             PACKAGES_BY_JAR.put(key, computed);
             return computed;
         });

@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.providers;
 
+import com.github.prepushchecker.commitgen.AiOutputSanitizer;
 import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.JsonUtil;
@@ -53,12 +54,12 @@ public final class OpenAiProvider implements CommitMessageProvider {
             client.send(request, HttpResponse.BodyHandlers.ofString());
         if (response.statusCode() != 200) {
             throw new RuntimeException(
-                "OpenAI API error " + response.statusCode() + ": " + response.body());
+                "OpenAI API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
         }
         String content = JsonUtil.extractStringAtPath(
             response.body(), "choices", 0, "message", "content");
         if (content == null) {
-            throw new RuntimeException("Unexpected OpenAI response: " + response.body());
+            throw new RuntimeException("Unexpected OpenAI response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return content.trim();
     }

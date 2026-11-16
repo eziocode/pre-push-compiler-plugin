@@ -1,5 +1,7 @@
 package com.github.prepushchecker.commitgen.cli;
 
+import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.util.ProgressIndicatorBase;
 import junit.framework.TestCase;
 
 import java.nio.file.Files;
@@ -75,8 +77,62 @@ public class AiCliRunnerTest extends TestCase {
         try {
             AiCliRunner.requireText("Fake", "  ", "h");
             fail("expected failure");
-        } catch (RuntimeException expected) {
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("empty response"));
+        }
+    }
+
+    public void testRequireTextRemovesAgentNoise() {
+        String raw = "<thinking>look at diff</thinking>\n⏺ Bash(git diff)\n  ⎿  diff --git a/x b/x\n"
+            + "<tool_call>{\"name\":\"read\"}</tool_call>\nfix: typo\nTokens: 12 in / 3 out\n";
+        assertEquals("fix: typo", AiCliRunner.requireText("Fake", raw, "h"));
+    }
+
+    public void testRequireTextAllNoiseFailsWithClearMessage() {
+        try {
+            AiCliRunner.requireText("Fake", "<thinking>only</thinking>\n⏺ Bash(ls)\n", "Run: fake login");
+            fail("expected failure");
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("no commit message after removing tool output"));
+            assertTrue(e.getMessage(), e.getMessage().contains("Run: fake login"));
+        }
+    }
+
+    public void testCustomCliNoiseEndToEnd() throws Exception {
+        Path cli = script("printf '\\033[2m[model] provider=x thinking=on\\033[0m\\n'; "
+            + "echo '<think>hmm</think>'; echo '● Reading diff'; echo 'docs: fix typo'; echo 'Cost: $0.01'");
+        String out = AiCliRunner.run("Fake", List.of(cli.toString()), null, dir, Map.of(),
+            Duration.ofSeconds(20), "hint");
+        assertEquals("docs: fix typo", AiCliRunner.requireText("Fake", out, "hint"));
+    }
+
+    public void testStderrInErrorIsCapped() throws Exception {
+        Path cli = script("i=0; while [ $i -lt 300 ]; do printf 'errorline%03d ' $i >&2; i=$((i+1)); done; exit 2");
+        try {
+            AiCliRunner.run("Fake", List.of(cli.toString()), null, dir, Map.of(), Duration.ofSeconds(20), "hint");
+            fail("expected failure");
+        } catch (RuntimeException e) {
+            assertTrue(e.getMessage(), e.getMessage().length() < 700);
+        }
+    }
+
+    public void testCancelledIndicatorKillsProcess() throws Exception {
+        Path cli = script("sleep 30");
+        ProgressIndicatorBase indicator = new ProgressIndicatorBase();
+        Thread canceller = new Thread(() -> {
+            try { Thread.sleep(300); } catch (InterruptedException ignored) {}
+            indicator.cancel();
+        });
+        canceller.start();
+        long start = System.nanoTime();
+        try {
+            AiCliRunner.runCancellable(new ProcessBuilder(cli.toString()).directory(dir.toFile()),
+                Duration.ofSeconds(25), "", indicator);
+            fail("expected cancellation");
+        } catch (ProcessCanceledException expected) {
             // ok
         }
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).toSeconds() < 10);
+        canceller.join();
     }
 }

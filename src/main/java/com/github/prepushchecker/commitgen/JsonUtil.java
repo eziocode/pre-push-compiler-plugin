@@ -77,7 +77,7 @@ public final class JsonUtil {
     }
 
     @Nullable
-    private static Object parse(@NotNull String json) {
+    static Object parse(@NotNull String json) {
         try {
             Parser parser = new Parser(json);
             Object value = parser.parseValue();

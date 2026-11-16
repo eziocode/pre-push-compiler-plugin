@@ -3,15 +3,13 @@ package com.github.prepushchecker.commitgen;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
-import java.nio.charset.StandardCharsets;
+import com.github.prepushchecker.ProcessExecution;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 
 import java.util.regex.Pattern;
 
@@ -29,6 +27,10 @@ public final class CliPathResolver {
      * settings values (e.g. a compromised {@code commitMessageGenerator.xml}).
      */
     private static final Pattern SAFE_BARE_NAME = Pattern.compile("[A-Za-z0-9._+-]+");
+
+    private static final Object SHELL_PATH_LOCK = new Object();
+    /** {@code null} = not computed yet, {@code ""} = computed, unavailable. */
+    private static volatile String shellPathCache;
 
     private static final List<String> RC_FILES = List.of(
         ".zshenv", ".zprofile", ".zshrc",
@@ -165,25 +167,36 @@ public final class CliPathResolver {
             }
         }
         script.append("printf '%s' \"$").append(varName).append("\"");
-        try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", script.toString());
-            pb.redirectErrorStream(false);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining()).trim();
+        return runForOutput(List.of("sh", "-c", script.toString()), 5, false);
+    }
+
+    /**
+     * Returns the full PATH string from the user's shell, or {@code null}.
+     * Computed once per IDE session: sourcing rc files can take seconds and
+     * every CLI / git call needs it.
+     */
+    @Nullable
+    public static String resolveShellPath() {
+        String cached = shellPathCache;
+        if (cached != null) return cached.isEmpty() ? null : cached;
+        synchronized (SHELL_PATH_LOCK) {
+            if (shellPathCache == null) {
+                String computed = computeShellPath();
+                shellPathCache = computed == null ? "" : computed;
             }
-            proc.waitFor(5, TimeUnit.SECONDS);
-            return out.isBlank() ? null : out;
-        } catch (Exception ignored) {
-            return null;
+            return shellPathCache.isEmpty() ? null : shellPathCache;
         }
     }
 
-    /** Returns the full PATH string from the user's shell, or {@code null}. */
+    /** Forgets the cached shell PATH (e.g. after the user edits their rc files). */
+    public static void clearShellPathCache() {
+        synchronized (SHELL_PATH_LOCK) {
+            shellPathCache = null;
+        }
+    }
+
     @Nullable
-    public static String resolveShellPath() {
+    private static String computeShellPath() {
         String home = System.getProperty("user.home");
         StringBuilder script = new StringBuilder();
         for (String rc : RC_FILES) {
@@ -200,20 +213,7 @@ public final class CliPathResolver {
         script.append("  case \":$PATH:\" in *\":$_d:\"*) :;; *) PATH=\"$_d:$PATH\";; esac\n");
         script.append("done\n");
         script.append("printf '%s' \"$PATH\"");
-        try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", script.toString());
-            pb.redirectErrorStream(false);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining()).trim();
-            }
-            proc.waitFor(8, TimeUnit.SECONDS);
-            return out.isBlank() ? null : out;
-        } catch (Exception e) {
-            return null;
-        }
+        return runForOutput(List.of("sh", "-c", script.toString()), 8, false);
     }
 
     /** Runs {@code which <name>} in a sub-shell sourcing rc files. */
@@ -239,20 +239,10 @@ public final class CliPathResolver {
         script.append("  case \":$PATH:\" in *\":$_d:\"*) :;; *) PATH=\"$_d:$PATH\";; esac\n");
         script.append("done\n");
         script.append("which ").append(name).append(" 2>/dev/null");
+        String out = runForOutput(List.of("sh", "-c", script.toString()), 5, false);
+        if (out == null) return null;
         try {
-            ProcessBuilder pb = new ProcessBuilder("sh", "-c", script.toString());
-            pb.redirectErrorStream(false);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining("\n")).trim();
-            }
-            proc.waitFor(5, TimeUnit.SECONDS);
-            if (!out.isBlank()) {
-                Path p = Path.of(out);
-                if (Files.isExecutable(p)) return out;
-            }
+            if (Files.isExecutable(Path.of(out))) return out;
         } catch (Exception ignored) {}
         return null;
     }
@@ -262,17 +252,22 @@ public final class CliPathResolver {
         List<String> command = new ArrayList<>();
         command.add(cmd);
         for (String a : args) command.add(a);
+        return runForOutput(command, 5, true);
+    }
+
+    /**
+     * Runs {@code command} and returns its trimmed stdout, or {@code null} when it
+     * fails to start, times out or prints nothing. Output is drained on separate
+     * threads, so the timeout holds even when a slow rc file blocks the shell.
+     */
+    @Nullable
+    private static String runForOutput(@NotNull List<String> command, int timeoutSeconds, boolean mergeStderr) {
         try {
             ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            Process proc = pb.start();
-            String out;
-            try (BufferedReader r = new BufferedReader(
-                    new InputStreamReader(proc.getInputStream(), StandardCharsets.UTF_8))) {
-                out = r.lines().collect(Collectors.joining("\n")).trim();
-            }
-            boolean done = proc.waitFor(5, TimeUnit.SECONDS);
-            if (!done) { proc.destroyForcibly(); return null; }
+            pb.redirectErrorStream(mergeStderr);
+            ProcessExecution.Result result = ProcessExecution.run(pb, Duration.ofSeconds(timeoutSeconds));
+            if (result.timedOut()) return null;
+            String out = result.stdout().trim();
             return out.isBlank() ? null : out;
         } catch (Exception e) {
             return null;

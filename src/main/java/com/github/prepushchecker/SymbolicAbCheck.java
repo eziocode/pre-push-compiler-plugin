@@ -110,13 +110,27 @@ final class SymbolicAbCheck {
             List.of("git", "diff", "--no-color", "--unified=0", "HEAD", "--", path));
         if (diff.isEmpty()) return Set.of();
 
+        return addedDeclarations(diff);
+    }
+
+    /**
+     * Identifiers declared on {@code +} lines and not on {@code -} lines of the same diff. A
+     * changed signature (or a moved declaration) re-declares an existing name; that name is
+     * already at HEAD and must not be reported as new.
+     */
+    static @NotNull Set<String> addedDeclarations(@NotNull List<String> diff) {
         Set<String> identifiers = new LinkedHashSet<>();
+        Set<String> removed = new LinkedHashSet<>();
         for (String line : diff) {
             if (line == null || line.isEmpty()) continue;
-            if (line.startsWith("+++")) continue;
-            if (!line.startsWith("+")) continue;
-            collectFromLine(line, identifiers);
+            if (line.startsWith("+++") || line.startsWith("---")) continue;
+            if (line.startsWith("+")) {
+                collectFromLine(line, identifiers);
+            } else if (line.startsWith("-")) {
+                collectFromLine("+" + line.substring(1), removed);
+            }
         }
+        identifiers.removeAll(removed);
         identifiers.removeAll(STOP_LIST);
         return identifiers;
     }

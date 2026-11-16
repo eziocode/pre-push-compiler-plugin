@@ -62,6 +62,8 @@ final class CompilationEntryRenderer extends ColoredListCellRenderer<String> {
      */
     static boolean isInfrastructureMessage(String entry) {
         if (entry == null || entry.isBlank() || entry.startsWith("[")) return false;
+        // The compiler failed without saying where: still a failed compile, not a broken check.
+        if (entry.contains("unknown compiler error")) return false;
         return !PushValidationPaths.isCompilableSource(entry.trim());
     }
 

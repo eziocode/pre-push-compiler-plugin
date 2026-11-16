@@ -1,8 +1,7 @@
 <idea-plugin>
     <id>com.github.prepushchecker</id>
     <name>Pre-Push Compilation Checker</name>
-    <version>2.3.1</version>
-    <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/IntelliJ-Plugins">eziocode</vendor>
+    <vendor email="aswin2kumarforme@gmail.com" url="https://github.com/eziocode/pre-push-compiler-plugin">eziocode</vendor>
 
     <description><![CDATA[
         <p>Blocks git pushes when your code has compilation errors — before they reach the remote.</p>
@@ -68,6 +67,29 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.9.0 — Cleaner AI output, faster pushes, shared stats</h3>
+        <ul>
+            <li>AI commit messages from custom CLIs no longer include tool calls, tool signatures,
+                thinking blocks or JSON event lines.</li>
+            <li>A compile error no longer triggers a full project rebuild on push; abandoned checks
+                are cancelled so they cannot block the next push; open dialogs no longer stall a push.</li>
+            <li>Timeouts are reported as timeouts, not as compilation errors; no stale "Push blocked"
+                notification on IDE start; fetches no longer clear the error list; smart build ignores
+                other projects.</li>
+            <li>Strict A/B guard: one time budget, fewer false positives, never stashes your changes.</li>
+            <li>Opt-in: add this IDE's anonymous Push Stats counts to the public total on the
+                project page (asked once; nothing is sent until you agree).</li>
+        </ul>
+        <h3>2.8.0 — Push Stats</h3>
+        <ul>
+            <li>Push Stats dialog: pushes allowed, blocked (by kind), fixed after a block, cache hits
+                and pushes checked without the IDE, per project and overall. Stored locally.</li>
+        </ul>
+        <h3>2.7.x — Layers dialog and jar rules</h3>
+        <ul>
+            <li>Layers dialog, jar classpath enforcement, per-layer forbidden jars and quick fixes.
+                See CHANGELOG.md for details.</li>
+        </ul>
         <h3>2.6.0 — Cross-layer import check for layered Ant builds</h3>
         <ul>
             <li><b>Cross-layer import check</b> (on by default, active only with a <code>.prepush-layers</code>
@@ -1027,6 +1049,7 @@
         <projectService serviceImplementation="com.github.prepushchecker.CompilationErrorService"/>
         <projectService serviceImplementation="com.github.prepushchecker.PrePushLocalServer"/>
         <projectService serviceImplementation="com.github.prepushchecker.RepositoryStateMonitor"/>
+        <applicationService serviceImplementation="com.github.prepushchecker.stats.SharedStats"/>
 
         <!-- AI Commit Message Generator -->
         <applicationService
