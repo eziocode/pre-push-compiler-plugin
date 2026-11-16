@@ -5,6 +5,7 @@ import com.github.prepushchecker.commitgen.SensitivePaths;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.DumbService;
 import com.intellij.openapi.project.IndexNotReadyException;
 import com.intellij.openapi.project.Project;
@@ -88,6 +89,7 @@ public final class InlineContextCollector {
         Map<PsiClass, Integer> distance = new HashMap<>();
         try {
             for (PsiJavaCodeReferenceElement ref : PsiTreeUtil.collectElementsOfType(psi, PsiJavaCodeReferenceElement.class)) {
+                ProgressManager.checkCanceled();
                 PsiElement target = ref.resolve();
                 if (!(target instanceof PsiClass) || target instanceof PsiTypeParameter) continue;
                 PsiClass cls = (PsiClass) target;
@@ -106,6 +108,8 @@ public final class InlineContextCollector {
         List<Map.Entry<PsiClass, Integer>> ordered = new ArrayList<>(distance.entrySet());
         ordered.sort(Map.Entry.comparingByValue());
         for (Map.Entry<PsiClass, Integer> e : ordered) {
+            ProgressManager.checkCanceled();
+            if (remaining[0] <= 0) return;
             try {
                 tryAdd(out, remaining, e.getKey().getQualifiedName(), signatures(e.getKey()));
             } catch (IndexNotReadyException ex) {
@@ -117,12 +121,13 @@ public final class InlineContextCollector {
     private static String signatures(PsiClass cls) {
         StringBuilder sb = new StringBuilder(header(cls)).append(" {\n");
         for (PsiField f : cls.getFields()) {
-            if (f.hasModifierProperty(PsiModifier.PRIVATE)) continue;
-            sb.append("  ").append(collapse(f.getModifierList() == null ? "" : f.getModifierList().getText()))
-                .append(' ').append(f.getType().getPresentableText()).append(' ').append(f.getName()).append(";\n");
+            if (!f.isPhysical()) continue; // implicit (e.g. record component) fields duplicate the header
+            String mods = f.getModifierList() == null ? "" : collapse(f.getModifierList().getText());
+            sb.append("  ").append(mods.isEmpty() ? "" : mods + " ")
+                .append(f.getType().getPresentableText()).append(' ').append(f.getName()).append(";\n");
         }
         for (PsiMethod m : cls.getMethods()) {
-            if (m.hasModifierProperty(PsiModifier.PRIVATE)) continue;
+            if (!m.isPhysical() || m.hasModifierProperty(PsiModifier.PRIVATE)) continue;
             StringBuilder line = new StringBuilder("  ");
             if (m.getModifierList().getText().length() > 0) line.append(collapse(m.getModifierList().getText())).append(' ');
             if (m.getReturnType() != null) line.append(m.getReturnType().getPresentableText()).append(' ');
@@ -142,6 +147,7 @@ public final class InlineContextCollector {
             : cls.isEnum() ? "enum " : cls.isRecord() ? "record " : "class ");
         sb.append(cls.getName());
         if (cls.getTypeParameterList() != null) sb.append(collapse(cls.getTypeParameterList().getText()));
+        if (cls.getRecordHeader() != null) sb.append(collapse(cls.getRecordHeader().getText()));
         if (cls.getExtendsList() != null && cls.getExtendsList().getTextLength() > 0) {
             sb.append(' ').append(collapse(cls.getExtendsList().getText()));
         }
@@ -151,13 +157,16 @@ public final class InlineContextCollector {
         return sb.toString();
     }
 
-    private static String collapse(String s) {
+    private static String collapse(@Nullable String s) {
+        if (s == null) return "";
         return s.replaceAll("\\s+", " ").trim();
     }
 
     private static void addOpenFiles(Project project, VirtualFile current, List<InlineContext.Snippet> out,
                                      int[] remaining) {
         for (VirtualFile open : FileEditorManager.getInstance(project).getOpenFiles()) {
+            ProgressManager.checkCanceled();
+            if (remaining[0] <= 0) return;
             if (open.equals(current) || !open.isValid() || open.isDirectory()) continue;
             if (!open.getFileType().equals(current.getFileType())) continue;
             if (SensitivePaths.isExcluded(open.getPath())) continue;
