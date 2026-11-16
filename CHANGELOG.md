@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ### Fixed
 
+- **Hidden "Code Review" / "Compilation" tab in a narrow tool window.** When the Compilation
+  Checker window was too narrow for both tabs, the platform silently hid one. The tabs now turn
+  into a dropdown ("Compilation Checker: Code Review ▾") when they do not fit, and back into tabs
+  when the window is widened.
 - **"Write-unsafe context!" on push and commit message generation.** Documents were saved, the
   build was started and the generated commit message was set from `ModalityState.any()`, which is
   write-unsafe (asserted in IntelliJ IDEA 2026.3). They now run under the EDT's current modality:
