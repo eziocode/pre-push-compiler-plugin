@@ -444,7 +444,7 @@ Service behaviour:
 - Delegates: `InlineTypedHandler.charTyped` calls `onEvent(editor, TYPED)` and returns `Result.CONTINUE`; `InlineEnterHandler.postProcessEnter` calls `onEvent(editor, ENTER)` and returns `Result.Continue`; `InlineBackspaceHandler.charDeleted` calls `onEvent(editor, BACKSPACE)` and returns `false`, `beforeCharDeleted` is empty. Each returns at once when `enabled` is false.
 - `InlineSuggestAction`: `getActionUpdateThread() = BGT`; enabled when an editor is present and the feature is on; calls `requestNow`. `ToggleInlineSuggestAction extends ToggleAction`: flips `State.enabled`, calls `settingsChanged()`, dismisses suggestions in all open editors when turning off.
 
-- [ ] **Step 1: Write failing tests**
+- [x] **Step 1: Write failing tests**
 
 ```java
 // InlineTriggerPolicyTest
@@ -551,11 +551,11 @@ public void testSensitiveFileSendsNothing() {
 }
 ```
 
-- [ ] **Step 2: Run** `./gradlew test --tests "com.github.prepushchecker.inline.*"`. Expected: compile failure.
-- [ ] **Step 3: Implement policy and cache; run their two test classes.** Expected: PASS.
-- [ ] **Step 4: Implement the service, delegates, actions and registrations.**
-- [ ] **Step 5: Run** `./gradlew test --tests "com.github.prepushchecker.inline.*"`. Expected: PASS.
-- [ ] **Step 6: Commit** `feat: add inline suggestion engine, triggers and actions`.
+- [x] **Step 2: Run** `./gradlew test --tests "com.github.prepushchecker.inline.*"`. Expected: compile failure.
+- [x] **Step 3: Implement policy and cache; run their two test classes.** Expected: PASS.
+- [x] **Step 4: Implement the service, delegates, actions and registrations.**
+- [x] **Step 5: Run** `./gradlew test --tests "com.github.prepushchecker.inline.*"`. Expected: PASS.
+- [x] **Step 6: Commit** `feat: add inline suggestion engine, triggers and actions`.
 
 ---
 
@@ -585,12 +585,43 @@ Page, in the style of `CodeReviewConfigurable.kt` (every group below the checkbo
 - Row "Extra instructions:" text area, 3 rows.
 - `apply()` calls `super.apply()`, then `InlineSuggestSettings.clamp(state)` and `InlineSuggestService.getInstance().settingsChanged()`.
 
-- [ ] **Step 1: Implement the configurable and registration.**
-- [ ] **Step 2: Release edits.** `gradle.properties`: `pluginVersion=2.11.0`. `CHANGELOG.md`: new `## [2.11.0] - 2026-11-16` section under `[Unreleased]`, `### Added` entry "Inline AI suggestions" covering: ghost text with Tab/Esc, own provider and model, automatic on OpenAI/Anthropic/Gemini/Ollama and shortcut-only (Alt+\) on other providers, project context, off by default, settings page path. One feature bullet in the `plugin.xml` `<description>` Features list and in `README.md`.
-- [ ] **Step 3: Run** `./gradlew compileJava compileKotlin`. Expected: BUILD SUCCESSFUL, no new deprecation warnings.
-- [ ] **Step 4: Run** `./gradlew test`. Expected: all tests pass.
-- [ ] **Step 5: Run** `./gradlew verifyPlugin`. Expected: zero deprecated, experimental, scheduled-for-removal and internal API usages.
-- [ ] **Step 6: Run** `./gradlew verifyPlugin -PverifyLocalIde="/Applications/IntelliJ IDEA.app"`, then read `build/reports/pluginVerifier/IU-*/plugins/*/*/{deprecated,internal-api,experimental-api}-usages.txt`. Expected: empty or absent. The task itself fails on about 17 unresolved `com.intellij.openapi.vcs.*` / `dvcs` classes: known local-install artifact, not a failure of this work.
+- [x] **Step 1: Implement the configurable and registration.**
+- [x] **Step 2: Release edits.** `gradle.properties`: `pluginVersion=2.11.0`. `CHANGELOG.md`: new `## [2.11.0] - 2026-11-16` section under `[Unreleased]`, `### Added` entry "Inline AI suggestions" covering: ghost text with Tab/Esc, own provider and model, automatic on OpenAI/Anthropic/Gemini/Ollama and shortcut-only (Alt+\) on other providers, project context, off by default, settings page path. One feature bullet in the `plugin.xml` `<description>` Features list and in `README.md`.
+- [x] **Step 3: Run** `./gradlew compileJava compileKotlin`. Expected: BUILD SUCCESSFUL, no new deprecation warnings.
+- [x] **Step 4: Run** `./gradlew test`. Expected: all tests pass.
+- [x] **Step 5: Run** `./gradlew verifyPlugin`. Expected: zero deprecated, experimental, scheduled-for-removal and internal API usages.
+- [x] **Step 6: Run** `./gradlew verifyPlugin -PverifyLocalIde="/Applications/IntelliJ IDEA.app"`, then read `build/reports/pluginVerifier/IU-*/plugins/*/*/{deprecated,internal-api,experimental-api}-usages.txt`. Expected: empty or absent. The task itself fails on about 17 unresolved `com.intellij.openapi.vcs.*` / `dvcs` classes: known local-install artifact, not a failure of this work.
 - [ ] **Step 7: Manual check with `./gradlew runIde`:** enable the feature with Ollama, type in a Java file, see ghost text, Tab accepts, Esc dismisses, Alt+\ works, Tab still indents with the feature off. Record what was and was not checked.
-- [ ] **Step 8: Run** `./gradlew buildPlugin`. Expected: `build/distributions/pre-push-compiler-plugin-2.11.0.zip`.
-- [ ] **Step 9: Commit** `feat: inline suggestions settings page, release 2.11.0`.
+- [x] **Step 8: Run** `./gradlew buildPlugin`. Expected: `build/distributions/pre-push-compiler-plugin-2.11.0.zip`.
+- [x] **Step 9: Commit** `feat: inline suggestions settings page, release 2.11.0`.
+
+
+## Execution evidence (2026-11-16)
+
+- Tasks 1–6 were already committed before remaining work resumed; their unchecked historical
+  step lists above were left unchanged rather than reconstructing unobserved test failures.
+- Task 7: inline suite passed (57 tests before additional focus regression); Esc cancellation
+  regression failed before enabling the pending-request handler, then passed. Focus-loss
+  regression also failed with cancellation omitted. Reviewer found retained Future history;
+  removed collection entirely so production keeps only current request plus counters.
+- Task 8 settings panel creation/reset/apply platform smoke test passed. Release version 2.11.0.
+- `compileJava compileKotlin test buildPlugin`: initial full run passed. Final `test buildPlugin`
+  after review fixes passed: 464 tests across 64 classes, zero failures/errors/skips. ZIP:
+  `build/distributions/pre-push-compiler-plugin-2.11.0.zip`.
+- Recommended verifier passed all six IC builds (233, 241, 242, 243, 251, 252), with no
+  deprecated, experimental, scheduled-for-removal or internal API usage reports.
+- Installed-IU 263 verification ran and failed on unresolved VCS/dvcs classes, matching the
+  documented local-install artifact. No forbidden API usage report files were generated.
+- An intermediate overlapping test invocation collided while writing XML results; discarded
+  that result and reran the entire suite alone. The final 464-test run above is authoritative.
+- Manual `runIde` with a real AI provider was not performed. Platform tests prove editor actions
+  and settings lifecycle with fake providers; visual appearance and live-provider latency remain
+  manual validation items.
+- Ruling: keep explicit 15-second HTTP / 60-second slow-provider completion timeout from plan
+  and implemented request API; design's abbreviated factory signature omits timeout parameter.
+- Final rebuilt-ZIP combined verifier completed: six recommended IC builds Compatible;
+  IU-263.7307.200 reports exactly 17 unresolved VCS/dvcs compatibility problems, all outside
+  the inline package. No deprecated, experimental, scheduled-for-removal or internal API
+  report files. Combined Gradle task fails solely with `COMPATIBILITY_PROBLEMS`.
+- Final fresh reviewer approved engine lifecycle fixes, settings UI and docs with no important
+  findings remaining. Task 7 commit: `9f335bf`.

@@ -32,6 +32,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
+## [2.11.0] - 2026-11-16
+
+### Added
+
+- **Inline AI suggestions**: ghost text at the caret, Tab to accept, Esc to dismiss or cancel.
+  Independent provider and model; automatic typing-pause suggestions on OpenAI, Anthropic,
+  Gemini and Ollama; shortcut-only (Alt+\) on other providers. Optional project class signatures
+  and open-file context, line and context budgets, disabled extensions and extra instructions.
+  Off by default. Enable in Settings → Tools → Pre-Push Checker → Inline Suggestions.
+
 ## [2.10.0] - 2026-11-16
 
 ### Added
