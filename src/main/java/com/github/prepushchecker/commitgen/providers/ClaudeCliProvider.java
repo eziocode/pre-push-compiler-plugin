@@ -60,9 +60,9 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             String out = AiCliRunner.run(label, cmd,
-                AiCliCommand.combinePrompt(request.system(), request.user(), request.structured()),
+                AiCliCommand.combinePrompt(request.system(), request.user(), request),
                 workDir, env, request.timeout(), AUTH_HINT);
-            return AiCliRunner.finish(label, out, AUTH_HINT, request.structured());
+            return AiCliRunner.finish(label, out, AUTH_HINT, request);
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }

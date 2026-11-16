@@ -215,4 +215,23 @@ public class AiOutputSanitizerTest extends TestCase {
         assertNull(AiOutputSanitizer.cleanStructured("{\"other\":1} no answer", "findings"));
         assertNull(AiOutputSanitizer.cleanStructured("", "findings"));
     }
+
+    public void testCompletionKeepsCodeThatLooksLikeNoise() {
+        String code = "    [info] = load();\n    String s = \"quoted\";\n    \u2502 box";
+        assertEquals(code, AiOutputSanitizer.cleanCompletion(code));
+    }
+
+    public void testCompletionUnwrapsFenceAndAnsi() {
+        assertEquals("return a + b;",
+            AiOutputSanitizer.cleanCompletion("\u001B[32m```java\nreturn a + b;\n```\u001B[0m\n"));
+    }
+
+    public void testCompletionDropsThinkingBlock() {
+        assertEquals("x++;", AiOutputSanitizer.cleanCompletion("<thinking>plan</thinking>\nx++;"));
+    }
+
+    public void testCompletionBlankStaysBlank() {
+        assertEquals("", AiOutputSanitizer.cleanCompletion("  \n\n"));
+        assertEquals("", AiOutputSanitizer.cleanCompletion(null));
+    }
 }

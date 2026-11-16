@@ -72,7 +72,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
             String stdout;
             try {
                 stdout = AiCliRunner.run(label, cmd,
-                    AiCliCommand.combinePrompt(request.system(), request.user(), request.structured()),
+                    AiCliCommand.combinePrompt(request.system(), request.user(), request),
                     workDir, env, request.timeout(), AUTH_HINT);
             } catch (RuntimeException e) {
                 String msg = String.valueOf(e.getMessage());
@@ -86,7 +86,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
             String result = Files.isRegularFile(lastMessage)
                 ? Files.readString(lastMessage, StandardCharsets.UTF_8)
                 : stdout;
-            return AiCliRunner.finish(label, result, AUTH_HINT, request.structured());
+            return AiCliRunner.finish(label, result, AUTH_HINT, request);
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }

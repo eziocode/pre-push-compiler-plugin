@@ -57,7 +57,7 @@ public final class CustomCliProvider implements CommitMessageProvider {
         }
 
         String template = effectiveTemplate(s.customCliArgs, known);
-        String prompt = AiCliCommand.combinePrompt(request.system(), request.user(), request.structured());
+        String prompt = AiCliCommand.combinePrompt(request.system(), request.user(), request);
         List<String> cmd = AiCliCommand.fromTemplate(path, template, request.modelOr(s.customCliModel), prompt);
         String stdin = AiCliCommand.usesPromptArg(template) ? null : prompt;
 
@@ -75,7 +75,7 @@ public final class CustomCliProvider implements CommitMessageProvider {
                 }
                 throw e;
             }
-            return AiCliRunner.finish(label, out, hint, request.structured());
+            return AiCliRunner.finish(label, out, hint, request);
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }

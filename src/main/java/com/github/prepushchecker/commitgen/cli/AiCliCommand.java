@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.cli;
 
+import com.github.prepushchecker.commitgen.AiRequest;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -133,6 +134,20 @@ public final class AiCliCommand {
                 + "do not run tools or edit files."
             : "Reply with ONLY the commit message text — no preamble, no code fences, "
                 + "do not run tools or edit files.";
+        return systemPrompt.strip() + "\n\n" + reply + "\n\n---\n\n" + userPrompt.strip() + "\n";
+    }
+
+    /**
+     * Request-aware overload: completions ask for the code to insert only; every other kind
+     * uses {@link #combinePrompt(String, String, boolean)} unchanged.
+     */
+    public static @NotNull String combinePrompt(@NotNull String systemPrompt, @NotNull String userPrompt,
+                                                @NotNull AiRequest request) {
+        if (request.kind() != AiRequest.Kind.COMPLETION) {
+            return combinePrompt(systemPrompt, userPrompt, request.structured());
+        }
+        String reply = "Reply with ONLY the code to insert \u2014 no explanation, no code fences, "
+            + "do not run tools or edit files.";
         return systemPrompt.strip() + "\n\n" + reply + "\n\n---\n\n" + userPrompt.strip() + "\n";
     }
 

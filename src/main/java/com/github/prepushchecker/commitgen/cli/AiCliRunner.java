@@ -2,6 +2,7 @@ package com.github.prepushchecker.commitgen.cli;
 
 import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.AiOutputSanitizer;
+import com.github.prepushchecker.commitgen.AiRequest;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.intellij.openapi.progress.ProcessCanceledException;
@@ -180,6 +181,26 @@ public final class AiCliRunner {
             throw new RuntimeException(label + " returned an empty response.\n" + authHint);
         }
         return text;
+    }
+
+    /**
+     * Request-aware {@link #finish(String, String, String, boolean)}: completions are cleaned
+     * with {@link AiOutputSanitizer#cleanCompletion} (code is not treated as commit-message
+     * text); every other kind behaves as before.
+     */
+    public static @NotNull String finish(@NotNull String label, @Nullable String text,
+                                         @NotNull String authHint, @NotNull AiRequest request) {
+        if (request.kind() != AiRequest.Kind.COMPLETION) {
+            return finish(label, text, authHint, request.structured());
+        }
+        String cleaned = AiOutputSanitizer.cleanCompletion(text);
+        if (cleaned.isBlank()) {
+            boolean hadOutput = text != null && !text.isBlank();
+            throw new RuntimeException(label + (hadOutput
+                ? ": " + AiOutputSanitizer.EMPTY_RESULT_MESSAGE
+                : " returned an empty response.") + "\n" + authHint);
+        }
+        return cleaned;
     }
 
     /** A line the CLI itself marks as an error ({@code ERROR: …}, {@code Error: …}, {@code fatal: …}). */

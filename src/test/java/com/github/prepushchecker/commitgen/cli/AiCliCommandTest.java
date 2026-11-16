@@ -1,5 +1,6 @@
 package com.github.prepushchecker.commitgen.cli;
 
+import com.github.prepushchecker.commitgen.AiRequest;
 import junit.framework.TestCase;
 
 import java.nio.file.Path;
@@ -54,6 +55,24 @@ public class AiCliCommandTest extends TestCase {
         assertTrue(p.contains("ONLY the JSON object"));
         assertFalse(p.contains("commit message"));
         assertTrue(AiCliCommand.combinePrompt("s", "u").contains("ONLY the commit message"));
+    }
+
+    public void testCompletionPromptAsksForCodeOnly() {
+        AiRequest req = AiRequest.completion("sys", "usr", null, AiRequest.COMPLETION_FAST_TIMEOUT);
+        String p = AiCliCommand.combinePrompt(req.system(), req.user(), req);
+        assertTrue(p.contains("Reply with ONLY the code to insert \u2014 no explanation, no code fences, "
+            + "do not run tools or edit files."));
+        assertFalse(p.contains("commit message"));
+        assertFalse(p.contains("JSON"));
+    }
+
+    public void testRequestOverloadMatchesBooleanOverloadForOtherKinds() {
+        AiRequest commit = AiRequest.commitMessage("sys", "usr");
+        assertEquals(AiCliCommand.combinePrompt("sys", "usr", false),
+            AiCliCommand.combinePrompt("sys", "usr", commit));
+        AiRequest review = AiRequest.review("sys", "usr");
+        assertEquals(AiCliCommand.combinePrompt("sys", "usr", true),
+            AiCliCommand.combinePrompt("sys", "usr", review));
     }
 
     public void testEveryCustomPresetPassesPromptAsOneArgument() {

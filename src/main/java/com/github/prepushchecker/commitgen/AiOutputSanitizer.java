@@ -114,6 +114,47 @@ public final class AiOutputSanitizer {
         return unquote(tidy(text));
     }
 
+    private static final Pattern FENCE_OPEN = Pattern.compile("^[ \\t]*```[ \\t]*[A-Za-z0-9_+.#-]*[ \\t]*$");
+    private static final Pattern FENCE_CLOSE = Pattern.compile("^[ \\t]*```[ \\t]*$");
+
+    /**
+     * Cleans the answer of a code-completion request. Terminal escapes and thinking/tool blocks
+     * are removed and one outer code fence is unwrapped; the code itself is left untouched, so
+     * lines that look like log noise, quotes and the first line's indentation survive. Leading and
+     * trailing blank lines and trailing whitespace are dropped.
+     *
+     * @return the code, or an empty string when nothing usable is left
+     */
+    public static @NotNull String cleanCompletion(@Nullable String raw) {
+        if (raw == null) return "";
+        String text = stripTerminalNoise(raw);
+        text = SELF_CLOSING_TAG.matcher(text).replaceAll("");
+        text = TAG_BLOCK.matcher(text).replaceAll("");
+        text = ORPHAN_THINK_CLOSE.matcher(text).replaceFirst("");
+        text = STRAY_TAG.matcher(text).replaceAll("");
+
+        List<String> lines = new ArrayList<>(List.of(text.split("\n", -1)));
+        trimBlankEnds(lines);
+        if (lines.size() >= 2 && FENCE_OPEN.matcher(lines.get(0)).matches()
+            && FENCE_CLOSE.matcher(lines.get(lines.size() - 1)).matches()) {
+            lines.remove(lines.size() - 1);
+            lines.remove(0);
+            trimBlankEnds(lines);
+        }
+        return stripTrailingWhitespace(String.join("\n", lines));
+    }
+
+    private static void trimBlankEnds(@NotNull List<String> lines) {
+        while (!lines.isEmpty() && lines.get(0).isBlank()) lines.remove(0);
+        while (!lines.isEmpty() && lines.get(lines.size() - 1).isBlank()) lines.remove(lines.size() - 1);
+    }
+
+    private static @NotNull String stripTrailingWhitespace(@NotNull String s) {
+        int end = s.length();
+        while (end > 0 && Character.isWhitespace(s.charAt(end - 1))) end--;
+        return s.substring(0, end);
+    }
+
     /** Like {@link #clean} but throws when nothing usable is left. */
     public static @NotNull String cleanOrThrow(@Nullable String raw) {
         String cleaned = clean(raw);

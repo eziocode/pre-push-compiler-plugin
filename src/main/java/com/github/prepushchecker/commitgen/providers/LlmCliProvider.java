@@ -59,7 +59,7 @@ public final class LlmCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             String out = AiCliRunner.run(label, cmd, null, workDir, Map.of(), request.timeout(), HINT);
-            return AiCliRunner.finish(label, out, HINT, request.structured());
+            return AiCliRunner.finish(label, out, HINT, request);
         } finally {
             AiCliRunner.deleteQuietly(workDir);
         }
