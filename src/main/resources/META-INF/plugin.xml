@@ -1089,6 +1089,8 @@
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageSettings"/>
         <applicationService
             serviceImplementation="com.github.prepushchecker.inline.InlineSuggestSettings"/>
+        <editorActionHandler action="EditorTab" implementationClass="com.github.prepushchecker.inline.InlineTabHandler" order="first"/>
+        <editorActionHandler action="EditorEscape" implementationClass="com.github.prepushchecker.inline.InlineEscapeHandler" order="first"/>
         <projectService
             serviceImplementation="com.github.prepushchecker.commitgen.CommitMessageGeneratorService"/>
         <!-- Settings → Tools → Pre-Push Checker (General) with AI Provider, Commit Message, Code Review -->
