@@ -103,7 +103,8 @@ public final class GenerateCommitMessageAction extends AnAction {
                             CommitMessageGeneratorService.getInstance(project).generate(includedChanges, includedUnversioned);
                         indicator.checkCanceled();
                         String finalMessage = message;
-                        ApplicationManager.getApplication().invokeLater(() -> {
+                        // setText edits the commit message document: needs a write-safe context.
+                        com.github.prepushchecker.WriteSafeEdt.invokeLater(() -> {
                             if (project.isDisposed() || indicator.isCanceled()) return;
                             if (commitWorkflowUi != null) {
                                 commitWorkflowUi.getCommitMessageUi().setText(finalMessage);
@@ -117,7 +118,7 @@ public final class GenerateCommitMessageAction extends AnAction {
                                     AllIcons.Actions.Lightning,
                                     null);
                             }
-                        }, ModalityState.any());
+                        });
                     } catch (ProcessCanceledException cancelled) {
                         throw cancelled;
                     } catch (Exception ex) {

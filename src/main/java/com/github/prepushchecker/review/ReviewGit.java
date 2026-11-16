@@ -99,6 +99,36 @@ final class ReviewGit {
         return git(root, List.of("ls-files", "--error-unmatch", "--", relPath)) != null;
     }
 
+    /** {@code rev} resolved to a commit id, or {@code null} when git does not have that commit. */
+    static @Nullable String resolveCommit(@NotNull Path root, @NotNull String rev) {
+        String out = git(root, List.of("rev-parse", "--verify", "-q", rev + "^{commit}"));
+        return out == null || out.isBlank() ? null : out.trim();
+    }
+
+    static final int REMOTE_HISTORY_COMMITS = 50;
+
+    /**
+     * Blob ids {@code relPath} has had in remote-tracking history: before and after each of the
+     * last {@link #REMOTE_HISTORY_COMMITS} remote commits that touched it. Content with one of
+     * these ids is already on the remote (a revert, or a merge of the remote's own changes).
+     */
+    static @NotNull java.util.Set<String> remoteBlobs(@NotNull Path root, @NotNull String relPath) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        String stdout = git(root, List.of("log", "--remotes", "-n", String.valueOf(REMOTE_HISTORY_COMMITS),
+            "--format=", "--raw", "--no-abbrev", "--no-renames", "--", relPath));
+        if (stdout == null) return out;
+        for (String line : stdout.split("\n")) {
+            if (!line.startsWith(":")) continue;
+            int tab = line.indexOf('\t');
+            String[] meta = (tab < 0 ? line : line.substring(0, tab)).split(" ");
+            if (meta.length < 4) continue;
+            for (String id : new String[]{meta[2], meta[3]}) {
+                if (!id.isEmpty() && !id.chars().allMatch(c -> c == '0')) out.add(id);
+            }
+        }
+        return out;
+    }
+
     static @Nullable String headSha(@NotNull Path root) {
         String out = git(root, List.of("rev-parse", "--verify", "-q", "HEAD"));
         return out == null || out.isBlank() ? null : out.trim();

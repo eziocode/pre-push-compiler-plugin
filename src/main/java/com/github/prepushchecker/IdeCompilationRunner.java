@@ -2,7 +2,6 @@ package com.github.prepushchecker;
 
 import com.intellij.openapi.application.Application;
 import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompileStatusNotification;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
@@ -184,9 +183,10 @@ final class IdeCompilationRunner {
                 latch.countDown();
             });
 
-        // ModalityState.any(): starting the build only schedules it; an open modal dialog
-        // (Settings, commit) must not hold a push check hostage until it is closed.
-        application.invokeAndWait(startCompilation, ModalityState.any());
+        // An open modal dialog (Settings, commit) must not hold a push check hostage until it is
+        // closed, and make() saves documents, so it needs a write-safe context (see WriteSafeEdt).
+        // Not awaited here: the loop below waits for the result within the deadline.
+        java.util.concurrent.CompletableFuture<Void> started = WriteSafeEdt.invokeLater(startCompilation);
 
         try {
             while (true) {
@@ -201,6 +201,16 @@ final class IdeCompilationRunner {
                         TimeUnit.NANOSECONDS.toMillis(remainingNanos)));
                 if (latch.await(waitMillis, TimeUnit.MILLISECONDS)) {
                     return result.get();
+                }
+                if (started.isCompletedExceptionally()) {
+                    try {
+                        started.join();
+                    } catch (java.util.concurrent.CompletionException e) {
+                        Throwable cause = e.getCause();
+                        if (cause instanceof RuntimeException re) throw re;
+                        if (cause instanceof Error err) throw err;
+                        throw new IllegalStateException(cause);
+                    }
                 }
                 indicator.checkCanceled();
             }

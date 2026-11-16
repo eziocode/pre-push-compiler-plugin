@@ -96,6 +96,9 @@
                 in the rule file; <code>mandatory: true</code> in the file turns it on for everyone.</li>
             <li>Resolve with AI: no more read-access error, keeps lines it should not delete, and follows
                 the existing description pattern.</li>
+            <li>No more "Write-unsafe context" errors when pushing or generating a commit message.</li>
+            <li>Review gate: reverts, branch deletions, merges of remote changes and pushing a branch
+                other than the current one are handled without needless reviews.</li>
         </ul>
         <h3>2.9.0 — Cleaner AI output, faster pushes, shared stats</h3>
         <ul>

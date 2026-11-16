@@ -8,6 +8,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **"Write-unsafe context!" on push and commit message generation.** Documents were saved, the
+  build was started and the generated commit message was set from `ModalityState.any()`, which is
+  write-unsafe (asserted in IntelliJ IDEA 2026.3). They now run under the EDT's current modality:
+  write-safe, and still not blocked by an open dialog.
+- **Review gate and git edge cases:**
+  - A commit and its revert in the same push no longer ask for a review (new branches now use the
+    net change from where the branch left the remote, like existing branches already did).
+  - Content already on the remote is not gated: `git revert` of pushed code, or merging
+    `origin/main` into a branch.
+  - Reverting a file to a version that was already approved keeps it approved (last 10 approved
+    versions per file are remembered).
+  - Deleting a remote branch no longer runs the check on the current branch's outgoing files.
+  - `git push origin other-branch` reviews the pushed commit, not the checked-out one.
+  - When the remote moved on and was not fetched, the pushed files come from the commits no remote
+    has, instead of a failed diff.
+
 ---
 
 ## [2.10.0] - 2026-11-16

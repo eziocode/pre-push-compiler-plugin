@@ -49,4 +49,27 @@ public class ReviewStateStoreTest extends TestCase {
         store.reviews().get(0).findings.get(0).resolved = true;
         assertFalse(store.isApproved("/r/A.java", "blob1"));
     }
+
+    public void testRevertToEarlierApprovedVersionStaysApproved() {
+        ReviewStateStore store = new ReviewStateStore();
+        store.record("/r/A.java", "v1", List.of());
+        // v2 reviewed with a finding, then the developer reverts the edit back to v1.
+        store.record("/r/A.java", "v2", List.of(new ReviewFinding("/r/A.java", 1, "", "m", "")));
+        assertTrue(store.isApproved("/r/A.java", "v1"));
+        assertFalse(store.isApproved("/r/A.java", "v2"));
+        // A version that only ever had open findings is never in the history.
+        store.record("/r/A.java", "v3", List.of());
+        assertFalse(store.isApproved("/r/A.java", "v2"));
+        assertTrue(store.isApproved("/r/A.java", "v1"));
+        assertTrue(store.isApproved("/r/A.java", "v3"));
+        store.clear();
+        assertFalse(store.isApproved("/r/A.java", "v1"));
+    }
+
+    public void testApprovedHistoryIsBounded() {
+        ReviewStateStore store = new ReviewStateStore();
+        for (int i = 0; i <= ReviewStateStore.MAX_APPROVED_HISTORY + 1; i++) store.record("/r/A.java", "v" + i, List.of());
+        assertFalse(store.isApproved("/r/A.java", "v0"));
+        assertTrue(store.isApproved("/r/A.java", "v2"));
+    }
 }

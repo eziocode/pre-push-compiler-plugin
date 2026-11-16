@@ -21,19 +21,24 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>A file is <b>approved</b> for a content id when the review of that id has no open
  * finding. Resolving the last finding re-stamps the id with the file's current content, so
  * the fix itself does not ask for a new review. Any later edit changes the id, and the file is
- * unreviewed again. Kept in the workspace file: personal, never shared.</p>
+ * unreviewed again, unless the edit restores a version approved earlier (the last
+ * {@link #MAX_APPROVED_HISTORY} are kept), e.g. a revert. Kept in the workspace file: personal,
+ * never shared.</p>
  */
 @Service(Service.Level.PROJECT)
 @State(name = "PrePushReviewState", storages = @Storage(StoragePathMacros.WORKSPACE_FILE))
 public final class ReviewStateStore implements PersistentStateComponent<ReviewStateStore.StateBean> {
 
     static final int MAX_FILES = 2000;
+    static final int MAX_APPROVED_HISTORY = 10;
 
     public static final class FileReview {
         public String path = "";
         public String contentId = "";
         public long reviewedAt;
         public List<ReviewFinding> findings = new ArrayList<>();
+        /** Earlier content ids of this file that were approved, oldest first. */
+        public List<String> approvedIds = new ArrayList<>();
 
         public boolean hasOpenFindings() {
             for (ReviewFinding f : findings) if (f.isOpen()) return true;
@@ -71,8 +76,15 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
     /** Replaces the review of {@code path} with a new one for {@code contentId}. */
     public void record(@NotNull String path, @NotNull String contentId, @NotNull List<ReviewFinding> findings) {
         synchronized (this) {
+            FileReview previous = find(path);
+            List<String> history = new ArrayList<>();
+            if (previous != null) {
+                history.addAll(previous.approvedIds);
+                if (!previous.hasOpenFindings()) remember(history, previous.contentId);
+            }
             state.files.removeIf(f -> f.path.equals(path));
             FileReview review = new FileReview();
+            review.approvedIds = history;
             review.path = path;
             review.contentId = contentId;
             review.reviewedAt = System.currentTimeMillis();
@@ -90,7 +102,9 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
     public synchronized boolean isApproved(@NotNull String path, @Nullable String contentId) {
         if (contentId == null || contentId.isEmpty()) return false;
         FileReview review = find(path);
-        return review != null && review.contentId.equals(contentId) && !review.hasOpenFindings();
+        if (review == null) return false;
+        if (review.contentId.equals(contentId) && !review.hasOpenFindings()) return true;
+        return review.approvedIds.contains(contentId);
     }
 
     public synchronized @Nullable FileReview review(@NotNull String path) {
@@ -153,6 +167,13 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         listeners.remove(listener);
     }
 
+    private static void remember(List<String> history, String contentId) {
+        if (contentId == null || contentId.isEmpty()) return;
+        history.remove(contentId);
+        history.add(contentId);
+        while (history.size() > MAX_APPROVED_HISTORY) history.remove(0);
+    }
+
     private @Nullable FileReview find(@NotNull String path) {
         for (FileReview f : state.files) if (f.path.equals(path)) return f;
         return null;
@@ -163,6 +184,7 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         c.path = r.path;
         c.contentId = r.contentId;
         c.reviewedAt = r.reviewedAt;
+        c.approvedIds = new ArrayList<>(r.approvedIds);
         for (ReviewFinding f : r.findings) {
             ReviewFinding fc = new ReviewFinding(f.path, f.line, f.rule, f.message, f.suggestion);
             fc.id = f.id;

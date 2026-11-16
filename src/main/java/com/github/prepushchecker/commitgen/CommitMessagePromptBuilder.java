@@ -1,8 +1,5 @@
 package com.github.prepushchecker.commitgen;
 
-import com.intellij.openapi.application.ApplicationManager;
-import com.intellij.openapi.application.ModalityState;
-import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vcs.changes.Change;
 import com.intellij.openapi.vcs.changes.ContentRevision;
@@ -179,15 +176,8 @@ final class CommitMessagePromptBuilder {
     // ── Diff collection ───────────────────────────────────────────────────────
 
     private static void flushOpenDocuments() {
-        if (ApplicationManager.getApplication().isDispatchThread()) {
-            FileDocumentManager.getInstance().saveAllDocuments();
-            return;
-        }
-        // any(): a modal dialog (e.g. the commit dialog) must not block the save and hang this task.
-        ApplicationManager.getApplication().invokeAndWait(
-            () -> FileDocumentManager.getInstance().saveAllDocuments(),
-            ModalityState.any()
-        );
+        // A modal dialog (e.g. the commit dialog) must not block the save and hang this task.
+        com.github.prepushchecker.WriteSafeEdt.saveAllDocuments();
     }
 
     /**

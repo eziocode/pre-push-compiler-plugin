@@ -6,7 +6,6 @@ import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
 import com.intellij.openapi.diagnostic.Logger;
-import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
@@ -271,6 +270,7 @@ public final class PrePushLocalServer implements Disposable {
             String expectedHead = "";
             String updatesFingerprint = "";
             String rangeBase = "";
+            String pushedHead = "";
             String presentedToken = "";
             List<String> requestedPaths = new ArrayList<>();
             boolean pathLimitExceeded = false;
@@ -305,6 +305,12 @@ public final class PrePushLocalServer implements Disposable {
                     if (rangeBase.isEmpty() && base.matches("[0-9a-fA-F]{7,64}")) rangeBase = base;
                     continue;
                 }
+                if (versionTwo && trimmed.startsWith("PUSHED=")) {
+                    // The pushed commit; differs from HEAD for "git push origin other-branch".
+                    String sha = trimmed.substring("PUSHED=".length()).trim();
+                    if (pushedHead.isEmpty() && sha.matches("[0-9a-fA-F]{7,64}")) pushedHead = sha;
+                    continue;
+                }
                 if (versionTwo && trimmed.startsWith("PATH=")) {
                     trimmed = trimmed.substring("PATH=".length());
                 }
@@ -336,7 +342,8 @@ public final class PrePushLocalServer implements Disposable {
                 expectedHead.trim(),
                 updatesFingerprint.trim(),
                 pathLimitExceeded ? Collections.emptyList() : requestedPaths,
-                rangeBase);
+                rangeBase,
+                pushedHead);
             PrePushValidationCoordinator.Outcome outcome = runCompile(request);
             if (outcome.status() == PrePushValidationCoordinator.Status.COMPLETED) {
                 com.github.prepushchecker.stats.SharedStats.getInstance().maybeAskConsent(project);
@@ -368,9 +375,7 @@ public final class PrePushLocalServer implements Disposable {
     }
 
     private PrePushValidationCoordinator.Outcome runCompile(ValidationRequest request) {
-        ApplicationManager.getApplication().invokeAndWait(
-            () -> FileDocumentManager.getInstance().saveAllDocuments(),
-            ModalityState.any());
+        WriteSafeEdt.saveAllDocuments();
 
         List<String> normalizedPaths = restrictToProjectRoots(
             normalizeRequestedPaths(request.requestedPaths()));
@@ -382,7 +387,8 @@ public final class PrePushLocalServer implements Disposable {
             request.expectedHead(),
             request.updatesFingerprint(),
             normalizedPaths,
-            request.rangeBase());
+            request.rangeBase(),
+            request.pushedHead());
         SnapshotToken before = captureSnapshot(normalizedRequest);
         String requestKey = buildRequestKey(normalizedRequest, projectScope, before);
 
@@ -485,6 +491,7 @@ public final class PrePushLocalServer implements Disposable {
             List<String> lines = com.github.prepushchecker.review.ReviewService.getInstance(project).checkPush(
                 Path.of(request.repositoryRoot()), paths,
                 request.rangeBase().isBlank() ? null : request.rangeBase(),
+                request.pushedHead().isBlank() ? null : request.pushedHead(),
                 com.intellij.openapi.progress.ProgressManager.getInstance().getProgressIndicator(),
                 java.time.Duration.ofSeconds(REVIEW_BUDGET_SECONDS));
             if (!lines.isEmpty()) publishErrors(lines);
@@ -659,12 +666,8 @@ public final class PrePushLocalServer implements Disposable {
             throw new TimeoutException("Not enough time left to compile after the snapshot check.");
         }
 
-        // Only the save needs the EDT. ModalityState.any(): an open dialog must not stall a push.
-        ApplicationManager.getApplication().invokeAndWait(() -> {
-            if (!project.isDisposed()) {
-                FileDocumentManager.getInstance().saveAllDocuments();
-            }
-        }, ModalityState.any());
+        // Only the save needs the EDT; an open dialog must not stall a push (see WriteSafeEdt).
+        if (!project.isDisposed()) WriteSafeEdt.saveAllDocuments();
         if (project.isDisposed()) {
             throw new IllegalStateException("project disposed");
         }
@@ -725,7 +728,8 @@ public final class PrePushLocalServer implements Disposable {
         @NotNull String expectedHead,
         @NotNull String updatesFingerprint,
         @NotNull List<String> requestedPaths,
-        @NotNull String rangeBase
+        @NotNull String rangeBase,
+        @NotNull String pushedHead
     ) {
         private ValidationRequest {
             requestedPaths = List.copyOf(requestedPaths);

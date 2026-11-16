@@ -23,5 +23,7 @@ public final class CompilationCheckerToolWindowFactory implements ToolWindowFact
         Content reviewContent = ContentFactory.getInstance().createContent(review, ReviewService.TAB_NAME, false);
         reviewContent.setDisposer(review);
         toolWindow.getContentManager().addContent(reviewContent);
+
+        AdaptiveContentTabs.install(toolWindow);
     }
 }

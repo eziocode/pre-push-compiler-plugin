@@ -120,18 +120,24 @@ public final class ReviewService {
 
     /** Committed content at HEAD of {@code rels}, diffed from {@code base} when known. */
     @NotNull List<Target> pushTargets(@NotNull Path root, @NotNull List<String> rels, @Nullable String base) {
+        return pushTargets(root, rels, base, "HEAD");
+    }
+
+    /** Review targets for {@code rels} as committed in {@code rev}, diffed from {@code base}. */
+    @NotNull List<Target> pushTargets(@NotNull Path root, @NotNull List<String> rels, @Nullable String base,
+                                      @NotNull String rev) {
         List<Target> out = new ArrayList<>();
-        Map<String, String> blobs = ReviewGit.blobsAt(root, "HEAD", rels);
+        Map<String, String> blobs = ReviewGit.blobsAt(root, rev, rels);
         String from = base != null ? base : ReviewGit.upstreamBase(root);
         for (String rel : rels) {
             String blob = blobs.get(rel);
             if (blob == null) continue;
-            String raw = from == null ? "" : ReviewGit.diffRange(root, from, "HEAD", rel);
+            String raw = from == null ? "" : ReviewGit.diffRange(root, from, rev, rel);
             String diff;
             if (!raw.isBlank()) {
                 diff = ReviewPrompt.numberDiff(raw);
             } else {
-                String content = ReviewGit.showAt(root, "HEAD", rel);
+                String content = ReviewGit.showAt(root, rev, rel);
                 if (content == null) continue;
                 diff = ReviewPrompt.numberNewFile(content);
             }
@@ -293,12 +299,13 @@ public final class ReviewService {
      * Push check for one repository. Returns blocking error lines (empty: allow).
      *
      * @param pushed     absolute paths the hook reported
-     * @param rangeBase  remote side of the pushed range, when the hook sent it
+     * @param rangeBase  base of the pushed range, when the hook sent it
+     * @param pushedHead the pushed commit, when the hook sent it; may differ from HEAD
      * @param budget     time the push may spend on an on-push review
      */
     public @NotNull List<String> checkPush(@NotNull Path root, @NotNull Collection<Path> pushed,
-                                           @Nullable String rangeBase, @Nullable ProgressIndicator indicator,
-                                           @NotNull Duration budget) {
+                                           @Nullable String rangeBase, @Nullable String pushedHead,
+                                           @Nullable ProgressIndicator indicator, @NotNull Duration budget) {
         if (!ReviewSettings.isEnabled(project)) return List.of();
         ReviewRules rules = rules(root);
         if (rules == null) return List.of();
@@ -318,14 +325,21 @@ public final class ReviewService {
             if (rules.inScope(rel)) rels.add(rel);
         }
         if (rels.isEmpty()) return List.of();
-        Map<String, String> blobs = ReviewGit.blobsAt(root, "HEAD", rels);
+        // Gate what is pushed, not the checkout: "git push origin other-branch" pushes another commit.
+        String rev = pushedHead == null ? null : ReviewGit.resolveCommit(root, pushedHead);
+        if (rev == null) rev = "HEAD";
+        String base = rangeBase == null ? null : ReviewGit.resolveCommit(root, rangeBase);
+        Map<String, String> blobs = ReviewGit.blobsAt(root, rev, rels);
         rels.removeIf(r -> !blobs.containsKey(r));
+        Path repo = root;
+        boolean history = rels.size() <= MAX_REMOTE_LOOKUPS;
+        rels.removeIf(r -> alreadyOnRemote(repo, r, blobs.get(r), base, history));
         if (rels.isEmpty()) return List.of();
 
         Classified c = classify(root, rels, blobs);
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
         if (decision.action() == ReviewGate.Action.REVIEW_NOW) {
-            RunResult r = review(pushTargets(root, decision.toReview(), rangeBase), indicator, budget);
+            RunResult r = review(pushTargets(root, decision.toReview(), base, rev), indicator, budget);
             c = classify(root, rels, blobs);
             decision = ReviewGate.afterPushReview(mandatory, c.unreviewed, c.open);
             if (decision.action() == ReviewGate.Action.ALLOW && r.findings() > 0) {
@@ -339,6 +353,21 @@ public final class ReviewService {
         if (decision.action() != ReviewGate.Action.BLOCK) return List.of();
         notifyBlocked(root, decision);
         return blockLines(root, decision);
+    }
+
+    static final int MAX_REMOTE_LOOKUPS = 200;
+
+    /**
+     * {@code true} when the pushed content of {@code rel} is already on the remote: unchanged from
+     * the range base, or equal to a version in remote history (a revert of pushed code, or a merge
+     * that brings in the remote's own changes). Pushing it adds no new code to review.
+     */
+    private static boolean alreadyOnRemote(@NotNull Path root, @NotNull String rel, @Nullable String blob,
+                                           @Nullable String base, boolean searchHistory) {
+        if (blob == null) return false;
+        if (base != null && blob.equals(ReviewGit.blobsAt(root, base, List.of(rel)).get(rel))) return true;
+        // One git log per file; skipped for very large pushes to keep the push fast.
+        return searchHistory && ReviewGit.remoteBlobs(root, rel).contains(blob);
     }
 
     /** Settings that change the gate's verdict, for the push request key. */
