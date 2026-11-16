@@ -35,6 +35,12 @@ tasks {
         options.encoding = "UTF-8"
     }
 
+    processResources {
+        val pluginVersion = providers.gradleProperty("pluginVersion")
+        inputs.property("pluginVersion", pluginVersion)
+        filesMatching("**/version.properties") { expand("version" to pluginVersion.get()) }
+    }
+
     withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile> {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
@@ -56,6 +62,10 @@ intellijPlatform {
     pluginVerification {
         ides {
             recommended()
+            // recommended() resolves IC, which stops at 2025.2, but Marketplace also verifies the unified
+            // IDEA 2025.3+ builds. Point at a local install to cover them without a large download:
+            //   ./gradlew verifyPlugin -PverifyLocalIde="/Applications/IntelliJ IDEA.app"
+            providers.gradleProperty("verifyLocalIde").orNull?.let { local(it) }
         }
     }
 

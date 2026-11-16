@@ -7,8 +7,8 @@ import org.jetbrains.annotations.Nullable;
 
 /**
  * Per-project review settings, stored in the workspace like the other Pre-Push Checker
- * settings. The rule file's {@code mandatory:} line, when present, overrides
- * {@link #isMandatoryFallback}.
+ * settings. A rule file with {@code mandatory: true} forces the mandate for everyone; otherwise
+ * {@link #isMandatoryFallback} decides, so the file can only make the gate stricter.
  */
 public final class ReviewSettings {
 
@@ -66,9 +66,18 @@ public final class ReviewSettings {
         PropertiesComponent.getInstance(project).setValue(RULE_FILE, path == null ? "" : path.trim(), "");
     }
 
-    /** The effective mandate: the rule file wins, the IDE toggle applies when the file is silent. */
+    /** The effective mandate for this project: see {@link #effectiveMandate}. */
     public static boolean isMandatory(@NotNull Project project, @Nullable ReviewRules rules) {
-        if (rules != null && rules.mandatory() != null) return rules.mandatory();
-        return isMandatoryFallback(project);
+        return effectiveMandate(rules == null ? null : rules.mandatory(), isMandatoryFallback(project));
+    }
+
+    /**
+     * {@code mandatory: true} in the rule file forces the mandate for the whole team. A file with
+     * {@code mandatory: false} or no line leaves it to each developer's own IDE toggle: the file
+     * never switches off a mandate someone turned on for themselves. The pre-push hook applies
+     * the same rule when the IDE is closed.
+     */
+    static boolean effectiveMandate(@Nullable Boolean ruleFile, boolean ideToggle) {
+        return Boolean.TRUE.equals(ruleFile) || ideToggle;
     }
 }

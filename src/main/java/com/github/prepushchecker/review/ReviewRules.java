@@ -195,8 +195,10 @@ public final class ReviewRules {
     public static @NotNull String template() {
         return """
             ---
-            # true: nobody can push matching files without an AI review with every finding resolved.
-            mandatory: false
+            # Uncomment to make review mandatory for everyone: nobody can push matching files
+            # without an AI review with every finding resolved. Left out, each developer's
+            # "Block pushes" setting decides.
+            # mandatory: true
             # Only these files are reviewed (Ant globs, relative to the repository root).
             # Remove the line to review every changed file.
             paths: ["**/*.java"]

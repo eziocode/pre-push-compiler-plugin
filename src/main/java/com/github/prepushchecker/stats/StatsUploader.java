@@ -1,24 +1,23 @@
 package com.github.prepushchecker.stats;
 
 import com.github.prepushchecker.commitgen.JsonUtil;
-import com.intellij.ide.plugins.IdeaPluginDescriptor;
-import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.application.ApplicationInfo;
 import com.intellij.openapi.diagnostic.Logger;
-import com.intellij.openapi.extensions.PluginId;
 import org.jetbrains.annotations.NotNull;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Properties;
 
 /** Sends pending anonymous counts. Background thread only; failures are silent and retried later. */
 final class StatsUploader {
     private static final Logger LOG = Logger.getInstance(StatsUploader.class);
     private static final Duration TIMEOUT = Duration.ofSeconds(5);
-    private static final String PLUGIN_ID = "com.github.prepushchecker";
 
     private StatsUploader() {
     }
@@ -64,9 +63,20 @@ final class StatsUploader {
             + "}";
     }
 
-    private static String pluginVersion() {
-        IdeaPluginDescriptor descriptor = PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID));
-        return descriptor == null ? "" : descriptor.getVersion();
+    /**
+     * Plugin version stamped into {@code version.properties} at build time. Avoids
+     * {@code PluginManagerCore.getPlugin} / {@code PluginManager.findEnabledPlugin}, both internal API.
+     */
+    static String pluginVersion() {
+        try (InputStream in = StatsUploader.class.getResourceAsStream("version.properties")) {
+            if (in == null) return "";
+            Properties props = new Properties();
+            props.load(in);
+            String v = props.getProperty("version", "").trim();
+            return v.startsWith("${") ? "" : v;
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     private static String ideBuild() {

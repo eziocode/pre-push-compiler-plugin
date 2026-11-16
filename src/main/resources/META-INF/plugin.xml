@@ -92,6 +92,10 @@
             <li>Fixed Codex errors <code>unexpected argument '--chat'</code> and
                 <code>stdin is not a terminal</code> when codex was set up as "Other local CLI".</li>
             <li>Commit message generation now includes checked unversioned (new) files.</li>
+            <li>The "Block pushes" review setting is no longer switched off by <code>mandatory: false</code>
+                in the rule file; <code>mandatory: true</code> in the file turns it on for everyone.</li>
+            <li>Resolve with AI: no more read-access error, keeps lines it should not delete, and follows
+                the existing description pattern.</li>
         </ul>
         <h3>2.9.0 — Cleaner AI output, faster pushes, shared stats</h3>
         <ul>

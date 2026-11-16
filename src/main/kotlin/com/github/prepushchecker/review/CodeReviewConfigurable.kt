@@ -2,7 +2,7 @@ package com.github.prepushchecker.review
 
 import com.github.prepushchecker.PrePushCheckerSettings
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.options.BoundSearchableConfigurable
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
@@ -79,7 +79,7 @@ class CodeReviewConfigurable(private val project: Project) :
                     .bindSelected(
                         { ReviewSettings.isMandatoryFallback(project) },
                         { ReviewSettings.setMandatoryFallback(project, it) })
-                    .comment("Applies when the rule file has no 'mandatory:' line. A 'mandatory:' line in the rule file wins, for everyone. Terminal pushes are blocked too when IntelliJ is closed.")
+                    .comment("Applies to your pushes. 'mandatory: true' in the rule file turns it on for everyone, whatever this box says. Terminal pushes are blocked too when IntelliJ is closed.")
             }
         }.enabledIf(enabled.selected)
 
@@ -114,9 +114,8 @@ class CodeReviewConfigurable(private val project: Project) :
                 append("Found. ")
                 append(if (rules.includeGlobs().isEmpty()) "Covers every file" else "Covers ${rules.includeGlobs().joinToString(", ")}")
                 when (rules.mandatory()) {
-                    true -> append(" · mandatory (set in the file)")
-                    false -> append(" · not mandatory (set in the file)")
-                    null -> {}
+                    true -> append(" · mandatory for everyone (set in the file)")
+                    else -> {}
                 }
             }
         }
@@ -144,6 +143,6 @@ class CodeReviewConfigurable(private val project: Project) :
         val root = baseRoot() ?: return
         val file = ReviewRules.ruleFile(root, currentPath())
         val vf = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(file) ?: return
-        FileEditorManager.getInstance(project).openFile(vf, true)
+        OpenFileDescriptor(project, vf).navigate(true)
     }
 }

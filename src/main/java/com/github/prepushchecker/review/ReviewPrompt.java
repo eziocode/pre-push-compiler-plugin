@@ -145,12 +145,41 @@ public final class ReviewPrompt {
             %s
             ----
 
+            How to edit:
+            - Pick the smallest line range that needs to change. To only add code, insert instead \
+            of replacing (see below).
+            - The replacement replaces EVERY line from startLine to endLine. Copy each of those \
+            lines into the replacement unchanged unless the fix itself must change it. Never drop \
+            a declaration, call, brace or statement that the fix does not need to remove.
+            - Follow the pattern the surrounding code already uses for the same thing, and put new \
+            code at the matching step. Examples: if descriptions are collected with \
+            desc.add("..."), add another desc.add("...") line next to the others; if they are \
+            written inline as List.of("...", "..."), add the new entry inside that List.of(...) \
+            instead of introducing a new variable or call. Reuse the same names, helpers, quoting \
+            and wording style as the neighbouring lines.
+
             The file is shown with a line number in front of every line. Answer with one JSON object \
             and nothing else:
             {"startLine":<first line to replace>,"endLine":<last line to replace, inclusive>,\
             "replacement":"<new text for those lines, without line numbers>"}
             To insert without removing, set endLine to startLine - 1 (the text goes before startLine).
             """.formatted(rules.strip());
+    }
+
+    /**
+     * Follow-up prompt when a fix removed lines it should have kept: shows the AI its answer and
+     * the lines that went missing, and asks for a corrected one.
+     */
+    public static @NotNull String fixRetryUserPrompt(@NotNull String firstUserPrompt, @NotNull Fix previous,
+                                                     @NotNull List<String> dropped) {
+        StringBuilder sb = new StringBuilder(firstUserPrompt);
+        sb.append("\nYour previous answer replaced lines ").append(previous.startLine()).append('-')
+            .append(previous.endLine()).append(" with:\n```\n").append(previous.replacement().strip())
+            .append("\n```\nThat deletes these existing lines, which the replacement no longer contains:\n```\n");
+        for (String line : dropped) sb.append(line.strip()).append('\n');
+        sb.append("```\nAnswer again with the same JSON shape. Keep those lines unless the finding itself "
+            + "requires removing them; if it does, return the same answer.\n");
+        return sb.toString();
     }
 
     public static @NotNull String fixUserPrompt(@NotNull String displayPath, @NotNull ReviewFinding finding,
@@ -204,6 +233,67 @@ public final class ReviewPrompt {
         else out.addAll(lines.subList(from, lines.size()));
         String joined = String.join(sep, out);
         return trailingNewline ? joined + sep : joined;
+    }
+
+    /**
+     * Existing non-blank lines inside the fix's range that the replacement neither keeps nor
+     * rewrites into a similar line. Empty when the fix only adds or edits in place.
+     */
+    public static @NotNull List<String> droppedLines(@NotNull String content, @NotNull Fix fix) {
+        String[] lines = content.replace("\r\n", "\n").split("\n", -1);
+        List<String> before = new ArrayList<>();
+        for (int i = fix.startLine(); i <= fix.endLine() && i <= lines.length; i++) {
+            if (!lines[i - 1].isBlank()) before.add(lines[i - 1].strip());
+        }
+        if (before.isEmpty()) return List.of();
+        List<String> after = new ArrayList<>();
+        for (String l : fix.replacement().replace("\r\n", "\n").split("\n", -1)) {
+            if (!l.isBlank()) after.add(l.strip());
+        }
+        // Exact matches first, so a kept line is never paired with an edited one.
+        List<String> unmatched = new ArrayList<>();
+        for (String line : before) {
+            if (!after.remove(line)) unmatched.add(line);
+        }
+        // Then the closest remaining new line, each used once: an edited line counts as kept.
+        List<String> dropped = new ArrayList<>();
+        for (String line : unmatched) {
+            int best = -1;
+            double bestScore = 0;
+            for (int j = 0; j < after.size(); j++) {
+                double score = similarity(line, after.get(j));
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = j;
+                }
+            }
+            if (best >= 0 && bestScore >= EDIT_SIMILARITY) after.remove(best);
+            else dropped.add(line);
+        }
+        return dropped;
+    }
+
+    static final double EDIT_SIMILARITY = 0.6;
+    private static final int SIMILARITY_MAX_CHARS = 400;
+
+    /** {@code 2·LCS / (|a|+|b|)} over characters, ignoring whitespace; 1.0 means equal. */
+    static double similarity(@NotNull String a, @NotNull String b) {
+        String x = a.replaceAll("\\s+", "");
+        String y = b.replaceAll("\\s+", "");
+        if (x.length() > SIMILARITY_MAX_CHARS) x = x.substring(0, SIMILARITY_MAX_CHARS);
+        if (y.length() > SIMILARITY_MAX_CHARS) y = y.substring(0, SIMILARITY_MAX_CHARS);
+        if (x.isEmpty() && y.isEmpty()) return 1.0;
+        int[] prev = new int[y.length() + 1];
+        int[] cur = new int[y.length() + 1];
+        for (int i = 1; i <= x.length(); i++) {
+            for (int j = 1; j <= y.length(); j++) {
+                cur[j] = x.charAt(i - 1) == y.charAt(j - 1) ? prev[j - 1] + 1 : Math.max(prev[j], cur[j - 1]);
+            }
+            int[] t = prev;
+            prev = cur;
+            cur = t;
+        }
+        return 2.0 * prev[y.length()] / (x.length() + y.length());
     }
 
     private static @Nullable String resolvePath(String file, Map<String, String> displayToAbsolute) {

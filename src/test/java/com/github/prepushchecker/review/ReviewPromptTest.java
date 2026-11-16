@@ -100,4 +100,51 @@ public class ReviewPromptTest extends TestCase {
     private static void assertArrayEquals(int[] expected, int[] actual) {
         assertEquals(java.util.Arrays.toString(expected), java.util.Arrays.toString(actual));
     }
+
+    private static final String FINALLY_BLOCK = """
+        finally {
+            List<String> desc = new ArrayList<String>();
+            desc.add("Create a record in "+module+" module");
+            desc.add("Verify record in Unaccounted stage with select Standard layout");
+            desc.add("Delete the layout and go to kanban view and verify record");
+            addRowToReport(desc, null, "");
+        }
+        """;
+
+    public void testDroppedLinesCatchesRemovedSetupAndReportCall() {
+        // The AI rewrote lines 2-6 but kept only the desc.add(...) lines (real incident).
+        ReviewPrompt.Fix fix = new ReviewPrompt.Fix(2, 6, """
+                desc.add("Create a record in "+module+" module");
+                desc.add("Create a layout for "+module+" module");
+                desc.add("Verify record in Unaccounted stage with select Standard layout");
+                desc.add("Delete the layout and verify if kanban view still works");
+            """);
+        assertEquals(List.of("List<String> desc = new ArrayList<String>();", "addRowToReport(desc, null, \"\");"),
+            ReviewPrompt.droppedLines(FINALLY_BLOCK, fix));
+    }
+
+    public void testDroppedLinesAllowsInsertAndInPlaceEdit() {
+        assertTrue(ReviewPrompt.droppedLines(FINALLY_BLOCK,
+            new ReviewPrompt.Fix(5, 4, "    desc.add(\"Create a layout\");")).isEmpty());
+        assertTrue(ReviewPrompt.droppedLines(FINALLY_BLOCK, new ReviewPrompt.Fix(4, 5, """
+                desc.add("Verify record in Unaccounted stage with select Standard layout");
+                desc.add("Create a kanban view");
+                desc.add("Delete the layout and go to kanban view and verify the record");
+            """)).isEmpty());
+        // Inline List.of(...) extended with one more entry counts as an edit, not a deletion.
+        String inline = "addRowToReport(List.of(\"Create a record\", \"Verify record\"), null, \"\");\n";
+        assertTrue(ReviewPrompt.droppedLines(inline, new ReviewPrompt.Fix(1, 1,
+            "addRowToReport(List.of(\"Create a record\", \"Create a layout\", \"Verify record\"), null, \"\");")).isEmpty());
+    }
+
+    public void testFixPromptsAskToKeepLinesAndFollowPattern() {
+        String system = ReviewPrompt.fixSystemPrompt("rules");
+        assertTrue(system.contains("List.of("));
+        assertTrue(system.contains("Never drop"));
+        String retry = ReviewPrompt.fixRetryUserPrompt("USER", new ReviewPrompt.Fix(2, 6, "x"),
+            List.of("addRowToReport(desc, null, \"\");"));
+        assertTrue(retry.startsWith("USER"));
+        assertTrue(retry.contains("replaced lines 2-6"));
+        assertTrue(retry.contains("addRowToReport(desc, null, \"\");"));
+    }
 }

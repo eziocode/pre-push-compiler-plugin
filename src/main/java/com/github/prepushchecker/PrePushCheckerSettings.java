@@ -148,7 +148,7 @@ public final class PrePushCheckerSettings {
 
     /**
      * Review settings the hook needs when the IDE is not running: whether review is on, the IDE
-     * mandate fallback (the rule file's own {@code mandatory:} is read by the hook directly), the
+     * mandate toggle (the hook also reads the rule file's {@code mandatory: true}, which forces it), the
      * rule file path and its scope as an extended regex.
      */
     private static void appendReviewSettings(@NotNull Project project, @NotNull String repositoryRoot,

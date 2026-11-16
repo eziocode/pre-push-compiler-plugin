@@ -18,6 +18,7 @@ import com.intellij.openapi.ui.TextBrowseFolderListener
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.JBColor
 import com.intellij.ui.SimpleListCellRenderer
+import javax.swing.JList
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBRadioButton
@@ -136,7 +137,12 @@ class AiProviderConfigurable : SearchableConfigurable {
         listOf(apiRadio to Source.API, cliRadio to Source.CLI, ideRadio to Source.IDE).forEach { (radio, s) ->
             radio.addActionListener { if (radio.isSelected && !loading) { source = s; updateVisibility() } }
         }
-        apiCombo.renderer = SimpleListCellRenderer.create("") { apiName(it) }
+        // Subclass instead of SimpleListCellRenderer.create(...): both create overloads are deprecated in 2026.3.
+        apiCombo.renderer = object : SimpleListCellRenderer<Id>() {
+            override fun customize(list: JList<out Id>, value: Id?, index: Int, selected: Boolean, hasFocus: Boolean) {
+                text = value?.let { apiName(it) } ?: ""
+            }
+        }
         apiCombo.addActionListener {
             if (loading) return@addActionListener
             stashApi()

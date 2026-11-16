@@ -45,4 +45,13 @@ public class ReviewGateTest extends TestCase {
         assertEquals(BLOCK, ReviewGate.afterPushReview(true, List.of(), List.of("C.java")).action());
         assertEquals(BLOCK, ReviewGate.afterPushReview(true, List.of("B.java"), List.of()).action());
     }
+
+    public void testRuleFileCanOnlyMakeMandateStricter() {
+        // Real incident: template wrote "mandatory: false", which overrode a developer's "Block pushes" toggle.
+        assertTrue(ReviewSettings.effectiveMandate(Boolean.FALSE, true));
+        assertTrue(ReviewSettings.effectiveMandate(null, true));
+        assertTrue(ReviewSettings.effectiveMandate(Boolean.TRUE, false));
+        assertFalse(ReviewSettings.effectiveMandate(Boolean.FALSE, false));
+        assertFalse(ReviewSettings.effectiveMandate(null, false));
+    }
 }

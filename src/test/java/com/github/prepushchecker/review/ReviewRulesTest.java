@@ -52,7 +52,8 @@ public class ReviewRulesTest extends TestCase {
 
     public void testTemplateParses() {
         ReviewRules r = ReviewRules.parse(ReviewRules.template());
-        assertEquals(Boolean.FALSE, r.mandatory());
+        // The template must not set the mandate: an explicit line would hide each developer's toggle.
+        assertNull(r.mandatory());
         assertTrue(r.inScope("a/b/C.java"));
         assertFalse(r.inScope("a/generated/C.java"));
         assertTrue(r.body().contains("addRowToReport"));

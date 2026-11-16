@@ -53,6 +53,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 - The llm CLI reports "not found" instead of failing to start.
 - Commit message generation includes checked unversioned (new) files; the button is enabled when
   only new files exist.
+- **Review mandate ignored.** "Block pushes until … every finding is resolved" let pushes through
+  when the rule file said `mandatory: false`, which "Create rule file" wrote by default. The rule
+  file can now only make the gate stricter: `mandatory: true` turns it on for everyone, otherwise
+  each developer's own setting decides, in the IDE and in the terminal hook. The template leaves
+  the line commented out.
+- **Resolve with AI** crashed with "Read access is allowed from inside read-action only": the
+  document was read on the UI thread. File lookup, document read and git calls now run in the
+  background.
+- **Resolve with AI dropped code.** A fix could replace a block and leave out lines it should have
+  kept (e.g. the `List<String> desc = …` declaration and the `addRowToReport(...)` call). Fixes that
+  delete existing lines are sent back to the AI once with the missing lines; if lines are still
+  removed, the diff dialog warns. The fix prompt now asks the AI to follow the surrounding pattern
+  (another `desc.add(...)`, or a new entry inside an existing `List.of(...)`).
+- Plugin Verifier (IntelliJ IDEA 2026.2/2026.3): removed deprecated `SimpleListCellRenderer.create`
+  and `FileEditorManager.openFile(VirtualFile, boolean)`, and internal `PluginManagerCore.getPlugin`.
 
 ## [2.9.0] - 2026-11-16
 
