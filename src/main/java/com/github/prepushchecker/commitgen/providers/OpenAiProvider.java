@@ -32,7 +32,7 @@ public final class OpenAiProvider implements CommitMessageProvider {
             throw new IllegalStateException(
                 "OpenAI API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
-        String model = settings.settings().openAiModel;
+        String model = request.modelOr(settings.settings().openAiModel);
         String body = "{"
             + "\"model\":" + JsonUtil.quoted(model) + ","
             + "\"max_tokens\":" + request.maxOutputTokens() + ","

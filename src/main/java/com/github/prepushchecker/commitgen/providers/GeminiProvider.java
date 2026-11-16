@@ -33,7 +33,7 @@ public final class GeminiProvider implements CommitMessageProvider {
             throw new IllegalStateException(
                 "Gemini API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
-        String model = settings.settings().geminiModel;
+        String model = request.modelOr(settings.settings().geminiModel);
         // Key goes in a header, not the query string, so it cannot leak through URLs in logs or exceptions.
         String url = API_BASE + java.net.URLEncoder.encode(model, StandardCharsets.UTF_8) + ":generateContent";
 

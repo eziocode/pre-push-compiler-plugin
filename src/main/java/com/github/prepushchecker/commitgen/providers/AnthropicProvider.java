@@ -33,7 +33,7 @@ public final class AnthropicProvider implements CommitMessageProvider {
             throw new IllegalStateException(
                 "Anthropic API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
-        String model = settings.settings().anthropicModel;
+        String model = request.modelOr(settings.settings().anthropicModel);
         // Anthropic API supports a top-level "system" field
         String body = "{"
             + "\"model\":" + JsonUtil.quoted(model) + ","

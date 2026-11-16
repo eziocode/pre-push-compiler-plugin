@@ -37,7 +37,7 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(LABEL, request, s.claudeCliPath, s.claudeModel, s.claudeExtraArgs);
+        return run(LABEL, request, s.claudeCliPath, request.modelOr(s.claudeModel), s.claudeExtraArgs);
     }
 
     /** Runs {@code claude -p} with explicit settings; also used by the "Other CLI" provider. */

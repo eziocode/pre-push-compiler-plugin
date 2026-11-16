@@ -31,7 +31,7 @@ public final class LlmCliProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(LABEL, request, s.llmCliPath, s.llmModel);
+        return run(LABEL, request, s.llmCliPath, request.modelOr(s.llmModel));
     }
 
     /** Runs {@code llm} with explicit settings; also used by the "Other CLI" provider. */

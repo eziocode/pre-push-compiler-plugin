@@ -38,10 +38,10 @@ public final class CustomCliProvider implements CommitMessageProvider {
 
         if (known != null && !known.isCustom()) {
             return switch (known) {
-                case CODEX -> CodexCliProvider.run(label, request, s.customCliPath, s.customCliModel, "");
-                case CLAUDE -> ClaudeCliProvider.run(label, request, s.customCliPath, s.customCliModel, "");
-                case LLM -> LlmCliProvider.run(label, request, s.customCliPath, s.customCliModel);
-                case GH -> GhCopilotProvider.run(request, s.customCliPath, s.customCliModel);
+                case CODEX -> CodexCliProvider.run(label, request, s.customCliPath, request.modelOr(s.customCliModel), "");
+                case CLAUDE -> ClaudeCliProvider.run(label, request, s.customCliPath, request.modelOr(s.customCliModel), "");
+                case LLM -> LlmCliProvider.run(label, request, s.customCliPath, request.modelOr(s.customCliModel));
+                case GH -> GhCopilotProvider.run(request, s.customCliPath, request.modelOr(s.customCliModel));
                 default -> throw new IllegalStateException("Unsupported CLI: " + binary);
             };
         }
@@ -58,7 +58,7 @@ public final class CustomCliProvider implements CommitMessageProvider {
 
         String template = effectiveTemplate(s.customCliArgs, known);
         String prompt = AiCliCommand.combinePrompt(request.system(), request.user(), request.structured());
-        List<String> cmd = AiCliCommand.fromTemplate(path, template, s.customCliModel, prompt);
+        List<String> cmd = AiCliCommand.fromTemplate(path, template, request.modelOr(s.customCliModel), prompt);
         String stdin = AiCliCommand.usesPromptArg(template) ? null : prompt;
 
         Path workDir = AiCliRunner.createWorkDir();

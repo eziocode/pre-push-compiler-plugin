@@ -42,7 +42,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(LABEL, request, s.codexCliPath, s.codexModel, s.codexExtraArgs);
+        return run(LABEL, request, s.codexCliPath, request.modelOr(s.codexModel), s.codexExtraArgs);
     }
 
     /** Runs {@code codex exec} with explicit settings; also used by the "Other CLI" provider. */

@@ -27,7 +27,7 @@ public final class OllamaProvider implements CommitMessageProvider {
         String userPrompt = request.user();
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String baseUrl = s.ollamaBaseUrl.replaceAll("/+$", "");
-        String model   = s.ollamaModel;
+        String model   = request.modelOr(s.ollamaModel);
         String url = baseUrl + "/api/chat";
 
         String body = "{"
@@ -44,7 +44,9 @@ public final class OllamaProvider implements CommitMessageProvider {
         HttpRequest httpRequest = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", "application/json")
-            .timeout(request.timeout().compareTo(Duration.ofSeconds(120)) > 0 ? request.timeout() : Duration.ofSeconds(120))
+            .timeout(request.kind() != AiRequest.Kind.COMPLETION
+                && request.timeout().compareTo(Duration.ofSeconds(120)) < 0
+                ? Duration.ofSeconds(120) : request.timeout())
             .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
             .build();
 

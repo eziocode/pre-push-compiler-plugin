@@ -41,7 +41,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(request, s.ghCliPath, s.ghModel);
+        return run(request, s.ghCliPath, request.modelOr(s.ghModel));
     }
 
     /** Calls the Copilot API with a {@code gh} token; also used by the "Other CLI" provider. */
