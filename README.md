@@ -5,6 +5,9 @@
 ![Platform](https://img.shields.io/badge/platform-IntelliJ%202023.3%2B-orange)
 ![Version](https://img.shields.io/badge/version-2.8.0-blue)
 ![Java](https://img.shields.io/badge/java-17%2B-green)
+[![Issues caught](https://img.shields.io/endpoint?url=https%3A%2F%2Feziocode.github.io%2Fpre-push-compiler-plugin%2Fbadge-issues.json)](https://eziocode.github.io/pre-push-compiler-plugin/)
+[![Compiles OK](https://img.shields.io/endpoint?url=https%3A%2F%2Feziocode.github.io%2Fpre-push-compiler-plugin%2Fbadge-compiles.json)](https://eziocode.github.io/pre-push-compiler-plugin/)
+[![Users](https://img.shields.io/endpoint?url=https%3A%2F%2Feziocode.github.io%2Fpre-push-compiler-plugin%2Fbadge-users.json)](https://eziocode.github.io/pre-push-compiler-plugin/)
 
 ---
 
