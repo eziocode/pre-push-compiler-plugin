@@ -12,7 +12,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.BoundSearchableConfigurable
 import com.intellij.openapi.options.ShowSettingsUtil
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.ui.DialogPanel
 import com.intellij.ui.JBColor
@@ -46,6 +45,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
     private var loading = false
     private var built = false
     private var summaryGeneration = 0L
+    private var modelsGeneration = 0L
 
     private val apiRadio = JBRadioButton("API key")
     private val cliRadio = JBRadioButton("Local CLI")
@@ -117,7 +117,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
                         link("Refresh models") { refreshModels() }
                         cell(modelsStatus)
                     }
-                    row("") { comment("Blank uses the CLI's default model.") }
+                    row("") { comment("Blank uses the model set for this CLI on the AI Provider page.") }
                 }
                 ideRange = rowsRange {
                     row { comment("Uses the JetBrains AI Assistant plugin and your signed-in JetBrains account.") }
@@ -322,28 +322,37 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         }
     }
 
+    /** Lists models off the UI thread: a modal progress makes 2026.3 reset this page on focus return. */
     private fun refreshModels() {
+        val generation = ++modelsGeneration
+        val forCli = cliId
         val cli = ProviderUi.cliOf(cliId, commitState()?.customCliBinary)
         val binary = cliBinary(cli)
         val configured = configuredPath(cli)
         val listArgs = if (cliId == Id.CUSTOM_CLI) commitState()?.customCliModelsArgs?.trim() else null
-        val models = ProgressManager.getInstance().runProcessWithProgressSynchronously<List<String>, Exception>(
-            { AiCliModels.list(cli, CliPathResolver.resolveOrNull(configured, binary), listArgs) },
-            "Fetching models…", true, null)
-        val current = cliModelText()
-        if (models.isNullOrEmpty()) {
-            modelsStatus.text = "No models reported; type a name."
-            return
+        modelsStatus.text = "loading…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val models = runCatching {
+                AiCliModels.list(cli, CliPathResolver.resolveOrNull(configured, binary), listArgs)
+            }.getOrDefault(emptyList())
+            ApplicationManager.getApplication().invokeLater({
+                if (generation != modelsGeneration || forCli != cliId) return@invokeLater
+                if (models.isNullOrEmpty()) {
+                    modelsStatus.text = "No models reported; type a name."
+                    return@invokeLater
+                }
+                val current = cliModelText()
+                val wasLoading = loading
+                loading = true
+                try {
+                    cliModelCombo.model = DefaultComboBoxModel(models.toTypedArray())
+                    cliModelCombo.editor.item = current
+                    cliModelCombo.selectedItem = current
+                } finally {
+                    loading = wasLoading
+                }
+                modelsStatus.text = "${models.size} models"
+            }, ModalityState.any())
         }
-        val wasLoading = loading
-        loading = true
-        try {
-            cliModelCombo.model = DefaultComboBoxModel(models.toTypedArray())
-            cliModelCombo.editor.item = current
-            cliModelCombo.selectedItem = current
-        } finally {
-            loading = wasLoading
-        }
-        modelsStatus.text = "${models.size} models"
     }
 }

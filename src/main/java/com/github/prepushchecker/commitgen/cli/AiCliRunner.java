@@ -193,14 +193,9 @@ public final class AiCliRunner {
         if (request.kind() != AiRequest.Kind.COMPLETION) {
             return finish(label, text, authHint, request.structured());
         }
-        String cleaned = AiOutputSanitizer.cleanCompletion(text);
-        if (cleaned.isBlank()) {
-            boolean hadOutput = text != null && !text.isBlank();
-            throw new RuntimeException(label + (hadOutput
-                ? ": " + AiOutputSanitizer.EMPTY_RESULT_MESSAGE
-                : " returned an empty response.") + "\n" + authHint);
-        }
-        return cleaned;
+        // An empty answer is the model saying "nothing to insert here": no suggestion, not a failure
+        // (it must not count toward the inline auto-pause or show an error balloon).
+        return AiOutputSanitizer.cleanCompletion(text);
     }
 
     /** A line the CLI itself marks as an error ({@code ERROR: …}, {@code Error: …}, {@code fatal: …}). */

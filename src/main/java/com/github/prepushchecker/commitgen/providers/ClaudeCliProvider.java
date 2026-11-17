@@ -34,6 +34,8 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
         "Make sure Claude Code is installed and signed in: run 'claude' once in a terminal.\n"
             + "Install: npm install -g @anthropic-ai/claude-code";
 
+    static final String INLINE_DEFAULT_MODEL = "haiku";
+
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
@@ -56,7 +58,9 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
         String fallbackKey = cfg.loadApiKey(Id.CLAUDE_CLI);
         if (fallbackKey != null && !fallbackKey.isBlank()) env.put("ANTHROPIC_API_KEY", fallbackKey);
 
-        List<String> cmd = AiCliCommand.claude(path, model, extraArgs);
+        // Inline completions with no model chosen: haiku answers in a fraction of the default's time.
+        String effectiveModel = (model == null || model.isBlank()) && request.lowLatency() ? INLINE_DEFAULT_MODEL : model;
+        List<String> cmd = AiCliCommand.claude(path, effectiveModel, extraArgs, request.lowLatency());
         Path workDir = AiCliRunner.createWorkDir();
         try {
             String out = AiCliRunner.run(label, cmd,

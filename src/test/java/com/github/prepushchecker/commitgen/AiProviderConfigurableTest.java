@@ -12,9 +12,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.Future;
 import java.util.function.BooleanSupplier;
 import com.github.prepushchecker.commitgen.cli.AiCli;
-import com.github.prepushchecker.commitgen.cli.AiCliDetector;
-import com.intellij.openapi.ui.DialogWrapper;
-import java.util.List;
 
 public class AiProviderConfigurableTest extends BasePlatformTestCase {
     private boolean registeredSettings;
@@ -62,7 +59,8 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
             Files.createFile(release);
             oldProbe.get(5, TimeUnit.SECONDS);
             PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
-            assertTrue(summary.getText(), summary.getText().startsWith("Claude Code"));
+            assertTrue(summary.getText(), summary.getText().contains("/usr/bin/true"));
+            assertFalse(summary.getText(), summary.getText().contains("old-github-version"));
         } finally {
             Files.writeString(release, "");
             page.disposeUIResources();
@@ -83,9 +81,9 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
             }) {
                 AiCli cli = id == CommitMessageProvider.Id.CLAUDE_CLI ? AiCli.CLAUDE
                     : id == CommitMessageProvider.Id.CODEX_CLI ? AiCli.CODEX : AiCli.SAHAA;
-                Method useCli = AiProviderConfigurable.class.getDeclaredMethod("useCli", AiCli.class, String.class);
-                useCli.setAccessible(true);
-                useCli.invoke(page, cli, "/usr/bin/true");
+                combo(page).setSelectedItem(cli);
+                ((com.intellij.openapi.ui.TextFieldWithBrowseButton) field(page, "cliPathField").get(page))
+                    .setText("/usr/bin/true");
                 var models = (javax.swing.JComboBox<?>) field(page, "cliModelCombo").get(page);
                 models.getEditor().setItem("chosen-model");
                 assertTrue(page.isModified());
@@ -104,24 +102,58 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
         }
     }
 
-    public void testChooserHighlightsCurrentProviderInsteadOfFirstInstalledCli() throws Exception {
-        List<AiCliDetector.DetectedCli> rows = List.of(
-            new AiCliDetector.DetectedCli(AiCli.GH, "/test/gh", "", ""),
-            new AiCliDetector.DetectedCli(AiCli.CLAUDE, "/test/claude", "", ""),
-            new AiCliDetector.DetectedCli(AiCli.CODEX, "/test/codex", "", ""));
-        Class<?> type = Class.forName(AiProviderConfigurable.class.getName() + "$ChooseCliDialog");
-        var constructor = type.getDeclaredConstructor(List.class, AiCli.class);
-        constructor.setAccessible(true);
-        Method selected = type.getDeclaredMethod("selected");
-        selected.setAccessible(true);
-        for (AiCli current : new AiCli[] {AiCli.CLAUDE, AiCli.CODEX}) {
-            DialogWrapper dialog = (DialogWrapper) constructor.newInstance(rows, current);
-            try {
-                assertEquals(current, ((AiCliDetector.DetectedCli) selected.invoke(dialog)).cli());
-            } finally {
-                dialog.close(DialogWrapper.CANCEL_EXIT_CODE);
-            }
+    public void testComboSwitchStaysAfterPlatformFocusReset() throws Exception {
+        CommitMessageSettings settings = CommitMessageSettings.getInstance();
+        CommitMessageSettings.State original = settings.settings();
+        CommitMessageSettings.State saved = new CommitMessageSettings.State();
+        saved.selectedProvider = CommitMessageProvider.Id.GH_COPILOT.name();
+        settings.loadState(saved);
+        AiProviderConfigurable page = new AiProviderConfigurable();
+        try {
+            page.createComponent();
+            combo(page).setSelectedItem(AiCli.CODEX);
+            assertEquals(CommitMessageProvider.Id.CODEX_CLI, field(page, "cliId").get(page));
+            assertTrue(page.isModified());
+            // Right after one of the page's own modal windows, a reset from the platform keeps the edit.
+            field(page, "ownModalUntil").set(page, System.currentTimeMillis() + 60_000);
+            page.reset();
+            assertEquals(CommitMessageProvider.Id.CODEX_CLI, field(page, "cliId").get(page));
+            assertEquals(AiCli.CODEX, combo(page).getSelectedItem());
+            // Outside that window an explicit reset (Revert changes) still restores the saved CLI.
+            field(page, "ownModalUntil").set(page, 0L);
+            page.reset();
+            assertEquals(CommitMessageProvider.Id.GH_COPILOT, field(page, "cliId").get(page));
+            assertEquals(AiCli.GH, combo(page).getSelectedItem());
+        } finally {
+            page.disposeUIResources();
+            settings.loadState(original);
         }
+    }
+
+    public void testSwitchingOtherCliBinaryDropsPreviousModel() throws Exception {
+        CommitMessageSettings settings = CommitMessageSettings.getInstance();
+        CommitMessageSettings.State original = settings.settings();
+        CommitMessageSettings.State saved = new CommitMessageSettings.State();
+        saved.selectedProvider = CommitMessageProvider.Id.CUSTOM_CLI.name();
+        saved.customCliBinary = "gemini";
+        saved.customCliModel = "gemini-model";
+        settings.loadState(saved);
+        AiProviderConfigurable page = new AiProviderConfigurable();
+        try {
+            page.createComponent();
+            var models = (javax.swing.JComboBox<?>) field(page, "cliModelCombo").get(page);
+            assertEquals("gemini-model", models.getEditor().getItem());
+            combo(page).setSelectedItem(AiCli.OPENCODE);
+            assertEquals("", models.getEditor().getItem());
+        } finally {
+            page.disposeUIResources();
+            settings.loadState(original);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static javax.swing.JComboBox<AiCli> combo(AiProviderConfigurable page) throws Exception {
+        return (javax.swing.JComboBox<AiCli>) field(page, "cliCombo").get(page);
     }
 
     private static Future<?> selectForSummary(AiProviderConfigurable page, CommitMessageProvider.Id id,

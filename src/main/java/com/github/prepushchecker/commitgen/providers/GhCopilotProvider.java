@@ -55,7 +55,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
                 "GitHub CLI (gh) not found.\nInstall: brew install gh && gh auth login"
                     + "\n\nOr set its path in " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
-        String token  = getGhToken(ghPath);
+        String token  = cachedGhToken(ghPath);
 
         if (token == null || token.isBlank()) {
             throw new IllegalStateException(
@@ -77,6 +77,7 @@ public final class GhCopilotProvider implements CommitMessageProvider {
         }
 
         if (response.statusCode() == 401 || response.statusCode() == 403) {
+            invalidateToken();
             throw new RuntimeException(
                 "GitHub Copilot API returned " + response.statusCode() + ".\n"
                     + "Make sure you:\n"
@@ -126,6 +127,27 @@ public final class GhCopilotProvider implements CommitMessageProvider {
     public @NotNull Id id() { return Id.GH_COPILOT; }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static final long TOKEN_TTL_MS = 10 * 60 * 1000L;
+    private record CachedToken(String ghPath, String token, long at) {}
+    private static volatile @Nullable CachedToken cachedToken;
+
+    /**
+     * {@code gh auth token}, reused for {@link #TOKEN_TTL_MS}: spawning gh on every inline suggestion
+     * added its start-up time to each one. Cleared when the API rejects the token.
+     */
+    static @Nullable String cachedGhToken(@NotNull String ghPath) {
+        CachedToken c = cachedToken;
+        long now = System.currentTimeMillis();
+        if (c != null && c.ghPath().equals(ghPath) && now - c.at() < TOKEN_TTL_MS) return c.token();
+        String token = getGhToken(ghPath);
+        cachedToken = token == null ? null : new CachedToken(ghPath, token, now);
+        return token;
+    }
+
+    static void invalidateToken() {
+        cachedToken = null;
+    }
 
     /** Runs {@code gh auth token} and returns the token, or {@code null}. */
     public static @Nullable String getGhToken(@NotNull String ghPath) {

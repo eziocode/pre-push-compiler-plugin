@@ -46,6 +46,15 @@ public final class CodexCliProvider implements CommitMessageProvider {
     }
 
     /** Runs {@code codex exec} with explicit settings; also used by the "Other CLI" provider. */
+    /** The {@code --output-last-message} file when it has text; codex can leave it empty, so stdout otherwise. */
+    static @NotNull String lastMessageOrStdout(@NotNull Path lastMessage, @Nullable String stdout) throws java.io.IOException {
+        if (Files.isRegularFile(lastMessage)) {
+            String text = Files.readString(lastMessage, StandardCharsets.UTF_8);
+            if (!text.isBlank()) return text;
+        }
+        return stdout == null ? "" : stdout;
+    }
+
     static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
                                @Nullable String configuredPath, @Nullable String model,
                                @Nullable String extraArgs) throws Exception {
@@ -83,9 +92,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
                 }
                 throw e;
             }
-            String result = Files.isRegularFile(lastMessage)
-                ? Files.readString(lastMessage, StandardCharsets.UTF_8)
-                : stdout;
+            String result = lastMessageOrStdout(lastMessage, stdout);
             return AiCliRunner.finish(label, result, AUTH_HINT, request);
         } finally {
             AiCliRunner.deleteQuietly(workDir);
