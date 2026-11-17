@@ -8,6 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-11-17
+
+AI code review spends less time and fewer tokens on pushes, and pushes from outside IntelliJ
+show their progress in the IDE.
+
+### Added
+
+- **Ignore changes brought in by merges** (Settings → Code Review, on by default). After
+  `git merge main`, the push review sends only your own commits and conflict resolutions to the
+  AI: files the merge brought in unchanged are skipped, and for files both sides touched the diff
+  is taken against the merged-in remote commit, so main's hunks are not reviewed again.
+- **Progress for pushes started outside IntelliJ.** A `git push` from a terminal or another tool
+  now shows a "Pre-push check" task in the status bar with the compile / AI review step, and it
+  can be stopped there. Stopping blocks that push with a clear message.
+- **Switch page icon** in the Compilation Checker tool window header: one click between the
+  Compilation and Code Review pages, in both the tab and the narrow dropdown layout.
+
+### Changed
+
+- **Stale review results clear themselves.** After a push (gated or `--no-verify`), commit,
+  revert or reset, results for files with nothing left unpushed or uncommitted are removed from
+  the Code Review tab.
+- **No AI call for content already reviewed.** "Review Local Changes" keeps earlier results for
+  files that have not changed since (Clear Reviews forces a new review), and whitespace-only edits
+  in code files (Java, Kotlin, JS/TS, C-family, Go, Rust, …; not YAML or Python) are not sent.
+
 ## [3.0.0] - 2026-11-17
 
 Everything since 2.11.0 in one release. It also brings the 2.10.1 fixes (below), which were

@@ -159,6 +159,25 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         fireChanged();
     }
 
+    /**
+     * Drops the reviews of files under {@code rootPrefix} (a {@code /}-terminated store key
+     * prefix) whose relative path is not in {@code keep}. Returns how many were dropped.
+     */
+    public int retainOnly(@NotNull String rootPrefix, @NotNull java.util.Set<String> keep) {
+        int removed;
+        synchronized (this) {
+            int before = state.files.size();
+            state.files.removeIf(f -> f.path.startsWith(rootPrefix) && !keep.contains(f.path.substring(rootPrefix.length())));
+            removed = before - state.files.size();
+        }
+        if (removed > 0) fireChanged();
+        return removed;
+    }
+
+    public synchronized boolean isEmpty() {
+        return state.files.isEmpty();
+    }
+
     public void addListener(@NotNull Runnable listener) {
         listeners.add(listener);
     }

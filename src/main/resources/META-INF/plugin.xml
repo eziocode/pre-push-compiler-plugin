@@ -81,6 +81,15 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>3.1.0 — Faster, cheaper AI review on pushes</h3>
+        <ul>
+            <li>New "Ignore changes brought in by merges" review setting (on by default): after
+                <code>git merge main</code> only your own commits and conflict resolutions are reviewed.</li>
+            <li>Pushes from a terminal show a cancellable "Pre-push check" task in the IDE status bar.</li>
+            <li>Code Review results for files already pushed, reverted or reset clear themselves.</li>
+            <li>Unchanged, already-reviewed content and whitespace-only edits are not sent to the AI again.</li>
+            <li>Header icon to switch between the Compilation and Code Review pages.</li>
+        </ul>
         <h3>3.0.0 — Inline suggestion, AI settings and code review fixes</h3>
         <ul>
             <li>Inline suggestions now appear with slow CLI providers and while the completion popup

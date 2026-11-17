@@ -169,6 +169,56 @@ final class ReviewGit {
         return out == null ? "" : out;
     }
 
+    static final int MAX_MERGES = 20;
+
+    /**
+     * Parents of the not-yet-pushed merge commits in {@code head}'s history that are already on a
+     * remote: the code a {@code git merge main} brought in. Diffing a file against such a parent
+     * shows only what the developer's own side changed. Empty when there are no such merges.
+     */
+    static @NotNull List<String> mergedRemoteParents(@NotNull Path root, @NotNull String head) {
+        String merges = git(root, List.of("rev-list", "--merges", "--parents", "-n", String.valueOf(MAX_MERGES),
+            head, "--not", "--remotes"));
+        if (merges == null || merges.isBlank()) return List.of();
+        String local = git(root, List.of("rev-list", head, "--not", "--remotes"));
+        java.util.Set<String> unpushed = new java.util.HashSet<>();
+        if (local != null) for (String l : local.split("\n")) if (!l.isBlank()) unpushed.add(l.trim());
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        for (String line : merges.split("\n")) {
+            String[] ids = line.trim().split("\\s+");
+            // ids[0] is the merge itself; a parent not in the unpushed set is already on a remote.
+            for (int i = 1; i < ids.length; i++) if (!ids[i].isEmpty() && !unpushed.contains(ids[i])) out.add(ids[i]);
+        }
+        return new ArrayList<>(out);
+    }
+
+    /** {@code true} when {@code base..head} changes only whitespace in {@code relPath}. */
+    static boolean whitespaceOnly(@NotNull Path root, @NotNull String base, @NotNull String head,
+                                  @NotNull String relPath) {
+        String all = git(root, List.of("diff", "--no-ext-diff", "--numstat", base, head, "--", relPath));
+        if (all == null || all.isBlank()) return false; // no change at all, or git failed: not this case
+        String real = git(root, List.of("diff", "--no-ext-diff", "-w", "--ignore-blank-lines", "--no-color", "-U0",
+            base, head, "--", relPath));
+        return real != null && !real.lines().anyMatch(l -> l.startsWith("@@"));
+    }
+
+    /** Unpushed and uncommitted files of {@code root}: what can still need a review. */
+    static @Nullable java.util.Set<String> pendingFiles(@NotNull Path root) {
+        if (headSha(root) == null) return new java.util.HashSet<>(changedFiles(root));
+        java.util.Set<String> out = new java.util.HashSet<>(changedFiles(root));
+        String first = git(root, List.of("rev-list", "--reverse", "HEAD", "--not", "--remotes"));
+        if (first == null) return null;
+        String oldest = first.lines().filter(l -> !l.isBlank()).findFirst().orElse(null);
+        if (oldest == null) return out; // everything committed is on a remote
+        String base = resolveCommit(root, oldest.trim() + "^");
+        String names = base == null
+            ? git(root, List.of("ls-tree", "-r", "-z", "--name-only", "HEAD"))
+            : git(root, List.of("diff", "--name-only", "-z", "--no-renames", base, "HEAD", "--"));
+        if (names == null) return null;
+        for (String p : names.split("\0")) if (!p.isBlank()) out.add(p);
+        return out;
+    }
+
     /** Merge base of HEAD and its upstream, or {@code null} when there is no upstream. */
     static @Nullable String upstreamBase(@NotNull Path root) {
         String out = git(root, List.of("merge-base", "HEAD", "@{upstream}"));

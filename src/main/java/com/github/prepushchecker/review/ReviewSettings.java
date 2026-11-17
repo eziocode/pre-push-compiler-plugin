@@ -24,6 +24,7 @@ public final class ReviewSettings {
     private static final String MODE = "prepushchecker.review.mode";
     private static final String MANDATORY = "prepushchecker.review.mandatory";
     private static final String RULE_FILE = "prepushchecker.review.ruleFile";
+    private static final String IGNORE_MERGES = "prepushchecker.review.ignoreMergeChanges";
 
     private ReviewSettings() {}
 
@@ -55,6 +56,19 @@ public final class ReviewSettings {
 
     public static void setMandatoryFallback(@NotNull Project project, boolean mandatory) {
         PropertiesComponent.getInstance(project).setValue(MANDATORY, mandatory, false);
+    }
+
+    /**
+     * Skip code a push only carries because a remote branch was merged in (e.g. {@code git merge
+     * main}): only the developer's own commits and merge conflict resolutions are reviewed.
+     * Default on.
+     */
+    public static boolean isIgnoreMergeChanges(@NotNull Project project) {
+        return PropertiesComponent.getInstance(project).getBoolean(IGNORE_MERGES, true);
+    }
+
+    public static void setIgnoreMergeChanges(@NotNull Project project, boolean ignore) {
+        PropertiesComponent.getInstance(project).setValue(IGNORE_MERGES, ignore, true);
     }
 
     /** Rule file path relative to each repository root; blank = {@link ReviewRules#DEFAULT_FILE_NAME}. */

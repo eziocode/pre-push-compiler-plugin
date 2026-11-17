@@ -44,6 +44,49 @@ public final class RepositoryStateMonitor {
                 SmartBuildService.getInstance(project).repositoryChanged();
                 scheduleRefresh(repository.getRoot().getPath());
             });
+        // Uncommitted edits reverted or resolved: their review results may be stale now.
+        project.getMessageBus().connect(project).subscribe(
+            com.intellij.openapi.vcs.changes.ChangeListListener.TOPIC,
+            new com.intellij.openapi.vcs.changes.ChangeListListener() {
+                @Override
+                public void changeListUpdateDone() {
+                    if (project.isDisposed()
+                            || com.github.prepushchecker.review.ReviewStateStore.getInstance(project).isEmpty()) {
+                        return;
+                    }
+                    for (GitRepository repository
+                            : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+                        schedulePrune(repository.getRoot().getPath());
+                    }
+                }
+            });
+    }
+
+    private final java.util.Map<String, java.util.concurrent.ScheduledFuture<?>> pendingPrunes =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    private void schedulePrune(@NotNull String root) {
+        pendingPrunes.compute(root, (key, previous) -> {
+            if (previous != null) previous.cancel(false);
+            return com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService()
+                .schedule(() -> prune(root), DEBOUNCE_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        });
+    }
+
+    private void prune(@NotNull String root) {
+        pendingPrunes.remove(root);
+        try {
+            if (project.isDisposed()) return;
+            // A push being checked has not reached the remote yet; prune after it.
+            if (PrePushValidationCoordinator.getInstance(project).hasPendingWork()) {
+                schedulePrune(root);
+                return;
+            }
+            com.github.prepushchecker.review.ReviewService.getInstance(project)
+                .pruneStale(java.nio.file.Path.of(root));
+        } catch (Throwable failure) {
+            LOG.debug("Could not clear stale review results for " + root, failure);
+        }
     }
 
     private void scheduleRefresh(@NotNull String root) {
@@ -60,6 +103,8 @@ public final class RepositoryStateMonitor {
             if (project.isDisposed()) return;
             PrePushLocalServer server = project.getService(PrePushLocalServer.class);
             if (server != null) server.publishPortFile(root);
+            // Push, commit, reset or checkout: drop review results with nothing left to push.
+            schedulePrune(root);
             ExternalPushErrorLoader.watchRepository(project, root);
             PrePushCheckerSettings.syncSettingsFile(project, root);
             long now = System.currentTimeMillis();

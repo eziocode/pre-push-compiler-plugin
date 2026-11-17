@@ -156,6 +156,13 @@ public final class PrePushValidationCoordinator implements Disposable {
                 abandon(waitingFlight);
                 return Outcome.canceled();
             }
+            if (waiterIndicator != null) {
+                // Show what the shared validation is doing (compile, AI review part n of m).
+                String text = waitingFlight.ownerIndicator.getText();
+                if (text != null && !text.isBlank() && !text.equals(waiterIndicator.getText2())) {
+                    waiterIndicator.setText2(text);
+                }
+            }
             long remaining = deadline - System.nanoTime();
             if (remaining <= 0L) {
                 abandon(waitingFlight);
