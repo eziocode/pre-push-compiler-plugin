@@ -8,10 +8,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
-## [2.11.3] - 2026-11-17
+## [3.0.0] - 2026-11-17
+
+Everything since 2.11.0 in one release. It also brings the 2.10.1 fixes (below), which were
+released separately and were not in the 2.11.0 build.
+
+### Added
+
+- **Inline suggestions status bar icon.** Spins while a suggestion is generated, greys out when
+  off, and shows an error badge when paused or failing. Click it to switch suggestions on or off,
+  resume, suggest now, turn them off for the current file type, see the last error, or open the
+  Inline Suggestions and AI Provider settings.
+
+### Changed
+
+- **Faster CLI suggestions.** Claude Code completions run without tools, MCP servers or session
+  saving, and use `haiku` when no model is set (about 9 s to 5.5 s per suggestion in testing).
+  Codex completions run with `--ephemeral` and ask for low reasoning effort. The Copilot `gh`
+  token is cached for 10 minutes. A running request whose answer can no longer be used (text
+  before it changed, caret moved before it) is cancelled so the next suggestion starts at once.
 
 ### Fixed
 
+- **Inline suggestions now appear.** Typing no longer cancels the running request (a CLI
+  provider such as Codex needs several seconds), an answer that arrives after you kept typing is
+  shown from the caret when your typing matches its start, suggestions also work while the
+  completion popup is open, and the first failure is reported in a balloon instead of only the log.
+- **Codex inline: no more "Codex CLI returned an empty response".** An empty answer means the
+  model has nothing to insert there; it now shows no suggestion instead of an error, and no longer
+  counts toward pausing suggestions. An empty `--output-last-message` file falls back to stdout.
+  Suggest Now (Alt+\) says "No suggestion here" in that case.
+- **Inline Suggestions settings keep a model per provider.** Switching provider no longer carries
+  one provider's model over to another or loses it. The page now has the AI Provider layout:
+  API / local CLI / JetBrains AI, CLI path and version, and a model list with Refresh.
+- **AI Provider settings no longer throw away the CLI you just picked.** In 2026.3 the Settings
+  dialog resets unmodified pages when it gets focus back, and the "Choose CLI…" dialog and the
+  modal "Detecting…" / "Fetching models…" progress made that happen on every switch: the page
+  jumped back to the saved CLI and cleared the typed model. The CLI is now a combo on the page
+  (installed CLIs detected in the background, not-installed ones marked), "Browse…" picks any
+  other executable, and Refresh models runs in the background on both the AI Provider and
+  Inline Suggestions pages. Switching between "Other CLI" binaries no longer carries the previous
+  binary's model or arguments over.
+- **CLI model lists show only usable models.** Codex models come from the account's own catalogue
+  without hidden, unsupported or deprecated entries; retired ids are gone from the built-in lists;
+  Copilot drops models that are disabled for the account.
+- **Code review no longer passes a file on the first run and flags it on the next.** Review Local
+  Changes saves documents before choosing files; an unreadable or partial AI answer, a finding
+  with an ambiguous file name, an echoed prompt example, or a git failure never marks files clean;
+  content that changes while it is reviewed is reported. The prompt asks for every rule to be
+  checked against every change, and API providers review at temperature 0.
 - **Code Review: "Review changes from the commit panel" link and Resolve no longer crash.**
   Both saved documents straight from a link click, which has no write-intent lock in 2026.3
   ("Access is allowed from write thread only"), so the review never started and findings never
@@ -24,64 +69,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   requires balanced braces, existing symbols only and unchanged indentation, and the AI can list
   imports the fix needs (added after the file's imports). A proposal that adds parse errors is
   sent back once with the errors; if it still does not parse, the diff dialog warns before
-  applying. Fixes that change nothing are reported instead of shown.
+  applying.
 - **Resolve with AI retries instead of giving up on "The AI fix does not change the file".**
   An answer that cannot be parsed or leaves the file unchanged is sent back up to twice, with
   what was wrong, before the warning shows. The deleted-lines and syntax retries no longer swap
   a real fix for one that changes nothing.
 
-## [2.11.2] - 2026-11-17
+---
 
-### Fixed
-
-- **AI Provider settings no longer throw away the CLI you just picked.** In 2026.3 the Settings
-  dialog resets unmodified pages when it gets focus back, and the "Choose CLI…" dialog and the
-  modal "Detecting…" / "Fetching models…" progress made that happen on every switch: the page
-  jumped back to the saved CLI and cleared the typed model. The CLI is now a combo on the page
-  (installed CLIs detected in the background, not-installed ones marked), "Browse…" picks any
-  other executable, and Refresh models runs in the background on both the AI Provider and
-  Inline Suggestions pages. Switching between "Other CLI" binaries no longer carries the previous
-  binary's model or arguments over.
-- **Codex inline: no more "Codex CLI returned an empty response".** An empty answer means the
-  model has nothing to insert there; it now shows no suggestion instead of an error, and no longer
-  counts toward pausing suggestions. An empty `--output-last-message` file falls back to stdout.
-  Suggest Now (Alt+\) says "No suggestion here" in that case.
-
-### Changed
-
-- **Faster CLI suggestions.** Claude Code completions run without tools, MCP servers or session
-  saving, and use `haiku` when no model is set (about 9 s to 5.5 s per suggestion in testing).
-  Codex completions run with `--ephemeral`. The Copilot `gh` token is cached for 10 minutes. A
-  running request whose answer can no longer be used (text before it changed, caret moved before
-  it) is cancelled so the next suggestion starts at once.
+## [2.11.0] - 2026-11-16
 
 ### Added
 
-- **Inline suggestions status bar icon.** Spins while a suggestion is generated, greys out when
-  off, and shows an error badge when paused or failing. Click it to switch suggestions on or off,
-  resume, suggest now, turn them off for the current file type, see the last error, or open the
-  Inline Suggestions and AI Provider settings.
-
-## [2.11.1] - 2026-11-17
-
-### Fixed
-
-- **Inline suggestions now appear.** Typing no longer cancels the running request (a CLI
-  provider such as Codex needs several seconds), an answer that arrives after you kept typing is
-  shown from the caret when your typing matches its start, suggestions also work while the
-  completion popup is open, and the first failure is reported in a balloon instead of only the log.
-  Codex completions ask for low reasoning effort to answer faster.
-- **Inline Suggestions settings keep a model per provider.** Switching provider no longer carries
-  one provider's model over to another or loses it. The page now has the AI Provider layout:
-  API / local CLI / JetBrains AI, CLI path and version, and a model list with Refresh.
-- **CLI model lists show only usable models.** Codex models come from the account's own catalogue
-  without hidden, unsupported or deprecated entries; retired ids are gone from the built-in lists;
-  Copilot drops models that are disabled for the account.
-- **Code review no longer passes a file on the first run and flags it on the next.** Review Local
-  Changes saves documents before choosing files; an unreadable or partial AI answer, a finding
-  with an ambiguous file name, an echoed prompt example, or a git failure never marks files clean;
-  content that changes while it is reviewed is reported. The prompt asks for every rule to be
-  checked against every change, and API providers review at temperature 0.
+- **Inline AI suggestions**: ghost text at the caret, Tab to accept, Esc to dismiss or cancel.
+  Independent provider and model; automatic typing-pause suggestions on OpenAI, Anthropic,
+  Gemini and Ollama; shortcut-only (Alt+\) on other providers. Optional project class signatures
+  and open-file context, line and context budgets, disabled extensions and extra instructions.
+  Off by default. Enable in Settings → Tools → Pre-Push Checker → Inline Suggestions.
 
 ## [2.10.1] - 2026-11-16
 
@@ -116,18 +120,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   - `git push origin other-branch` reviews the pushed commit, not the checked-out one.
   - When the remote moved on and was not fetched, the pushed files come from the commits no remote
     has, instead of a failed diff.
-
----
-
-## [2.11.0] - 2026-11-16
-
-### Added
-
-- **Inline AI suggestions**: ghost text at the caret, Tab to accept, Esc to dismiss or cancel.
-  Independent provider and model; automatic typing-pause suggestions on OpenAI, Anthropic,
-  Gemini and Ollama; shortcut-only (Alt+\) on other providers. Optional project class signatures
-  and open-file context, line and context budgets, disabled extensions and extra instructions.
-  Off by default. Enable in Settings → Tools → Pre-Push Checker → Inline Suggestions.
 
 ## [2.10.0] - 2026-11-16
 
