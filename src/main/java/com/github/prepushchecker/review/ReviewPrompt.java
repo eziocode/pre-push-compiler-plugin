@@ -16,8 +16,15 @@ public final class ReviewPrompt {
     /** One file to review: the path shown to the AI and its numbered diff. */
     public record FileDiff(@NotNull String displayPath, @NotNull String numberedDiff) {}
 
-    /** A fix proposed by the AI: replace lines {@code startLine..endLine} (1-based, inclusive). */
-    public record Fix(int startLine, int endLine, @NotNull String replacement) {}
+    /**
+     * A fix proposed by the AI: replace lines {@code startLine..endLine} (1-based, inclusive), and
+     * add {@code imports} (whole import lines) that the new code needs and the file lacks.
+     */
+    public record Fix(int startLine, int endLine, @NotNull String replacement, @NotNull List<String> imports) {
+        public Fix(int startLine, int endLine, @NotNull String replacement) {
+            this(startLine, endLine, replacement, List.of());
+        }
+    }
 
     static final int MAX_FILE_CHARS = 40_000;
     static final int MAX_BATCH_CHARS = 90_000;
@@ -245,11 +252,22 @@ public final class ReviewPrompt {
             instead of introducing a new variable or call. Reuse the same names, helpers, quoting \
             and wording style as the neighbouring lines.
 
+            The result must compile:
+            - Keep braces, parentheses and string quotes balanced inside the replaced range.
+            - Only call methods, fields and types that exist in the file or in imports it already \
+            has. Do not invent helpers. When the fix needs a type the file does not import, list \
+            the full import line in "imports".
+            - Keep each line's exact leading indentation (same tabs or spaces as the file). \
+            Do not add blank lines, comments or trailing spaces the fix does not need, and never \
+            comment code out instead of fixing it.
+
             The file is shown with a line number in front of every line. Answer with one JSON object \
             and nothing else:
             {"startLine":<first line to replace>,"endLine":<last line to replace, inclusive>,\
-            "replacement":"<new text for those lines, without line numbers>"}
+            "replacement":"<new text for those lines, without line numbers>",\
+            "imports":["<import line to add, e.g. import java.util.Objects;>"]}
             To insert without removing, set endLine to startLine - 1 (the text goes before startLine).
+            Leave "imports" empty when no new import is needed.
             """.formatted(rules.strip());
     }
 
@@ -266,6 +284,19 @@ public final class ReviewPrompt {
         for (String line : dropped) sb.append(line.strip()).append('\n');
         sb.append("```\nAnswer again with the same JSON shape. Keep those lines unless the finding itself "
             + "requires removing them; if it does, return the same answer.\n");
+        return sb.toString();
+    }
+
+    /** Follow-up prompt when a fix leaves the file with parse errors. */
+    public static @NotNull String fixSyntaxRetryUserPrompt(@NotNull String firstUserPrompt, @NotNull Fix previous,
+                                                           @NotNull List<String> errors) {
+        StringBuilder sb = new StringBuilder(firstUserPrompt);
+        sb.append("\nYour previous answer replaced lines ").append(previous.startLine()).append('-')
+            .append(previous.endLine()).append(" with:\n```\n").append(previous.replacement())
+            .append("\n```\nWith that change the file no longer parses:\n");
+        for (String e : errors) sb.append("- ").append(e).append('\n');
+        sb.append("Answer again with the same JSON shape. Pick a range that covers every line the change "
+            + "touches and keep braces, parentheses and quotes balanced.\n");
         return sb.toString();
     }
 
@@ -299,7 +330,129 @@ public final class ReviewPrompt {
         int start = toInt(answer.get("startLine"));
         int end = toInt(answer.get("endLine"));
         if (start < 1 || start > lineCount + 1 || end < start - 1 || end > lineCount) return null;
-        return new Fix(start, end, replacement);
+        List<String> imports = new ArrayList<>();
+        if (answer.get("imports") instanceof List<?> list) {
+            for (Object o : list) {
+                String line = str(o);
+                // Only real import statements: anything else would be arbitrary code at the file's top.
+                if (IMPORT_LINE.matcher(line).matches() && !line.contains("\n") && !imports.contains(line)) imports.add(line);
+            }
+        }
+        return new Fix(start, end, replacement, imports);
+    }
+
+    private static final Pattern IMPORT_LINE = Pattern.compile("^(?:import|using|#include|from)\\s+\\S.*$");
+    private static final Pattern IMPORT_OR_PACKAGE = Pattern.compile("^\\s*(?:import|using|#include|from)\\s+\\S.*$");
+    private static final Pattern PACKAGE = Pattern.compile("^\\s*(?:package|namespace)\\s+\\S.*$");
+
+    /**
+     * Repairs whitespace damage typical of AI fixes, so the diff shows only the real change:
+     * replacement lines equal (ignoring whitespace) to a line of the replaced range keep that
+     * line's exact text; new lines that lost the block's indentation get it back; trailing
+     * whitespace and stray blank lines at either end are dropped.
+     */
+    public static @NotNull Fix normalize(@NotNull String content, @NotNull Fix fix) {
+        String[] lines = content.replace("\r\n", "\n").split("\n", -1);
+        int total = lines.length > 0 && lines[lines.length - 1].isEmpty() ? lines.length - 1 : lines.length;
+        List<String> range = new ArrayList<>();
+        for (int i = fix.startLine(); i <= fix.endLine() && i <= total; i++) range.add(lines[i - 1]);
+
+        List<String> repl = new ArrayList<>(List.of(fix.replacement().replace("\r\n", "\n").split("\n", -1)));
+        for (int i = 0; i < repl.size(); i++) repl.set(i, stripTrailing(repl.get(i)));
+        // Blank lines at either end: a replacement keeps them only where the replaced range had
+        // one; an insert keeps them as separators unless the neighbouring line is already blank
+        // (or the file edge), where they would double up.
+        boolean keepLeading;
+        boolean keepTrailing;
+        if (!range.isEmpty()) {
+            keepLeading = range.get(0).isBlank();
+            keepTrailing = range.get(range.size() - 1).isBlank();
+        } else {
+            int before = fix.startLine() - 1;
+            int after = fix.startLine();
+            keepLeading = before >= 1 && !lines[before - 1].isBlank();
+            keepTrailing = after <= total && !lines[after - 1].isBlank();
+        }
+        while (!repl.isEmpty() && repl.get(0).isEmpty() && !keepLeading) repl.remove(0);
+        while (!repl.isEmpty() && repl.get(repl.size() - 1).isEmpty() && !keepTrailing) repl.remove(repl.size() - 1);
+        if (repl.isEmpty()) return new Fix(fix.startLine(), fix.endLine(), "", fix.imports());
+
+        // Base indentation the block should have: the range's first non-blank line, or for an
+        // insert the line it goes before (or after, at the end of a block).
+        String base = null;
+        for (String r : range) if (!r.isBlank()) { base = indentOf(r); break; }
+        if (base == null) {
+            for (int i = fix.startLine(); i <= total && base == null; i++) if (!lines[i - 1].isBlank()) base = indentOf(lines[i - 1]);
+            for (int i = fix.startLine() - 1; i >= 1 && base == null; i--) if (!lines[i - 1].isBlank()) base = indentOf(lines[i - 1]);
+        }
+        if (base == null) base = "";
+        int minIndent = Integer.MAX_VALUE;
+        for (String r : repl) if (!r.isBlank()) minIndent = Math.min(minIndent, indentOf(r).length());
+        String shift = minIndent < base.length() ? base.substring(0, base.length() - minIndent) : "";
+        // Where the AI's block indentation is right, nothing is re-indented.
+        boolean tabs = base.contains("\t");
+
+        List<String> pool = new ArrayList<>(range);
+        List<String> out = new ArrayList<>();
+        for (String r : repl) {
+            if (r.isBlank()) {
+                out.add("");
+                continue;
+            }
+            String kept = takeSameLine(pool, r);
+            if (kept != null) {
+                out.add(kept);
+            } else {
+                String line = shift.isEmpty() ? r : shift + r;
+                if (tabs) line = spacesToTabs(line, base);
+                out.add(line);
+            }
+        }
+        return new Fix(fix.startLine(), fix.endLine(), String.join("\n", out), fix.imports());
+    }
+
+    private static @Nullable String takeSameLine(@NotNull List<String> pool, @NotNull String line) {
+        String key = line.strip();
+        for (int i = 0; i < pool.size(); i++) {
+            if (pool.get(i).strip().equals(key)) return pool.remove(i);
+        }
+        return null;
+    }
+
+    private static @NotNull String indentOf(@NotNull String line) {
+        int i = 0;
+        while (i < line.length() && (line.charAt(i) == ' ' || line.charAt(i) == '\t')) i++;
+        return line.substring(0, i);
+    }
+
+    private static @NotNull String stripTrailing(@NotNull String line) {
+        int end = line.length();
+        while (end > 0 && Character.isWhitespace(line.charAt(end - 1))) end--;
+        return line.substring(0, end);
+    }
+
+    /** In a tab-indented file, turns leading runs of spaces into tabs (4 spaces per tab, or the file's width). */
+    private static @NotNull String spacesToTabs(@NotNull String line, @NotNull String base) {
+        String indent = indentOf(line);
+        if (!indent.contains(" ")) return line;
+        int spaces = 0;
+        int tabCount = 0;
+        for (char c : indent.toCharArray()) {
+            if (c == '\t') tabCount++;
+            else spaces++;
+        }
+        if (spaces % 4 != 0) return line;
+        return "\t".repeat(tabCount + spaces / 4) + line.substring(indent.length());
+    }
+
+    /** Imports of {@code fix} that {@code content} does not have yet, as they will be added. */
+    public static @NotNull List<String> missingImports(@NotNull String content, @NotNull Fix fix) {
+        if (fix.imports().isEmpty()) return List.of();
+        java.util.Set<String> present = new java.util.HashSet<>();
+        for (String l : content.replace("\r\n", "\n").split("\n", -1)) present.add(l.strip());
+        List<String> out = new ArrayList<>();
+        for (String i : fix.imports()) if (!present.contains(i.strip())) out.add(i.strip());
+        return out;
     }
 
     /** Applies {@code fix} to {@code content}; line endings follow the file. */
@@ -318,8 +471,34 @@ public final class ReviewPrompt {
         out.addAll(replacement);
         if (to > from) out.addAll(lines.subList(to, lines.size()));
         else out.addAll(lines.subList(from, lines.size()));
+        addImports(out, missingImports(content, fix));
         String joined = String.join(sep, out);
         return trailingNewline ? joined + sep : joined;
+    }
+
+    /** Inserts {@code imports} after the last import, else after the package line, else at the top. */
+    private static void addImports(@NotNull List<String> lines, @NotNull List<String> imports) {
+        if (imports.isEmpty()) return;
+        int lastImport = -1;
+        int pkg = -1;
+        for (int i = 0; i < lines.size(); i++) {
+            String l = lines.get(i);
+            if (IMPORT_OR_PACKAGE.matcher(l).matches()) lastImport = i;
+            else if (pkg < 0 && PACKAGE.matcher(l).matches()) pkg = i;
+            else if (lastImport >= 0 && !l.isBlank()) break; // imports only sit at the top
+        }
+        List<String> block = new ArrayList<>(imports);
+        if (lastImport >= 0) {
+            lines.addAll(lastImport + 1, block);
+        } else if (pkg >= 0) {
+            block.add(0, "");
+            boolean blankAfter = pkg + 1 < lines.size() && lines.get(pkg + 1).isBlank();
+            if (!blankAfter) block.add("");
+            lines.addAll(pkg + 1, block);
+        } else {
+            block.add("");
+            lines.addAll(0, block);
+        }
     }
 
     /**

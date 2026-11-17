@@ -177,6 +177,49 @@ public class ReviewPromptTest extends TestCase {
             ReviewPrompt.apply("a\r\nb\r\n", new ReviewPrompt.Fix(2, 1, "new")));
     }
 
+    public void testNormalizeKeepsOriginalLinesAndRestoresIndent() {
+        String content = "class A {\n    void f() {\n        a();\n        b();\n    }\n}\n";
+        // AI dropped indentation and added trailing spaces and blank edges.
+        ReviewPrompt.Fix fix = ReviewPrompt.normalize(content,
+            new ReviewPrompt.Fix(3, 4, "\na();  \nif (x) {\n    c();\n}\nb();\n\n"));
+        assertEquals("        a();\n        if (x) {\n            c();\n        }\n        b();", fix.replacement());
+        assertEquals("class A {\n    void f() {\n        a();\n        if (x) {\n            c();\n        }\n"
+            + "        b();\n    }\n}\n", ReviewPrompt.apply(content, fix));
+    }
+
+    public void testNormalizeKeepsCorrectIndentAndSeparatorBlank() {
+        String content = "class A {\n    void f() {}\n}\n";
+        ReviewPrompt.Fix fix = ReviewPrompt.normalize(content,
+            new ReviewPrompt.Fix(3, 2, "\n    void g() {}"));
+        assertEquals("\n    void g() {}", fix.replacement());
+    }
+
+    public void testNormalizeUsesTabsInTabFile() {
+        String content = "class A {\n\tvoid f() {\n\t\ta();\n\t}\n}\n";
+        ReviewPrompt.Fix fix = ReviewPrompt.normalize(content, new ReviewPrompt.Fix(3, 3, "a();\nb();"));
+        assertEquals("\t\ta();\n\t\tb();", fix.replacement());
+    }
+
+    public void testParseFixReadsOnlyImportLines() {
+        ReviewPrompt.Fix fix = ReviewPrompt.parseFix(Map.of("startLine", 1, "endLine", 1, "replacement", "x",
+            "imports", List.of("import java.util.Objects;", "System.exit(0);", "import java.util.Objects;")), 3);
+        assertEquals(List.of("import java.util.Objects;"), fix.imports());
+    }
+
+    public void testApplyAddsMissingImportsAfterLastImport() {
+        String content = "package p;\n\nimport java.util.List;\n\nclass A {\n    int x;\n}\n";
+        ReviewPrompt.Fix fix = new ReviewPrompt.Fix(6, 6, "    int y;",
+            List.of("import java.util.List;", "import java.util.Objects;"));
+        assertEquals("package p;\n\nimport java.util.List;\nimport java.util.Objects;\n\nclass A {\n    int y;\n}\n",
+            ReviewPrompt.apply(content, fix));
+    }
+
+    public void testApplyAddsImportAfterPackageWhenNoImports() {
+        String content = "package p;\n\nclass A {}\n";
+        ReviewPrompt.Fix fix = new ReviewPrompt.Fix(3, 3, "class A { Objects o; }", List.of("import java.util.Objects;"));
+        assertEquals("package p;\n\nimport java.util.Objects;\n\nclass A { Objects o; }\n", ReviewPrompt.apply(content, fix));
+    }
+
     public void testParseFixRejectsBadRanges() {
         assertNull(ReviewPrompt.parseFix(Map.of("startLine", 0, "endLine", 1, "replacement", "x"), 3));
         assertNull(ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 9, "replacement", "x"), 3));

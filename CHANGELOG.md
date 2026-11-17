@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+### Fixed
+
+- **Code Review: "Review changes from the commit panel" link and Resolve no longer crash.**
+  Both saved documents straight from a link click, which has no write-intent lock in 2026.3
+  ("Access is allowed from write thread only"), so the review never started and findings never
+  resolved. Saving now runs from a write-safe EDT event first.
+- **Resolve with AI keeps the file's whitespace.** Lines the AI only re-typed keep their exact
+  original text (tabs/spaces), new lines that lost the block's indentation get it back (tabs in
+  tab-indented files), trailing spaces and stray blank lines at the ends of the replacement are
+  dropped, so the diff shows only the real change.
+- **Resolve with AI no longer offers fixes that break the build as easily.** The prompt now
+  requires balanced braces, existing symbols only and unchanged indentation, and the AI can list
+  imports the fix needs (added after the file's imports). A proposal that adds parse errors is
+  sent back once with the errors; if it still does not parse, the diff dialog warns before
+  applying. Fixes that change nothing are reported instead of shown.
+
 ## [2.11.2] - 2026-11-17
 
 ### Fixed

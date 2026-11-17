@@ -23,6 +23,11 @@ import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
 import com.intellij.icons.AllIcons;
+import com.intellij.openapi.util.text.StringUtil;
+import com.intellij.psi.PsiErrorElement;
+import com.intellij.psi.PsiFile;
+import com.intellij.psi.PsiFileFactory;
+import com.intellij.psi.util.PsiTreeUtil;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.util.ui.JBUI;
@@ -35,6 +40,7 @@ import javax.swing.JPanel;
 import javax.swing.SwingConstants;
 import java.awt.BorderLayout;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -74,20 +80,42 @@ public final class ReviewFixer {
                 int lines = lineCount(original);
                 ReviewPrompt.Fix fix;
                 List<String> dropped = List.of();
+                List<String> errors = List.of();
                 try {
-                    fix = askForFix(system, user, lines);
+                    fix = askForFix(system, user, original, lines);
                     if (fix != null) dropped = ReviewPrompt.droppedLines(original, fix);
                     if (!dropped.isEmpty()) {
                         // The AI replaced more than it rewrote. Ask once more, showing what went missing.
                         indicator.checkCanceled();
                         indicator.setText("AI fix removed existing lines, asking again…");
                         ReviewPrompt.Fix retry = askForFix(system,
-                            ReviewPrompt.fixRetryUserPrompt(user, fix, dropped), lines);
+                            ReviewPrompt.fixRetryUserPrompt(user, fix, dropped), original, lines);
                         if (retry != null) {
                             List<String> retryDropped = ReviewPrompt.droppedLines(original, retry);
                             if (retryDropped.size() <= dropped.size()) {
                                 fix = retry;
                                 dropped = retryDropped;
+                            }
+                        }
+                    }
+                    if (fix != null) {
+                        // A fix that breaks the file's syntax is asked for once more, with the errors.
+                        indicator.checkCanceled();
+                        int baseline = syntaxErrors(project, vf, original).size();
+                        errors = newErrors(syntaxErrors(project, vf, ReviewPrompt.apply(original, fix)), baseline);
+                        if (!errors.isEmpty()) {
+                            indicator.setText("AI fix does not parse, asking again…");
+                            ReviewPrompt.Fix retry = askForFix(system,
+                                ReviewPrompt.fixSyntaxRetryUserPrompt(user, fix, errors), original, lines);
+                            if (retry != null) {
+                                List<String> retryErrors = newErrors(
+                                    syntaxErrors(project, vf, ReviewPrompt.apply(original, retry)), baseline);
+                                List<String> retryDropped = ReviewPrompt.droppedLines(original, retry);
+                                if (retryErrors.size() < errors.size() && retryDropped.size() <= dropped.size()) {
+                                    fix = retry;
+                                    errors = retryErrors;
+                                    dropped = retryDropped;
+                                }
                             }
                         }
                     }
@@ -105,17 +133,52 @@ public final class ReviewFixer {
                     return;
                 }
                 String proposed = ReviewPrompt.apply(original, fix);
+                if (proposed.equals(original)) {
+                    ReviewService.getInstance(project).notify(
+                        "The AI fix does not change the file. Fix it by hand, then click Resolve.",
+                        NotificationType.WARNING, null);
+                    return;
+                }
                 List<String> removed = dropped;
+                List<String> broken = errors;
                 ApplicationManager.getApplication().invokeLater(
-                    () -> showAndApply(project, vf, snapshot, proposed, removed, finding), ModalityState.nonModal());
+                    () -> showAndApply(project, vf, snapshot, proposed, removed, broken, finding), ModalityState.nonModal());
             }
         });
     }
 
-    private static @Nullable ReviewPrompt.Fix askForFix(@NotNull String system, @NotNull String user, int lines)
-        throws Exception {
+    private static @Nullable ReviewPrompt.Fix askForFix(@NotNull String system, @NotNull String user,
+                                                       @NotNull String original, int lines) throws Exception {
         String raw = CommitMessageGeneratorService.resolveProvider().generate(AiRequest.fix(system, user));
-        return ReviewPrompt.parseFix(AiOutputSanitizer.cleanStructured(raw, "replacement"), lines);
+        ReviewPrompt.Fix fix = ReviewPrompt.parseFix(AiOutputSanitizer.cleanStructured(raw, "replacement"), lines);
+        return fix == null ? null : ReviewPrompt.normalize(original, fix);
+    }
+
+    private static final int MAX_REPORTED_ERRORS = 8;
+
+    /**
+     * Parse errors of {@code text} as the file's language sees it ("line N: message"). A
+     * non-physical copy is parsed, so nothing in the project changes. Empty for languages
+     * without a parser (plain text).
+     */
+    static @NotNull List<String> syntaxErrors(@NotNull Project project, @NotNull VirtualFile vf, @NotNull String text) {
+        return ReadActions.compute(() -> {
+            if (project.isDisposed()) return List.<String>of();
+            PsiFile copy = PsiFileFactory.getInstance(project).createFileFromText(vf.getName(), vf.getFileType(), text);
+            if (copy == null) return List.<String>of();
+            List<String> out = new ArrayList<>();
+            for (PsiErrorElement e : PsiTreeUtil.collectElementsOfType(copy, PsiErrorElement.class)) {
+                int line = StringUtil.offsetToLineNumber(text, e.getTextOffset()) + 1;
+                out.add("line " + line + ": " + e.getErrorDescription());
+            }
+            return out;
+        });
+    }
+
+    /** Errors beyond what the file already had; the file's own errors are not the fix's fault. */
+    private static @NotNull List<String> newErrors(@NotNull List<String> errors, int baseline) {
+        if (errors.size() <= baseline) return List.of();
+        return errors.subList(0, Math.min(errors.size(), MAX_REPORTED_ERRORS));
     }
 
     /** Document state captured in one read action. */
@@ -123,7 +186,7 @@ public final class ReviewFixer {
 
     private static void showAndApply(@NotNull Project project, @NotNull VirtualFile vf, @NotNull Snapshot snapshot,
                                      @NotNull String proposed, @NotNull List<String> removed,
-                                     @NotNull ReviewFinding finding) {
+                                     @NotNull List<String> errors, @NotNull ReviewFinding finding) {
         if (project.isDisposed()) return;
         Document document = snapshot.document;
         String original = snapshot.text;
@@ -132,7 +195,7 @@ public final class ReviewFixer {
             notifyChanged(project);
             return;
         }
-        FixDialog dialog = new FixDialog(project, vf, original, proposed, removed, finding);
+        FixDialog dialog = new FixDialog(project, vf, original, proposed, removed, errors, finding);
         if (!dialog.showAndGet()) return;
 
         boolean[] applied = {false};
@@ -178,16 +241,18 @@ public final class ReviewFixer {
         private final String original;
         private final String proposed;
         private final List<String> removed;
+        private final List<String> errors;
         private final ReviewFinding finding;
 
         FixDialog(Project project, VirtualFile file, String original, String proposed, List<String> removed,
-                  ReviewFinding finding) {
+                  List<String> errors, ReviewFinding finding) {
             super(project, true);
             this.project = project;
             this.file = file;
             this.original = original;
             this.proposed = proposed;
             this.removed = removed;
+            this.errors = errors;
             this.finding = finding;
             setTitle("AI Fix: " + file.getName());
             setOKButtonText("Apply Fix");
@@ -205,17 +270,28 @@ public final class ReviewFixer {
             panel.setRequest(request);
             JPanel root = new JPanel(new BorderLayout());
             root.add(panel.getComponent(), BorderLayout.CENTER);
-            if (!removed.isEmpty()) {
-                JBLabel warning = new JBLabel("This fix deletes " + removed.size() + " existing line(s): "
-                    + String.join("  ·  ", removed.stream().limit(3).map(l -> AiOutputSanitizer.truncate(l, 80)).toList())
-                    + (removed.size() > 3 ? "  …" : "") + ". Check the diff before applying.",
-                    AllIcons.General.Warning, SwingConstants.LEFT);
-                warning.setForeground(JBColor.namedColor("Label.errorForeground", JBColor.RED));
-                warning.setBorder(JBUI.Borders.empty(0, 2, 6, 2));
-                root.add(warning, BorderLayout.NORTH);
+            JPanel warnings = new JPanel();
+            warnings.setLayout(new javax.swing.BoxLayout(warnings, javax.swing.BoxLayout.Y_AXIS));
+            if (!errors.isEmpty()) {
+                warnings.add(warning("This fix leaves the file with syntax errors ("
+                    + String.join("; ", errors.stream().limit(3).map(l -> AiOutputSanitizer.truncate(l, 80)).toList())
+                    + (errors.size() > 3 ? "; …" : "") + "). It will not compile as is."));
             }
+            if (!removed.isEmpty()) {
+                warnings.add(warning("This fix deletes " + removed.size() + " existing line(s): "
+                    + String.join("  ·  ", removed.stream().limit(3).map(l -> AiOutputSanitizer.truncate(l, 80)).toList())
+                    + (removed.size() > 3 ? "  …" : "") + ". Check the diff before applying."));
+            }
+            if (warnings.getComponentCount() > 0) root.add(warnings, BorderLayout.NORTH);
             root.setPreferredSize(JBUI.size(900, 560));
             return root;
+        }
+
+        private static JBLabel warning(String text) {
+            JBLabel label = new JBLabel(text, AllIcons.General.Warning, SwingConstants.LEFT);
+            label.setForeground(JBColor.namedColor("Label.errorForeground", JBColor.RED));
+            label.setBorder(JBUI.Borders.empty(0, 2, 6, 2));
+            return label;
         }
 
         @Override

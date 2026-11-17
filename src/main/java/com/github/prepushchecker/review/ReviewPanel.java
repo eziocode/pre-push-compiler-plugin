@@ -1,5 +1,6 @@
 package com.github.prepushchecker.review;
 
+import com.github.prepushchecker.WriteSafeEdt;
 import com.intellij.icons.AllIcons;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.actionSystem.ActionManager;
@@ -207,8 +208,14 @@ public final class ReviewPanel extends JPanel implements Disposable {
     private void resolveSelected() {
         ReviewFinding f = selectedFinding();
         if (f == null || f.resolved) return;
-        FileDocumentManager.getInstance().saveAllDocuments();
-        resolveInBackground(project, f.id, "manual");
+        String id = f.id;
+        // Link clicks run without the write-intent lock that saving needs (asserted since 2026.3):
+        // save from a write-safe EDT event, so approval is hashed off what is on disk.
+        WriteSafeEdt.invokeLater(() -> {
+            if (project.isDisposed()) return;
+            FileDocumentManager.getInstance().saveAllDocuments();
+            resolveInBackground(project, id, "manual");
+        });
     }
 
     private void fixSelected() {
@@ -254,10 +261,17 @@ public final class ReviewPanel extends JPanel implements Disposable {
 
         @Override
         public void actionPerformed(@NotNull AnActionEvent e) {
-            run();
+            saveAndReview();
         }
 
         void run() {
+            // Also called from the empty-tree link, whose click has no write-intent lock: save from a
+            // write-safe EDT event instead of directly.
+            WriteSafeEdt.invokeLater(this::saveAndReview);
+        }
+
+        private void saveAndReview() {
+            if (project.isDisposed()) return;
             // Save first; git status (in the background task) then sees edits the change list has not caught up with.
             FileDocumentManager.getInstance().saveAllDocuments();
             ChangeListManager clm = ChangeListManager.getInstance(project);
