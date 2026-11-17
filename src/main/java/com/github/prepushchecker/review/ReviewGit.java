@@ -134,10 +134,32 @@ final class ReviewGit {
         return out == null || out.isBlank() ? null : out.trim();
     }
 
-    /** Working tree vs HEAD for one tracked file. */
-    static @NotNull String diffAgainstHead(@NotNull Path root, @NotNull String relPath) {
-        String out = git(root, withFunctionContext(List.of("diff", "--no-color", "--no-ext-diff", "-U5", "-W", "HEAD", "--", relPath)));
-        return out == null ? "" : out;
+    /**
+     * Working tree vs HEAD for one tracked file: empty when unchanged, {@code null} when git
+     * failed. A failure must not be read as "no changes", or the file silently skips review.
+     */
+    static @Nullable String diffAgainstHead(@NotNull Path root, @NotNull String relPath) {
+        return git(root, withFunctionContext(List.of("diff", "--no-color", "--no-ext-diff", "-U5", "-W", "HEAD", "--", relPath)));
+    }
+
+    /**
+     * Files with local changes (staged, unstaged or untracked, not deleted and not ignored), as
+     * git sees them on disk now. Unlike the IDE's change list this is never behind a save.
+     */
+    static @NotNull List<String> changedFiles(@NotNull Path root) {
+        // Not "git status --porcelain": its fixed-column format does not survive the trimmed stdout.
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        String tracked = headSha(root) == null
+            ? git(root, List.of("ls-files", "-z", "--cached"))
+            : git(root, List.of("diff", "--name-only", "-z", "--no-renames", "--diff-filter=d", "HEAD", "--"));
+        String untracked = git(root, List.of("ls-files", "-z", "--others", "--exclude-standard"));
+        for (String stdout : new String[]{tracked, untracked}) {
+            if (stdout == null) continue;
+            for (String p : stdout.split("\0")) {
+                if (!p.isBlank()) out.add(p);
+            }
+        }
+        return new ArrayList<>(out);
     }
 
     /** {@code base..head} for one file. */

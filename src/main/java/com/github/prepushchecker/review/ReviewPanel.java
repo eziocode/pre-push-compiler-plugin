@@ -258,12 +258,13 @@ public final class ReviewPanel extends JPanel implements Disposable {
         }
 
         void run() {
+            // Save first; git status (in the background task) then sees edits the change list has not caught up with.
+            FileDocumentManager.getInstance().saveAllDocuments();
             ChangeListManager clm = ChangeListManager.getInstance(project);
             List<Path> files = new ArrayList<>();
             ReviewChangesAction.addChanges(files, clm.getAllChanges());
             for (FilePath fp : clm.getUnversionedFilesPaths()) files.add(Path.of(fp.getPath()));
-            FileDocumentManager.getInstance().saveAllDocuments();
-            ReviewService.getInstance(project).reviewInBackground(files, null);
+            ReviewService.getInstance(project).reviewLocalChangesInBackground(files);
         }
     }
 

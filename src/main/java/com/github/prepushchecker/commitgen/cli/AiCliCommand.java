@@ -31,6 +31,9 @@ public final class AiCliCommand {
         return cmd;
     }
 
+    /** Config override that makes {@code codex exec} answer faster; used for inline completions only. */
+    static final String CODEX_LOW_EFFORT = "model_reasoning_effort=\"low\"";
+
     /**
      * {@code codex exec --skip-git-repo-check --sandbox read-only --color never
      * [-m M] --output-last-message <file> [extra…] -}; prompt goes on stdin.
@@ -38,6 +41,16 @@ public final class AiCliCommand {
     public static @NotNull List<String> codex(@NotNull String path, @Nullable String model,
                                               @Nullable String extraArgs,
                                               @NotNull Path lastMessageFile) {
+        return codex(path, model, extraArgs, lastMessageFile, false);
+    }
+
+    /**
+     * As {@link #codex(String, String, String, Path)}; {@code lowLatency} adds
+     * {@code -c model_reasoning_effort="low"} before the user's extra args, which can still override it.
+     */
+    public static @NotNull List<String> codex(@NotNull String path, @Nullable String model,
+                                              @Nullable String extraArgs,
+                                              @NotNull Path lastMessageFile, boolean lowLatency) {
         List<String> cmd = new ArrayList<>(List.of(
             path, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never"));
         if (!isBlank(model)) {
@@ -46,6 +59,10 @@ public final class AiCliCommand {
         }
         cmd.add("--output-last-message");
         cmd.add(lastMessageFile.toString());
+        if (lowLatency) {
+            cmd.add("-c");
+            cmd.add(CODEX_LOW_EFFORT);
+        }
         cmd.addAll(tokenize(extraArgs));
         cmd.add("-");
         return cmd;

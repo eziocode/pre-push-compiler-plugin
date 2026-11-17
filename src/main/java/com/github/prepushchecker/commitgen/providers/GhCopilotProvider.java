@@ -64,31 +64,17 @@ public final class GhCopilotProvider implements CommitMessageProvider {
                     + "Then ensure you have an active GitHub Copilot subscription.");
         }
 
-        String body = "{"
-            + "\"model\":" + JsonUtil.quoted(model == null || model.isBlank() ? "gpt-4o" : model.trim()) + ","
-            + "\"max_tokens\":" + request.maxOutputTokens() + ","
-            + "\"messages\":["
-            + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
-            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
-            + "]}";
-
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest httpRequest = HttpRequest.newBuilder()
-            .uri(URI.create(COPILOT_API_URL))
-            .header("Authorization",          "Bearer " + token)
-            .header("Content-Type",           "application/json")
-            .header("Copilot-Integration-Id", "vscode-chat")
-            .header("Editor-Version",         "vscode/1.85.0")
-            .header("Editor-Plugin-Version",  "copilot-chat/0.12.0")
-            .header("User-Agent",             "GithubCopilot/1.155.0")
-            .timeout(request.timeout())
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build();
-
-        HttpResponse<String> response =
-            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        // Reviews must give the same findings on every run: temperature 0. A model that rejects
+        // the parameter (400) is asked again without it.
+        boolean temperature = request.kind() == AiRequest.Kind.REVIEW;
+        HttpResponse<String> response = send(client, token, request, model, systemPrompt, userPrompt, temperature);
+        if (temperature && response.statusCode() == 400 && response.body() != null
+            && response.body().contains("temperature")) {
+            response = send(client, token, request, model, systemPrompt, userPrompt, false);
+        }
 
         if (response.statusCode() == 401 || response.statusCode() == 403) {
             throw new RuntimeException(
@@ -109,6 +95,31 @@ public final class GhCopilotProvider implements CommitMessageProvider {
             throw new RuntimeException("Unexpected Copilot response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return content.trim();
+    }
+
+    private static HttpResponse<String> send(HttpClient client, String token, AiRequest request,
+                                             @Nullable String model, String systemPrompt, String userPrompt,
+                                             boolean temperature) throws Exception {
+        String body = "{"
+            + "\"model\":" + JsonUtil.quoted(model == null || model.isBlank() ? "gpt-4o" : model.trim()) + ","
+            + "\"max_tokens\":" + request.maxOutputTokens() + ","
+            + (temperature ? "\"temperature\":0," : "")
+            + "\"messages\":["
+            + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
+            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
+            + "]}";
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+            .uri(URI.create(COPILOT_API_URL))
+            .header("Authorization",          "Bearer " + token)
+            .header("Content-Type",           "application/json")
+            .header("Copilot-Integration-Id", "vscode-chat")
+            .header("Editor-Version",         "vscode/1.85.0")
+            .header("Editor-Plugin-Version",  "copilot-chat/0.12.0")
+            .header("User-Agent",             "GithubCopilot/1.155.0")
+            .timeout(request.timeout())
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build();
+        return client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
     }
 
     @Override

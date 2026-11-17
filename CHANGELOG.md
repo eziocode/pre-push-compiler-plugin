@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.11.1] - 2026-11-17
+
+### Fixed
+
+- **Inline suggestions now appear.** Typing no longer cancels the running request (a CLI
+  provider such as Codex needs several seconds), an answer that arrives after you kept typing is
+  shown from the caret when your typing matches its start, suggestions also work while the
+  completion popup is open, and the first failure is reported in a balloon instead of only the log.
+  Codex completions ask for low reasoning effort to answer faster.
+- **Inline Suggestions settings keep a model per provider.** Switching provider no longer carries
+  one provider's model over to another or loses it. The page now has the AI Provider layout:
+  API / local CLI / JetBrains AI, CLI path and version, and a model list with Refresh.
+- **CLI model lists show only usable models.** Codex models come from the account's own catalogue
+  without hidden, unsupported or deprecated entries; retired ids are gone from the built-in lists;
+  Copilot drops models that are disabled for the account.
+- **Code review no longer passes a file on the first run and flags it on the next.** Review Local
+  Changes saves documents before choosing files; an unreadable or partial AI answer, a finding
+  with an ambiguous file name, an echoed prompt example, or a git failure never marks files clean;
+  content that changes while it is reviewed is reported. The prompt asks for every rule to be
+  checked against every change, and API providers review at temperature 0.
+
 ## [2.10.1] - 2026-11-16
 
 ### Fixed

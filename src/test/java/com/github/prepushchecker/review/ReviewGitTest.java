@@ -86,6 +86,66 @@ public class ReviewGitTest extends TestCase {
         }
     }
 
+    public void testWorkingTargetsReviewWorkingTreeContent() throws Exception {
+        Files.writeString(repo.resolve("src/A.java"), "class A {\n    void a() {\n        int x = 4;\n    }\n}\n");
+        Files.writeString(repo.resolve("src/New.java"), "class New {}\n");
+        List<String> errors = new java.util.ArrayList<>();
+        List<ReviewService.Target> t = ReviewService.workingTargets(repo,
+            List.of("src/A.java", "src/New.java", "src/Gone.java"), errors);
+        assertEquals(List.of(), errors);
+        assertEquals(2, t.size());
+        assertTrue(t.get(0).numberedDiff(), t.get(0).numberedDiff().contains("+         int x = 4;"));
+        assertEquals(ReviewGit.hashObjects(repo, List.of("src/A.java")).get("src/A.java"), t.get(0).contentId());
+        assertTrue(t.get(1).numberedDiff(), t.get(1).numberedDiff().contains("    1 + class New {}"));
+    }
+
+    public void testUnchangedTrackedFileIsSkippedWithoutError() {
+        List<String> errors = new java.util.ArrayList<>();
+        assertTrue(ReviewService.workingTargets(repo, List.of("src/A.java"), errors).isEmpty());
+        assertEquals(List.of(), errors);
+    }
+
+    /**
+     * Regression: before the first commit "git diff HEAD" fails; the failure was read as "no
+     * changes", so staged files were silently skipped and the review reported nothing to check.
+     */
+    public void testFilesBeforeFirstCommitAreReviewedAsNewFiles() throws Exception {
+        Path saved = repo;
+        repo = Files.createTempDirectory("review-git-empty").toRealPath();
+        try {
+            git("init", "-q");
+            Files.writeString(repo.resolve("First.java"), "class First {}\n");
+            git("add", "First.java");
+            assertNull("a git failure is not an empty diff", ReviewGit.diffAgainstHead(repo, "First.java"));
+            List<String> errors = new java.util.ArrayList<>();
+            List<ReviewService.Target> t = ReviewService.workingTargets(repo, List.of("First.java"), errors);
+            assertEquals(List.of(), errors);
+            assertEquals(1, t.size());
+            assertTrue(t.get(0).numberedDiff(), t.get(0).numberedDiff().contains("    1 + class First {}"));
+        } finally {
+            try (var walk = Files.walk(repo)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+            }
+            repo = saved;
+        }
+    }
+
+    /** "Review Local Changes" asks git too, so an edit the IDE change list has not seen yet is reviewed. */
+    public void testChangedFilesListsEditsAndNewFilesButNotDeletions() throws Exception {
+        Files.writeString(repo.resolve("src/A.java"), "class A {}\n");
+        Files.writeString(repo.resolve("src/New.java"), "class New {}\n");
+        Files.writeString(repo.resolve("src/Del.java"), "class Del {}\n");
+        git("add", "src/Del.java");
+        git("commit", "-qm", "del");
+        Files.delete(repo.resolve("src/Del.java"));
+        Files.writeString(repo.resolve("src/Old.java"), "class Old {}\n");
+        git("add", "src/Old.java");
+        git("commit", "-qm", "old");
+        git("mv", "src/Old.java", "src/Renamed.java");
+        assertEquals(java.util.Set.of("src/A.java", "src/New.java", "src/Renamed.java"),
+            new java.util.HashSet<>(ReviewGit.changedFiles(repo)));
+    }
+
     private void git(String... args) throws Exception {
         List<String> cmd = new java.util.ArrayList<>(List.of("git"));
         cmd.addAll(List.of(args));

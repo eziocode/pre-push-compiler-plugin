@@ -58,18 +58,22 @@ public final class ReviewChangesAction extends AnAction implements DumbAware {
     public void actionPerformed(@NotNull AnActionEvent e) {
         Project project = e.getProject();
         if (project == null) return;
+        // Save before reading the file list and contents, so the review sees what is on disk now.
+        FileDocumentManager.getInstance().saveAllDocuments();
         CommitWorkflowUi ui = e.getData(VcsDataKeys.COMMIT_WORKFLOW_UI);
         List<Path> files = new ArrayList<>();
+        ReviewService service = ReviewService.getInstance(project);
         if (ui != null) {
+            // Exactly the checked files: the user's selection.
             addChanges(files, ui.getIncludedChanges());
             for (FilePath fp : ui.getIncludedUnversionedFiles()) files.add(Path.of(fp.getPath()));
+            service.reviewInBackground(files, null);
         } else {
             ChangeListManager clm = ChangeListManager.getInstance(project);
             addChanges(files, clm.getAllChanges());
             for (FilePath fp : clm.getUnversionedFilesPaths()) files.add(Path.of(fp.getPath()));
+            service.reviewLocalChangesInBackground(files);
         }
-        FileDocumentManager.getInstance().saveAllDocuments();
-        ReviewService.getInstance(project).reviewInBackground(files, null);
     }
 
     static void addChanges(@NotNull List<Path> out, @NotNull Collection<Change> changes) {

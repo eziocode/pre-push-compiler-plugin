@@ -127,6 +127,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     private var codexRow: Row? = null
     private var component: JComponent? = null
     private var loading = false
+    private var cliSummaryGeneration = 0L
     @Volatile private var pendingKeySave: java.util.concurrent.Future<*>? = null
 
     override fun getId() = ID
@@ -300,6 +301,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     }
 
     override fun disposeUIResources() {
+        cliSummaryGeneration++
         component = null
     }
 
@@ -450,7 +452,7 @@ class AiProviderConfigurable : SearchableConfigurable {
         stashCliInto(work)
         val scan = ProgressManager.getInstance().runProcessWithProgressSynchronously<List<AiCliDetector.DetectedCli>, Exception>(
             { AiCliDetector.scanAll(work) }, "Detecting installed AI CLIs…", true, null) ?: return
-        val dialog = ChooseCliDialog(scan)
+        val dialog = ChooseCliDialog(scan, cliOf(cliId, work.customCliBinary))
         if (!dialog.showAndGet()) return
         val chosenPath = dialog.browsedPath
         val chosen = dialog.selected()
@@ -490,17 +492,20 @@ class AiProviderConfigurable : SearchableConfigurable {
         loadCli()
     }
 
-    private fun refreshCliSummary() {
+    private fun refreshCliSummary(): java.util.concurrent.Future<*> {
+        val generation = ++cliSummaryGeneration
         val cli = cliOf(cliId, customBinaryField.text.trim())
         val binary = if (cliId == Id.CUSTOM_CLI) customBinaryField.text.trim().ifEmpty { "sahaa" } else cli.binaryName()
         val name = if (cliId == Id.CUSTOM_CLI) AiCli.byBinary(binary)?.displayName() ?: binary else cli.displayName()
         val configured = cliPathField.text.trim()
         cliSummary.text = "$name  ·  checking…"
         cliSummary.foreground = UIUtil.getLabelForeground()
-        ApplicationManager.getApplication().executeOnPooledThread {
+        return ApplicationManager.getApplication().executeOnPooledThread {
             val path = CliPathResolver.resolveOrNull(configured, binary)
             val version = if (path == null) "" else AiCliDetector.version(path)
             ApplicationManager.getApplication().invokeLater({
+                // A slower probe for the previous CLI must not replace the current selection.
+                if (generation != cliSummaryGeneration) return@invokeLater
                 if (path == null) {
                     cliSummary.text = "$name  ·  not found. Use Choose CLI… or set the path under Advanced."
                     cliSummary.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
@@ -588,7 +593,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     }
 
     /** Installed CLIs with path, version and sign-in state; "Browse…" picks an unlisted binary. */
-    private class ChooseCliDialog(private val rows: List<AiCliDetector.DetectedCli>) : DialogWrapper(true) {
+    private class ChooseCliDialog(private val rows: List<AiCliDetector.DetectedCli>, selectedCli: AiCli) : DialogWrapper(true) {
         private val table = JBTable(object : DefaultTableModel(
             rows.map { d ->
                 arrayOf<Any>(
@@ -608,7 +613,9 @@ class AiProviderConfigurable : SearchableConfigurable {
             setOKButtonText("Use Selected")
             table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
             table.setShowGrid(false)
-            rows.indexOfFirst { it.found() }.takeIf { it >= 0 }?.let { table.setRowSelectionInterval(it, it) }
+            val selectedRow = rows.indexOfFirst { it.cli() == selectedCli }
+                .takeIf { it >= 0 } ?: rows.indexOfFirst { it.found() }
+            if (selectedRow >= 0) table.setRowSelectionInterval(selectedRow, selectedRow)
             table.selectionModel.addListSelectionListener { isOKActionEnabled = selected()?.found() == true }
             isOKActionEnabled = selected()?.found() == true
             init()

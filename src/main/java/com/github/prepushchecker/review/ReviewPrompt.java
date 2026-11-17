@@ -39,12 +39,20 @@ public final class ReviewPrompt {
             %s
             ----
 
+            How to review (the same input must always give the same findings):
+            - Go through EVERY file and EVERY changed hunk. For each hunk, check it against EVERY \
+            rule above, one rule at a time. Do not stop after the first finding and do not skip a \
+            rule because another one already matched.
+            - List every violation you find, each as its own finding. Do not merge, sample or \
+            summarise them.
+            - Report a finding only when a change breaks one of the rules above. Do not report style \
+            preferences or rules that are not listed.
+
             Answer with one JSON object and nothing else:
             {"findings":[{"file":"<path exactly as given>","line":<line number in the new file>,\
             "rule":"<short name of the broken rule>","message":"<what is wrong, one or two sentences>",\
             "suggestion":"<how to fix it>"}]}
-            Report a finding only when a change breaks one of the rules above. Do not report style \
-            preferences or rules that are not listed. When nothing breaks a rule, answer {"findings":[]}.
+            When no change breaks a rule, answer with an empty findings array.
 
             Writing findings:
             - Base every message on what the diff actually shows: say which lines were added or \
@@ -160,6 +168,50 @@ public final class ReviewPrompt {
                 first(f, "suggestion", "fix")));
         }
         return new Parsed(out, dropped);
+    }
+
+    /**
+     * What to record for one batch: findings per file (absolute path) for the files whose verdict
+     * can be trusted, and an error when some files could not be judged and stay unreviewed.
+     */
+    public record Verdict(@NotNull Map<String, List<ReviewFinding>> toRecord, @Nullable String error) {}
+
+    /**
+     * Turns one AI answer into what may be recorded. A file is recorded as clean only when the
+     * answer is a well-formed findings list in which every item could be used: an answer that is
+     * missing, not a list, or has items that could not be tied to a file may hide a finding for
+     * any file of the batch, so files without a usable finding are then left unreviewed.
+     *
+     * @param displayToAbsolute the batch's files, path shown to the AI → absolute path
+     */
+    public static @NotNull Verdict judge(@Nullable Map<?, ?> answer, @NotNull Map<String, String> displayToAbsolute) {
+        int files = displayToAbsolute.size();
+        if (answer == null) {
+            return new Verdict(Map.of(), "The AI answer was not a findings list, so " + files
+                + " file(s) were not marked reviewed. Try again or choose another model.");
+        }
+        if (!(answer.get("findings") instanceof List<?>)) {
+            return new Verdict(Map.of(), "The AI answer had no findings list (\"findings\" was "
+                + (answer.get("findings") == null ? "empty" : "not a list") + "), so " + files
+                + " file(s) were not marked reviewed. Try again or choose another model.");
+        }
+        Parsed parsed = parse(answer, displayToAbsolute);
+        Map<String, List<ReviewFinding>> byFile = new java.util.LinkedHashMap<>();
+        for (String abs : displayToAbsolute.values()) byFile.put(abs, new ArrayList<>());
+        for (ReviewFinding f : parsed.findings()) byFile.computeIfAbsent(f.path, k -> new ArrayList<>()).add(f);
+        if (parsed.dropped() == 0) return new Verdict(byFile, null);
+
+        // A dropped item may belong to any file: only files that already have findings (and so
+        // are not approved anyway) are recorded; the rest stay unreviewed.
+        Map<String, List<ReviewFinding>> withFindings = new java.util.LinkedHashMap<>();
+        byFile.forEach((abs, list) -> {
+            if (!list.isEmpty()) withFindings.put(abs, list);
+        });
+        int skipped = files - withFindings.size();
+        String error = skipped == 0 ? null
+            : "The AI answer listed " + parsed.dropped() + " finding(s) without a usable file or message, so "
+                + skipped + " file(s) were not marked reviewed. Try again or choose another model.";
+        return new Verdict(withFindings, error);
     }
 
     private static @NotNull String first(@NotNull Map<?, ?> m, @NotNull String... keys) {
@@ -337,12 +389,16 @@ public final class ReviewPrompt {
         while (f.startsWith("./")) f = f.substring(2);
         String direct = displayToAbsolute.get(f);
         if (direct != null) return direct;
+        String match = null;
         for (Map.Entry<String, String> e : displayToAbsolute.entrySet()) {
             if (e.getValue().equals(f) || e.getKey().endsWith("/" + f) || f.endsWith("/" + e.getKey())) {
-                return e.getValue();
+                // Two files share this suffix (e.g. a bare "Test.java"): guessing would put the
+                // finding on the wrong file and record the right one as clean.
+                if (match != null && !match.equals(e.getValue())) return null;
+                match = e.getValue();
             }
         }
-        return null;
+        return match;
     }
 
     private static String str(Object o) {

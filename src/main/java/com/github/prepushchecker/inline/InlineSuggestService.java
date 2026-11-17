@@ -48,8 +48,10 @@ import java.util.function.Function;
 
 /**
  * Drives inline AI suggestions: decides on each editor event whether to request, debounces automatic
- * requests, runs one request at a time on a pooled thread, drops stale answers and shows fresh ones
- * as ghost text. Instantiated lazily on first use, so it costs nothing while the feature is off.
+ * requests and runs one request at a time on a pooled thread. Keystrokes never kill a running request
+ * (a CLI provider takes seconds); they only ask for a follow-up. An answer that arrives after the user
+ * kept typing is shown from the caret when the typed text is a prefix of it, otherwise the follow-up
+ * runs. Instantiated lazily on first use, so it costs nothing while the feature is off.
  */
 public final class InlineSuggestService implements Disposable {
     public static final int FAILURES_BEFORE_PAUSE = 3;
@@ -70,6 +72,10 @@ public final class InlineSuggestService implements Disposable {
     private volatile @Nullable Function<CommitMessageProvider.Id, CommitMessageProvider> providerFactory;
     private volatile boolean paused;
     private volatile int failures;
+    /** The first automatic failure since start-up (or since settings changed) was reported (EDT). */
+    private boolean failureReported;
+    /** Most recent answer, re-usable while the user types its first characters (EDT). */
+    private @Nullable Answer lastAnswer;
     /** Document whose change is being processed (EDT only); caret moves caused by it are not user moves. */
     private @Nullable Document changing;
 
@@ -106,9 +112,22 @@ public final class InlineSuggestService implements Disposable {
             case NONE -> { }
             case CACHE_ONLY -> showCached(host, target);
             case REQUEST -> {
-                if (!showCached(host, target)) schedule(host, target, s);
+                if (!showCached(host, target)) request(host, target, s);
             }
         }
+    }
+
+    /**
+     * EDT. Asks for a fresh automatic suggestion. A request already running for this editor is left
+     * alone and only told that a follow-up is wanted should its answer not fit the new text.
+     */
+    private void request(Editor editor, Target target, InlineSuggestSettings.State s) {
+        Request r = current;
+        if (r != null && !r.cancelled && r.editor == editor && r.isRunning()) {
+            r.followUp = true;
+            return;
+        }
+        schedule(editor, target, s);
     }
 
     /** EDT. Manual request: ignores trigger mode, pause and debounce. */
@@ -134,6 +153,8 @@ public final class InlineSuggestService implements Disposable {
     public void settingsChanged() {
         paused = false;
         failures = 0;
+        failureReported = false;
+        lastAnswer = null;
         cache.clear();
         cancelCurrent();
         for (Editor editor : EditorFactory.getInstance().getAllEditors()) InlineGhostText.dismiss(editor);
@@ -146,8 +167,7 @@ public final class InlineSuggestService implements Disposable {
     static boolean hasPendingRequest(@NotNull Editor editor) {
         InlineSuggestService service = ApplicationManager.getApplication().getServiceIfCreated(InlineSuggestService.class);
         Request r = service == null ? null : service.current;
-        return r != null && !r.cancelled && r.editor == host(editor)
-            && (r.scheduled || r.future != null && !r.future.isDone());
+        return r != null && !r.cancelled && r.editor == host(editor) && (r.scheduled || r.isRunning());
     }
 
     /** Esc while a request for {@code editor} runs: cancel it. No-op when the service was never used. */
@@ -164,8 +184,29 @@ public final class InlineSuggestService implements Disposable {
     private boolean showCached(Editor editor, Target target) {
         int offset = editor.getCaretModel().getOffset();
         String hit = cache.get(target.file.getPath(), prefixTail(editor.getDocument(), offset));
-        if (hit == null) return false;
-        InlineGhostText.show(editor, offset, hit);
+        if (hit != null) {
+            InlineGhostText.show(editor, offset, hit);
+            return true;
+        }
+        Answer a = lastAnswer;
+        return a != null && showAdapted(editor, a);
+    }
+
+    /**
+     * EDT. Shows {@code a} at the caret when the text before its offset is unchanged and the characters
+     * typed since (offset..caret) are a strict prefix of it; the rest of the answer is shown.
+     */
+    private static boolean showAdapted(Editor editor, Answer a) {
+        Document document = editor.getDocument();
+        if (document != a.document || editor.isDisposed()) return false;
+        int caret = editor.getCaretModel().getOffset();
+        int start = a.offset - a.prefixTail.length();
+        if (start < 0 || caret < a.offset || caret > document.getTextLength()) return false;
+        CharSequence chars = document.getCharsSequence();
+        if (!a.prefixTail.contentEquals(chars.subSequence(start, a.offset))) return false;
+        String typed = chars.subSequence(a.offset, caret).toString();
+        if (typed.length() >= a.text.length() || !a.text.startsWith(typed)) return false;
+        InlineGhostText.show(editor, caret, a.text.substring(typed.length()));
         return true;
     }
 
@@ -223,12 +264,12 @@ public final class InlineSuggestService implements Disposable {
             try {
                 result = compute(r);
             } catch (ProcessCanceledException e) {
-                return;
+                result = null;
             } catch (Throwable t) {
                 if (!r.cancelled) post(r, null, t);
                 return;
             }
-            if (result != null && !r.cancelled) post(r, result, null);
+            if (!r.cancelled) post(r, result, null);   // also a null result: a follow-up may be due
         } finally {
             Thread.interrupted();  // a cancel(true) must not leak into the pooled thread's next task
             running.decrementAndGet();
@@ -255,54 +296,87 @@ public final class InlineSuggestService implements Disposable {
         pendingCallbacks.incrementAndGet();
         ApplicationManager.getApplication().invokeLater(() -> {
             try {
-                if (error != null) onFailure(r, error);
-                else onSuccess(r, result);
+                onDone(r, result, error);
             } finally {
                 pendingCallbacks.decrementAndGet();
             }
         }, r.modality);
     }
 
-    /** EDT. */
-    private void onSuccess(Request r, String text) {
+    /** EDT. The request ended: show its answer if it still fits, report a failure, or run the follow-up. */
+    private void onDone(Request r, @Nullable String text, @Nullable Throwable error) {
         if (r.cancelled || r != current) return;
+        r.finished = true;
+        if (r.editor.isDisposed() || r.project.isDisposed()) return;
+        if (error != null) {
+            onFailure(r, error);
+            return;
+        }
         failures = 0;
         paused = false;
-        if (!settings().enabled || r.editor.isDisposed() || r.project.isDisposed()) return;
-        if (r.document.getModificationStamp() != r.stamp || r.editor.getCaretModel().getOffset() != r.offset) return;
-        Target target = target(r.editor, settings());
-        if (target == null || !InlineTriggerPolicy.eligible(target.facts)) return;
+        if (!onSuccess(r, text) && r.followUp) followUp(r.editor);
+    }
+
+    /** EDT. {@code true} when a suggestion is now showing. */
+    private boolean onSuccess(Request r, @Nullable String text) {
+        if (!settings().enabled) return false;
         if (r.manual) HintManager.getInstance().hideAllHints();
-        if (text.isEmpty()) return;
+        if (text == null || text.isEmpty()) return false;
         cache.put(r.file.getPath(), r.prefixTail, text);
-        InlineGhostText.show(r.editor, r.offset, text);
+        Answer answer = new Answer(r.document, r.offset, r.prefixTail, text);
+        lastAnswer = answer;
+        if (InlineGhostText.isShowing(r.editor)) return true;  // e.g. a cache hit while it ran
+        Target target = target(r.editor, settings());
+        if (target == null || !InlineTriggerPolicy.eligible(target.facts)) return false;
+        return showAdapted(r.editor, answer);
+    }
+
+    /** EDT. The user typed while the last request ran and its answer did not fit: ask again. */
+    private void followUp(Editor editor) {
+        InlineSuggestSettings.State s = settings();
+        if (!s.enabled) return;
+        Target target = target(editor, s);
+        if (target == null) return;
+        InlineTriggerPolicy.Decision decision = InlineTriggerPolicy.decide(InlineTriggerPolicy.Event.TYPED,
+            target.facts, true, InlineSuggestSettings.effectiveTrigger(s), paused);
+        if (decision == InlineTriggerPolicy.Decision.REQUEST && !showCached(editor, target)) {
+            schedule(editor, target, s);
+        }
     }
 
     /** EDT. */
     private void onFailure(Request r, Throwable error) {
-        if (r.cancelled || r != current || r.editor.isDisposed() || r.project.isDisposed()) return;
-        if (r.document.getModificationStamp() != r.stamp || r.editor.getCaretModel().getOffset() != r.offset) return;
         String message = message(error);
         if (r.manual) {
-            if (!r.editor.isDisposed() && !r.project.isDisposed()) {
-                HintManager.getInstance().showErrorHint(r.editor, message);
-            }
+            HintManager.getInstance().showErrorHint(r.editor, message);
             return;
         }
-        LOG.debug("Inline suggestion request failed", error);
+        LOG.info("Inline suggestion request failed: " + message);
         failures++;
         if (failures >= FAILURES_BEFORE_PAUSE && !paused) {
             paused = true;
             notifyPaused(r.project, message);
+        } else if (!failureReported) {
+            failureReported = true;
+            notifyFailed(r.project, message);
         }
     }
 
+    private static void notifyFailed(Project project, String message) {
+        notify(project, "Inline suggestion failed: " + StringUtil.escapeXmlEntities(message),
+            NotificationType.WARNING);
+    }
+
     private static void notifyPaused(Project project, String message) {
+        notify(project, "Inline suggestions paused: " + StringUtil.escapeXmlEntities(message),
+            NotificationType.WARNING);
+    }
+
+    private static void notify(Project project, String content, NotificationType type) {
         if (project.isDisposed()) return;
         Notification notification = NotificationGroupManager.getInstance()
             .getNotificationGroup(NOTIFICATION_GROUP)
-            .createNotification("Inline suggestions paused: " + StringUtil.escapeXmlEntities(message),
-                NotificationType.WARNING);
+            .createNotification(content, type);
         notification.addAction(NotificationAction.createSimpleExpiring("Open Inline Suggestions settings",
             () -> ShowSettingsUtil.getInstance().showSettingsDialog(project, SETTINGS_PAGE)));
         notification.notify(project);
@@ -316,6 +390,10 @@ public final class InlineSuggestService implements Disposable {
     // ---------------------------------------------------------------- editor state
 
     private record Target(Project project, VirtualFile file, InlineTriggerPolicy.EditorFacts facts) {
+    }
+
+    /** An answer for {@code offset} in {@code document}, given the text {@code prefixTail} before it. */
+    private record Answer(Document document, int offset, String prefixTail, String text) {
     }
 
     /** EDT. {@code null} when the editor has no project or file. */
@@ -381,8 +459,7 @@ public final class InlineSuggestService implements Disposable {
                 return;
             }
             Document document = event.getDocument();
-            Request r = current;
-            if (r != null && r.document == document) cancelCurrent();
+            // A running request is not cancelled: its answer is checked against the new text on arrival.
             if (!ApplicationManager.getApplication().isDispatchThread()) {
                 ApplicationManager.getApplication().invokeLater(() -> dismissAll(document));
                 return;
@@ -390,6 +467,9 @@ public final class InlineSuggestService implements Disposable {
             try {
                 boolean insertion = event.getOldLength() == 0 && event.getNewLength() > 0;
                 for (Editor editor : EditorFactory.getInstance().getEditors(document)) {
+                    // While a completion popup is open, LookupTypedHandler types identifier characters
+                    // itself and never calls TypedHandlerDelegate.charTyped; trigger from here instead.
+                    if (insertion && LookupManager.getActiveLookup(editor) != null) afterLookupTyping(editor);
                     if (!InlineGhostText.isShowing(editor)) continue;
                     if (!insertion || !InlineGhostText.typeThrough(editor, event.getOffset(), event.getNewFragment())) {
                         InlineGhostText.dismiss(editor);
@@ -398,6 +478,17 @@ public final class InlineSuggestService implements Disposable {
             } finally {
                 changing = null;
             }
+        }
+
+        private void afterLookupTyping(Editor editor) {
+            pendingCallbacks.incrementAndGet();
+            ApplicationManager.getApplication().invokeLater(() -> {
+                try {
+                    if (!editor.isDisposed()) onEvent(editor, InlineTriggerPolicy.Event.TYPED);
+                } finally {
+                    pendingCallbacks.decrementAndGet();
+                }
+            });
         }
 
         private void dismissAll(Document document) {
@@ -437,13 +528,13 @@ public final class InlineSuggestService implements Disposable {
         }
     }
 
-    /** Dismisses the suggestion when a completion popup opens. Registered as a project listener. */
+    /**
+     * Registered as a project listener. Deliberately keeps the suggestion when a completion popup opens:
+     * as in Copilot, ghost text and the popup coexist (Tab goes to the popup while it is visible).
+     */
     public static final class LookupListener implements LookupManagerListener {
         @Override
         public void activeLookupChanged(@Nullable Lookup oldLookup, @Nullable Lookup newLookup) {
-            if (newLookup != null && settings().enabled) {
-                InlineGhostText.dismiss(host(newLookup.getEditor()));
-            }
         }
     }
 
@@ -463,6 +554,10 @@ public final class InlineSuggestService implements Disposable {
         volatile boolean cancelled;
         volatile boolean scheduled;
         volatile @Nullable Future<?> future;
+        /** Its answer reached the EDT (or never will). */
+        volatile boolean finished;
+        /** The user typed while it ran (EDT). */
+        boolean followUp;
 
         Request(Editor editor, Project project, VirtualFile file, Document document, long stamp,
                 int offset, String prefixTail, InlineSuggestSettings.State settings, boolean manual,
@@ -479,7 +574,12 @@ public final class InlineSuggestService implements Disposable {
             this.modality = modality;
         }
 
-        /** Cancelled or stale requests never count as failures. */
+        /** Launched and its answer has not been handled yet. */
+        boolean isRunning() {
+            return future != null && !finished;
+        }
+
+        /** Cancelled requests never count as failures. */
         void cancel() {
             cancelled = true;
             scheduled = false;

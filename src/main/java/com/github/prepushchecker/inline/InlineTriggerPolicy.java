@@ -9,7 +9,10 @@ public final class InlineTriggerPolicy {
 
     public enum Decision { REQUEST, CACHE_ONLY, NONE }
 
-    /** Editor state gathered on the EDT at the moment of the event. */
+    /**
+     * Editor state gathered on the EDT at the moment of the event. {@code lookupActive} is informational:
+     * an open completion popup does not block suggestions (Copilot shows both).
+     */
     public record EditorFacts(boolean focused, int caretCount, boolean hasSelection, boolean writable,
                               boolean lookupActive, boolean templateActive, boolean inProject,
                               boolean extensionDisabled, boolean sensitive) {
@@ -20,7 +23,7 @@ public final class InlineTriggerPolicy {
 
     public static boolean eligible(@NotNull EditorFacts f) {
         return f.focused() && f.caretCount() == 1 && !f.hasSelection() && f.writable()
-            && !f.lookupActive() && !f.templateActive() && f.inProject()
+            && !f.templateActive() && f.inProject()
             && !f.extensionDisabled() && !f.sensitive();
     }
 

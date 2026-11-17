@@ -3,6 +3,9 @@ package com.github.prepushchecker.commitgen.cli;
 import com.github.prepushchecker.ProcessExecution;
 import com.github.prepushchecker.commitgen.CliPathResolver;
 import com.github.prepushchecker.commitgen.providers.GhCopilotProvider;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -15,6 +18,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -31,8 +35,14 @@ public final class AiCliModels {
         "sonnet", "opus", "haiku",
         "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-4-5");
 
+    /**
+     * Visible entries of {@code codex debug models} for a ChatGPT login. The old ids
+     * gpt-5-codex and o3 were dropped: codex answers "not supported when using Codex
+     * with a ChatGPT account" for them.
+     */
     static final List<String> CODEX_STATIC = List.of(
-        "gpt-5-codex", "gpt-5", "gpt-5-mini", "o4-mini", "o3");
+        "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna");
 
     static final List<String> COPILOT_STATIC = List.of(
         "gpt-4o", "gpt-4.1", "gpt-5", "claude-sonnet-4", "gemini-2.5-pro");
@@ -52,7 +62,7 @@ public final class AiCliModels {
         try {
             return switch (cli) {
                 case CLAUDE -> claudeModels();
-                case CODEX  -> codexModels();
+                case CODEX  -> codexModels(path);
                 case GH     -> copilotModels(path);
                 case LLM    -> path == null ? List.of() : parseLlmModels(runForOutput(path, List.of("models")));
                 default     -> customModels(path, customListArgs);
@@ -78,7 +88,9 @@ public final class AiCliModels {
     // ── Claude ────────────────────────────────────────────────────────────────
 
     private static @NotNull List<String> claudeModels() throws Exception {
-        Set<String> out = new LinkedHashSet<>(CLAUDE_STATIC);
+        // The claude CLI has no model list; the aliases always resolve. When an API key is
+        // available the account's own list replaces the static full ids.
+        Set<String> out = new LinkedHashSet<>(List.of("sonnet", "opus", "haiku"));
         String key = CliPathResolver.resolveEnvVar("ANTHROPIC_API_KEY");
         if (key != null) {
             HttpRequest req = HttpRequest.newBuilder()
@@ -88,29 +100,31 @@ public final class AiCliModels {
                 .timeout(Duration.ofSeconds(15))
                 .GET().build();
             HttpResponse<String> resp = httpClient().send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) out.addAll(parseJsonIds(resp.body()));
+            if (resp.statusCode() == 200) {
+                List<String> ids = parseJsonIds(resp.body());
+                if (!ids.isEmpty()) {
+                    out.addAll(ids);
+                    return List.copyOf(out);
+                }
+            }
         }
-        return List.copyOf(out);
+        return List.copyOf(CLAUDE_STATIC);
     }
 
     // ── Codex ─────────────────────────────────────────────────────────────────
 
-    private static @NotNull List<String> codexModels() {
-        Set<String> out = new LinkedHashSet<>();
-        Path config = Path.of(System.getProperty("user.home"), ".codex", "config.toml");
-        try {
-            if (Files.isRegularFile(config)) {
-                out.addAll(parseTomlModels(Files.readString(config, StandardCharsets.UTF_8)));
-            }
-        } catch (Exception ignored) {}
-        out.addAll(CODEX_STATIC);
-        return List.copyOf(out);
+    private static @NotNull List<String> codexModels(@Nullable String path) throws Exception {
+        if (path != null) {
+            // The catalogue is what this login can actually use (visibility, API support).
+            List<String> catalogue = parseCodexCatalogue(runForOutput(path, List.of("debug", "models")));
+            if (!catalogue.isEmpty()) return catalogue;
+        }
+        return CODEX_STATIC;
     }
 
     // ── GitHub Copilot (via gh token) ─────────────────────────────────────────
 
     private static @NotNull List<String> copilotModels(@Nullable String ghPath) throws Exception {
-        Set<String> out = new LinkedHashSet<>();
         String token = ghPath == null ? null : GhCopilotProvider.getGhToken(ghPath);
         if (token != null) {
             HttpRequest req = HttpRequest.newBuilder()
@@ -121,10 +135,12 @@ public final class AiCliModels {
                 .timeout(Duration.ofSeconds(15))
                 .GET().build();
             HttpResponse<String> resp = httpClient().send(req, HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 200) out.addAll(parseJsonIds(resp.body()));
+            if (resp.statusCode() == 200) {
+                List<String> usable = parseCopilotModels(resp.body());
+                if (!usable.isEmpty()) return usable;
+            }
         }
-        out.addAll(COPILOT_STATIC);
-        return List.copyOf(out);
+        return COPILOT_STATIC;
     }
 
     // ── Custom ────────────────────────────────────────────────────────────────
@@ -151,16 +167,97 @@ public final class AiCliModels {
         return List.copyOf(out);
     }
 
+    /**
+     * Parses {@code codex debug models}: keeps entries listed in the picker (visibility
+     * "list"), usable through the login ({@code supported_in_api} not false) and not
+     * deprecated, ordered by the catalogue's priority (lower first).
+     */
+    static @NotNull List<String> parseCodexCatalogue(@NotNull String json) {
+        JsonObject root = parseObject(json);
+        if (root == null || !root.has("models") || !root.get("models").isJsonArray()) return List.of();
+        List<JsonObject> kept = new ArrayList<>();
+        for (JsonElement e : root.getAsJsonArray("models")) {
+            if (!e.isJsonObject()) continue;
+            JsonObject m = e.getAsJsonObject();
+            if (str(m, "slug") == null) continue;
+            String visibility = str(m, "visibility");
+            if (visibility != null && !visibility.equals("list")) continue;
+            if (m.has("supported_in_api") && m.get("supported_in_api").isJsonPrimitive()
+                    && !m.get("supported_in_api").getAsBoolean()) continue;
+            if (m.has("deprecation") && !m.get("deprecation").isJsonNull()) continue;
+            kept.add(m);
+        }
+        kept.sort(Comparator.comparingInt(m ->
+            m.has("priority") && m.get("priority").isJsonPrimitive() ? m.get("priority").getAsInt() : Integer.MAX_VALUE));
+        Set<String> out = new LinkedHashSet<>();
+        for (JsonObject m : kept) out.add(str(m, "slug"));
+        return List.copyOf(out);
+    }
+
+    /**
+     * Parses the Copilot {@code /models} response: chat models the account's policy has not
+     * disabled and that the model picker offers.
+     */
+    static @NotNull List<String> parseCopilotModels(@NotNull String json) {
+        JsonObject root = parseObject(json);
+        if (root == null || !root.has("data") || !root.get("data").isJsonArray()) return List.of();
+        Set<String> out = new LinkedHashSet<>();
+        for (JsonElement e : root.getAsJsonArray("data")) {
+            if (!e.isJsonObject()) continue;
+            JsonObject m = e.getAsJsonObject();
+            String id = str(m, "id");
+            if (id == null) continue;
+            if (m.has("model_picker_enabled") && m.get("model_picker_enabled").isJsonPrimitive()
+                    && !m.get("model_picker_enabled").getAsBoolean()) continue;
+            if (m.has("policy") && m.get("policy").isJsonObject()) {
+                String state = str(m.getAsJsonObject("policy"), "state");
+                if (state != null && !state.equals("enabled")) continue;
+            }
+            if (m.has("capabilities") && m.get("capabilities").isJsonObject()) {
+                String type = str(m.getAsJsonObject("capabilities"), "type");
+                if (type != null && !type.equals("chat")) continue;
+            }
+            out.add(id);
+        }
+        return List.copyOf(out);
+    }
+
+    private static @Nullable JsonObject parseObject(@NotNull String json) {
+        try {
+            JsonElement e = JsonParser.parseString(json);
+            return e.isJsonObject() ? e.getAsJsonObject() : null;
+        } catch (RuntimeException ex) {
+            return null;
+        }
+    }
+
+    private static @Nullable String str(@NotNull JsonObject o, @NotNull String key) {
+        JsonElement e = o.get(key);
+        return e != null && e.isJsonPrimitive() ? e.getAsString() : null;
+    }
+
     /** Parses {@code llm models} lines like {@code OpenAI Chat: gpt-4o (aliases: 4o)}. */
     static @NotNull List<String> parseLlmModels(@NotNull String output) {
         Set<String> out = new LinkedHashSet<>();
+        String def = null;
         for (String line : output.split("\\R")) {
+            if (line.startsWith("Default:")) {
+                String d = line.substring("Default:".length()).trim();
+                if (!d.isEmpty() && !d.contains(" ")) def = d;
+                continue;
+            }
             int colon = line.indexOf(": ");
             if (colon < 0) continue;
             String rest = line.substring(colon + 2).trim();
             int paren = rest.indexOf(" (");
             if (paren >= 0) rest = rest.substring(0, paren);
             if (!rest.isBlank() && !rest.contains(" ")) out.add(rest);
+        }
+        if (def != null && out.contains(def)) {
+            List<String> ordered = new ArrayList<>();
+            ordered.add(def);
+            for (String m : out) if (!m.equals(def)) ordered.add(m);
+            return List.copyOf(ordered);
         }
         return List.copyOf(out);
     }

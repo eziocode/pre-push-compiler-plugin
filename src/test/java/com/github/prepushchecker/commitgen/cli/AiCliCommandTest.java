@@ -29,6 +29,18 @@ public class AiCliCommandTest extends TestCase {
             AiCliCommand.codex("/bin/codex", null, "-c a=b", out));
     }
 
+    public void testCodexCompletionAsksForLowReasoningEffort() {
+        Path out = Path.of("/tmp/x/last.txt");
+        assertEquals(List.of("/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
+                "--color", "never", "--output-last-message", "/tmp/x/last.txt",
+                "-c", "model_reasoning_effort=\"low\"", "-c", "a=b", "-"),
+            AiCliCommand.codex("/bin/codex", null, "-c a=b", out, true));
+        assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false).contains("model_reasoning_effort=\"low\""));
+        assertTrue(AiRequest.completion("s", "u", null, AiRequest.COMPLETION_SLOW_TIMEOUT).lowLatency());
+        assertFalse(AiRequest.commitMessage("s", "u").lowLatency());
+        assertFalse(AiRequest.review("s", "u").lowLatency());
+    }
+
     public void testTemplateDropsModelSegmentWhenBlank() {
         assertEquals(List.of("/bin/sahaa"),
             AiCliCommand.fromTemplate("/bin/sahaa", "{model?--model {model}}", "", "P"));

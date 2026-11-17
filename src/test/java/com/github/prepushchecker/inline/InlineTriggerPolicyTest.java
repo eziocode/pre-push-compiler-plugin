@@ -53,11 +53,17 @@ public class InlineTriggerPolicyTest {
         assertNone(new EditorFacts(true, 2, false, true, false, false, true, false, false));
         assertNone(new EditorFacts(true, 1, true, true, false, false, true, false, false));
         assertNone(new EditorFacts(true, 1, false, false, false, false, true, false, false));
-        assertNone(new EditorFacts(true, 1, false, true, true, false, true, false, false));
         assertNone(new EditorFacts(true, 1, false, true, false, true, true, false, false));
         assertNone(new EditorFacts(true, 1, false, true, false, false, false, false, false));
         assertNone(new EditorFacts(true, 1, false, true, false, false, true, true, false));
         assertNone(new EditorFacts(true, 1, false, true, false, false, true, false, true));
+    }
+
+    @Test
+    public void openLookupDoesNotBlock() {
+        EditorFacts lookup = new EditorFacts(true, 1, false, true, true, false, true, false, false);
+        assertTrue(eligible(lookup));
+        assertEquals(REQUEST, decide(TYPED, lookup, true, Trigger.AUTO, false));
     }
 
     private static void assertNone(EditorFacts f) {

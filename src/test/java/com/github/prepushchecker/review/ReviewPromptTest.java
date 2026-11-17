@@ -79,7 +79,78 @@ public class ReviewPromptTest extends TestCase {
         String p = ReviewPrompt.reviewSystemPrompt("rules");
         assertTrue(p, p.contains("broken by a change on either side"));
         assertTrue(p, p.contains("Never claim code changed when only a description"));
-        assertTrue(p, p.contains("{\"findings\":[]}"));
+        assertTrue(p, p.contains("check it against EVERY rule"));
+        assertTrue(p, p.contains("empty findings array"));
+    }
+
+    /**
+     * Regression: the prompt held a literal {"findings":[]}. When a CLI echoes the prompt and the
+     * real answer is missing or cut off, the "last findings object" in the output was that
+     * example, and the files were recorded as clean.
+     */
+    public void testEchoedPromptIsNeverReadAsCleanAnswer() {
+        String system = ReviewPrompt.reviewSystemPrompt("Every step needs a description.");
+        String user = ReviewPrompt.reviewUserPrompt(List.of(new ReviewPrompt.FileDiff("a/A.java", "@@ new file @@\n    1 + x\n")));
+        String echo = "user\n" + system + "\n\n---\n\n" + user + "\ncodex\n{\"findings\":[{\"file\":\"a/A.java\"";
+        assertNull(AiOutputSanitizer.cleanStructured(echo, "findings"));
+        assertNull(AiOutputSanitizer.cleanStructured(system + user, "findings"));
+    }
+
+    private static final Map<String, String> TWO = Map.of("a/A.java", "/r/a/A.java", "b/B.java", "/r/b/B.java");
+
+    public void testJudgeMissingAnswerIsErrorNotPass() {
+        ReviewPrompt.Verdict v = ReviewPrompt.judge(null, TWO);
+        assertTrue(v.toRecord().isEmpty());
+        assertNotNull(v.error());
+    }
+
+    /** Regression: {"findings":null} or a non-list was read as "no findings" and recorded clean. */
+    public void testJudgeFindingsNotAListIsErrorNotPass() {
+        java.util.HashMap<String, Object> nullFindings = new java.util.HashMap<>();
+        nullFindings.put("findings", null);
+        for (Map<?, ?> answer : List.of(nullFindings, Map.of("findings", "none"),
+            Map.of("findings", Map.of("file", "a/A.java", "message", "m")))) {
+            ReviewPrompt.Verdict v = ReviewPrompt.judge(answer, TWO);
+            assertTrue(String.valueOf(answer), v.toRecord().isEmpty());
+            assertNotNull(String.valueOf(answer), v.error());
+        }
+    }
+
+    public void testJudgeCleanAnswerRecordsEveryFile() {
+        ReviewPrompt.Verdict v = ReviewPrompt.judge(Map.of("findings", List.of()), TWO);
+        assertNull(v.error());
+        assertEquals(2, v.toRecord().size());
+        assertTrue(v.toRecord().get("/r/a/A.java").isEmpty());
+        assertTrue(v.toRecord().get("/r/b/B.java").isEmpty());
+    }
+
+    /**
+     * Regression: one usable finding for A plus one unusable item (it may have been B's) recorded
+     * B as clean. B must stay unreviewed.
+     */
+    public void testJudgePartialDropDoesNotRecordCleanFiles() {
+        Map<?, ?> answer = Map.of("findings", List.of(
+            Map.of("file", "a/A.java", "line", 1, "message", "broken"),
+            Map.of("file", "c/Unknown.java", "line", 2, "message", "maybe B's")));
+        ReviewPrompt.Verdict v = ReviewPrompt.judge(answer, TWO);
+        assertEquals(java.util.Set.of("/r/a/A.java"), v.toRecord().keySet());
+        assertEquals(1, v.toRecord().get("/r/a/A.java").size());
+        assertNotNull(v.error());
+    }
+
+    /** Regression: a bare file name shared by two files went to the first one; the other passed. */
+    public void testAmbiguousFileNameIsNotGuessed() {
+        Map<String, String> sameName = Map.of("a/Test.java", "/r/a/Test.java", "b/Test.java", "/r/b/Test.java");
+        Map<?, ?> answer = Map.of("findings", List.of(Map.of("file", "Test.java", "line", 1, "message", "m")));
+        ReviewPrompt.Parsed p = ReviewPrompt.parse(answer, sameName);
+        assertTrue(p.findings().isEmpty());
+        assertEquals(1, p.dropped());
+        ReviewPrompt.Verdict v = ReviewPrompt.judge(answer, sameName);
+        assertTrue(v.toRecord().isEmpty());
+        assertNotNull(v.error());
+        // An unambiguous suffix still resolves.
+        assertEquals("/r/b/Test.java", ReviewPrompt.parse(
+            Map.of("findings", List.of(Map.of("file", "b/Test.java", "message", "m"))), sameName).findings().get(0).path);
     }
 
     public void testBatchesSplitLargeInput() {

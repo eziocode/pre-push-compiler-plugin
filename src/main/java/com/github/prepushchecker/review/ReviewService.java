@@ -88,8 +88,11 @@ public final class ReviewService {
 
     // ── Targets ──────────────────────────────────────────────────────────────
 
-    /** Working-tree content of {@code files} (tracked: diff vs HEAD; untracked: whole file). */
-    public @NotNull List<Target> workingTargets(@NotNull Collection<Path> files) {
+    /**
+     * Working-tree content of {@code files} (tracked: diff vs HEAD; untracked: whole file). Files
+     * that could not be read reliably are not returned and are named in {@code errors}.
+     */
+    public @NotNull List<Target> workingTargets(@NotNull Collection<Path> files, @NotNull List<String> errors) {
         List<Target> out = new ArrayList<>();
         for (Map.Entry<Path, List<String>> e : groupByRoot(files).entrySet()) {
             Path root = e.getKey();
@@ -97,24 +100,54 @@ public final class ReviewService {
             if (rules == null) continue;
             List<String> rels = e.getValue().stream().filter(rules::inScope).toList();
             if (rels.isEmpty()) continue;
-            Set<String> tracked = ReviewGit.tracked(root, rels);
-            Map<String, String> ids = ReviewGit.hashObjects(root, rels);
-            for (String rel : rels) {
-                String id = ids.get(rel);
-                if (id == null) continue; // deleted or unreadable: nothing to review
-                String diff;
-                if (tracked.contains(rel)) {
-                    String raw = ReviewGit.diffAgainstHead(root, rel);
-                    if (raw.isBlank()) continue;
-                    diff = ReviewPrompt.numberDiff(raw);
-                } else {
-                    String content = readSmallText(root.resolve(rel));
-                    if (content == null) continue;
-                    diff = ReviewPrompt.numberNewFile(content);
-                }
-                out.add(new Target(root, rel, id, diff));
-            }
+            out.addAll(workingTargets(root, rels, errors));
         }
+        return out;
+    }
+
+    /**
+     * Review targets for in-scope working-tree files of one repository. The content id is taken
+     * before and after the diff is read; when they differ the file changed in between and the
+     * diff may not be the content the id names, so the file is reported instead of reviewed.
+     */
+    static @NotNull List<Target> workingTargets(@NotNull Path root, @NotNull List<String> rels,
+                                                @NotNull List<String> errors) {
+        List<Target> out = new ArrayList<>();
+        // No commit yet: everything is new, and "git diff HEAD" would fail for every file.
+        boolean hasHead = ReviewGit.headSha(root) != null;
+        Set<String> tracked = hasHead ? ReviewGit.tracked(root, rels) : Set.of();
+        Map<String, String> ids = ReviewGit.hashObjects(root, rels);
+        for (String rel : rels) {
+            String id = ids.get(rel);
+            if (id == null) {
+                // Deleted: nothing to review. Present but not hashable: say so, do not skip silently.
+                if (Files.exists(root.resolve(rel))) errors.add(rel + ": could not read the file with git.");
+                continue;
+            }
+            String diff;
+            if (tracked.contains(rel)) {
+                String raw = ReviewGit.diffAgainstHead(root, rel);
+                if (raw == null) {
+                    errors.add(rel + ": git diff failed, the file was not reviewed.");
+                    continue;
+                }
+                if (raw.isBlank()) continue; // same as HEAD: nothing to review
+                diff = ReviewPrompt.numberDiff(raw);
+            } else {
+                String content = readSmallText(root.resolve(rel));
+                if (content == null) continue; // binary or too large
+                diff = ReviewPrompt.numberNewFile(content);
+            }
+            out.add(new Target(root, rel, id, diff));
+        }
+        if (out.isEmpty()) return out;
+        Map<String, String> after = ReviewGit.hashObjects(root, out.stream().map(Target::relPath).toList());
+        out.removeIf(t -> {
+            if (t.contentId().equals(after.get(t.relPath()))) return false;
+            errors.add(t.relPath() + ": changed while the review was starting, so it was not reviewed. "
+                + "Review it again.");
+            return true;
+        });
         return out;
     }
 
@@ -201,25 +234,18 @@ public final class ReviewService {
                     errors.add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
                     continue;
                 }
-                if (answer == null) {
-                    errors.add("The AI answer was not a findings list. Try again or choose another model.");
-                    continue;
-                }
                 Map<String, String> displayToAbs = new HashMap<>();
                 for (ReviewPrompt.FileDiff f : batch) displayToAbs.put(f.displayPath(), byDisplay.get(f.displayPath()).absolutePath());
-                ReviewPrompt.Parsed parsed = ReviewPrompt.parse(answer, displayToAbs);
-                List<ReviewFinding> found = parsed.findings();
-                if (found.isEmpty() && parsed.dropped() > 0) {
-                    // Recording these files as clean would be a silent pass.
-                    LOG.info("AI review answer listed findings that could not be used: " + answer);
-                    errors.add("The AI answer listed " + parsed.dropped() + " finding(s) without a usable file "
-                        + "or message, so " + batch.size() + " file(s) were not marked reviewed. Try again or "
-                        + "choose another model.");
-                    continue;
+                // Never record "clean" for an answer that could not be read in full: that is a silent pass.
+                ReviewPrompt.Verdict verdict = ReviewPrompt.judge(answer, displayToAbs);
+                if (verdict.error() != null) {
+                    LOG.info("AI review answer could not be used in full: " + (answer == null ? "<none>" : answer));
+                    errors.add(verdict.error());
                 }
                 for (ReviewPrompt.FileDiff f : batch) {
                     Target t = byDisplay.get(f.displayPath());
-                    List<ReviewFinding> mine = found.stream().filter(x -> x.path.equals(t.absolutePath())).toList();
+                    List<ReviewFinding> mine = verdict.toRecord().get(t.absolutePath());
+                    if (mine == null) continue;
                     store.record(t.absolutePath(), t.contentId(), mine);
                     reviewed++;
                     findings += mine.size();
@@ -231,25 +257,42 @@ public final class ReviewService {
 
     /** Reviews working-tree {@code files} in a cancellable background task and reports the result. */
     public void reviewInBackground(@NotNull Collection<Path> files, @Nullable Runnable onDone) {
+        reviewInBackground(files, false, onDone);
+    }
+
+    /**
+     * Reviews every local change: {@code files} (from the IDE's change list) plus whatever git
+     * reports as changed on disk in their repositories and the project's. The change list can be
+     * behind a save that just happened; git is not, so a file edited a moment ago is not missed.
+     */
+    public void reviewLocalChangesInBackground(@NotNull Collection<Path> files) {
+        reviewInBackground(files, true, null);
+    }
+
+    private void reviewInBackground(@NotNull Collection<Path> files, boolean addGitChanges, @Nullable Runnable onDone) {
         if (!running.compareAndSet(false, true)) {
             notify("A review is already running.", NotificationType.INFORMATION, null);
             return;
         }
-        List<Path> copy = List.copyOf(files);
+        List<Path> given = List.copyOf(files);
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "AI code review", true) {
             @Override
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setIndeterminate(true);
                 indicator.setText("Collecting changes…");
+                List<Path> copy = addGitChanges ? withGitChanges(given) : given;
                 boolean anyRules = hasAnyRules(copy);
                 if (!anyRules) {
                     report(RunResult.empty(true), copy.size());
                     return;
                 }
-                List<Target> targets = workingTargets(copy);
+                List<String> collectErrors = new ArrayList<>();
+                List<Target> targets = workingTargets(copy, collectErrors);
                 RunResult r = review(targets, indicator, null);
-                report(new RunResult(r.reviewed(), copy.size() - targets.size(), r.findings(), false, r.errors()),
-                    copy.size());
+                List<String> errors = new ArrayList<>(collectErrors);
+                errors.addAll(r.errors());
+                int outOfScope = Math.max(0, copy.size() - targets.size() - collectErrors.size());
+                report(new RunResult(r.reviewed(), outOfScope, r.findings(), false, errors), copy.size());
             }
 
             @Override
@@ -295,9 +338,12 @@ public final class ReviewService {
                 NotificationType.INFORMATION, null);
             return;
         }
-        String text = r.findings() == 0
-            ? "Review passed: " + r.reviewed() + " file(s), no issues."
-            : "Review found " + r.findings() + " issue(s) in " + r.reviewed() + " file(s).";
+        String text = r.findings() > 0
+            ? "Review found " + r.findings() + " issue(s) in " + r.reviewed() + " file(s)."
+            : r.errors().isEmpty()
+                ? "Review passed: " + r.reviewed() + " file(s), no issues."
+                // Some files failed: a "passed" here would read as a pass for those too.
+                : "No issues in " + r.reviewed() + " reviewed file(s); the rest could not be reviewed.";
         if (r.outOfScope() > 0) text += " " + r.outOfScope() + " file(s) not in review scope.";
         notify(text, r.findings() == 0 ? NotificationType.INFORMATION : NotificationType.WARNING,
             r.findings() == 0 ? null : "Show Findings");
@@ -358,6 +404,11 @@ public final class ReviewService {
             }
             if (!r.errors().isEmpty() && decision.action() == ReviewGate.Action.BLOCK) {
                 return withErrors(blockLines(root, decision), r.errors());
+            }
+            if (!r.errors().isEmpty()) {
+                // Not mandatory, so the push goes on, but it must not look like a passed review.
+                notify("AI review could not check every pushed file, so the push went ahead unreviewed: "
+                    + AiOutputSanitizer.truncate(String.join("\n", r.errors()), 600), NotificationType.WARNING, null);
             }
         }
         if (decision.action() != ReviewGate.Action.BLOCK) return List.of();
@@ -452,6 +503,22 @@ public final class ReviewService {
 
     public @Nullable ReviewRules rules(@NotNull Path root) {
         return ReviewRules.load(root, ReviewSettings.ruleFilePath(project));
+    }
+
+    /** {@code files} plus the files git reports as changed in their repositories and the project's. */
+    private @NotNull List<Path> withGitChanges(@NotNull List<Path> files) {
+        Set<Path> roots = new LinkedHashSet<>(groupByRoot(files).keySet());
+        String base = project.getBasePath();
+        if (base != null) {
+            Path baseRoot = ReviewGit.repoRoot(Path.of(base).toAbsolutePath().normalize());
+            if (baseRoot != null) roots.add(baseRoot);
+        }
+        Set<Path> out = new LinkedHashSet<>();
+        for (Path f : files) out.add(f.toAbsolutePath().normalize());
+        for (Path root : roots) {
+            for (String rel : ReviewGit.changedFiles(root)) out.add(root.resolve(rel).toAbsolutePath().normalize());
+        }
+        return new ArrayList<>(out);
     }
 
     private boolean hasAnyRules(Collection<Path> files) {

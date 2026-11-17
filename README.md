@@ -19,7 +19,7 @@ Pre-Push Compilation Checker intercepts every `git push` and ensures your code c
 
 ## Features
 
-- **Inline AI suggestions** — optional ghost text with Tab to accept and Esc to dismiss. Own provider/model, project context, automatic suggestions on OpenAI/Anthropic/Gemini/Ollama and Alt+\ for every provider. Off by default; enable in Settings → Tools → Pre-Push Checker → Inline Suggestions.
+- **Inline AI suggestions** — optional ghost text with Tab to accept and Esc to dismiss. Own provider/model, project context, automatic suggestions or Alt+\ for every provider (CLI responses may take longer). Off by default; enable in Settings → Tools → Pre-Push Checker → Inline Suggestions.
 
 - **One push guard everywhere** — IntelliJ, terminal, Sublime Merge, and other Git clients use the same managed `pre-push` hook
 - **Smart compile scope** — compiles modules containing changed files plus dependent modules; automatically falls back to a full project build when build files (`build.gradle`, `pom.xml`, etc.) or file deletions are involved

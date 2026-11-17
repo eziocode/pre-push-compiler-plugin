@@ -68,7 +68,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             Path lastMessage = workDir.resolve("last-message.txt");
-            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage);
+            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage, request.lowLatency());
             String stdout;
             try {
                 stdout = AiCliRunner.run(label, cmd,

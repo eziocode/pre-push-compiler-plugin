@@ -6,7 +6,9 @@ import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.State;
 import com.intellij.openapi.components.Storage;
 import java.util.EnumSet;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
@@ -28,7 +30,10 @@ public final class InlineSuggestSettings
     public static final class State {
         public boolean enabled = false;
         public String provider = CommitMessageProvider.Id.OLLAMA.name();
+        /** Model of the selected provider (mirror of {@code models[provider]}); blank = provider default. */
         public String model = "";
+        /** Model per provider id, so switching provider never loses another provider's model. */
+        public Map<String, String> models = new HashMap<>();
         public String trigger = Trigger.AUTO.name();
         public int debounceMs = 350;
         public boolean multiLine = true;
@@ -66,6 +71,41 @@ public final class InlineSuggestSettings
         s.contextChars = Math.max(0, Math.min(20000, s.contextChars));
         if (parseProvider(s.provider) == null) s.provider = CommitMessageProvider.Id.OLLAMA.name();
         if (parseTrigger(s.trigger) == null) s.trigger = Trigger.AUTO.name();
+        normalizeModels(s);
+    }
+
+    /**
+     * Migrates the pre-per-provider {@code model} (it belongs to the stored provider), drops blank
+     * or unknown entries and re-syncs {@code model} to the selected provider's entry.
+     */
+    public static void normalizeModels(@NotNull State s) {
+        Map<String, String> clean = new HashMap<>();
+        if (s.models != null) {
+            for (Map.Entry<String, String> e : s.models.entrySet()) {
+                String v = e.getValue() == null ? "" : e.getValue().trim();
+                if (parseProvider(e.getKey()) != null && !v.isEmpty()) clean.put(e.getKey(), v);
+            }
+        }
+        if (!clean.containsKey(s.provider) && s.model != null && !s.model.isBlank()) {
+            clean.put(s.provider, s.model.trim());
+        }
+        s.models = clean;
+        s.model = clean.getOrDefault(s.provider, "");
+    }
+
+    /** The saved model of {@code id}; blank means the provider default. */
+    public static @NotNull String modelFor(@NotNull State s, @NotNull CommitMessageProvider.Id id) {
+        String v = s.models == null ? null : s.models.get(id.name());
+        return v == null ? "" : v;
+    }
+
+    /** Replaces the per-provider models and selected provider, keeping {@code model} in sync. */
+    public static void select(@NotNull State s, @NotNull CommitMessageProvider.Id id,
+                              @NotNull Map<String, String> models) {
+        s.provider = id.name();
+        s.models = new HashMap<>(models);
+        s.model = "";
+        normalizeModels(s);
     }
 
     public static @NotNull CommitMessageProvider.Id providerOf(@NotNull State s) {
@@ -78,7 +118,6 @@ public final class InlineSuggestSettings
     }
 
     public static @NotNull Trigger effectiveTrigger(@NotNull State s) {
-        if (!isFast(providerOf(s))) return Trigger.MANUAL;
         Trigger t = parseTrigger(s.trigger);
         return t != null ? t : Trigger.AUTO;
     }

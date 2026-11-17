@@ -34,29 +34,17 @@ public final class AnthropicProvider implements CommitMessageProvider {
                 "Anthropic API key not configured. Go to " + CommitMessageSettings.SETTINGS_PATH + ".");
         }
         String model = request.modelOr(settings.settings().anthropicModel);
-        // Anthropic API supports a top-level "system" field
-        String body = "{"
-            + "\"model\":" + JsonUtil.quoted(model) + ","
-            + "\"max_tokens\":" + request.maxOutputTokens() + ","
-            + "\"system\":" + JsonUtil.quoted(systemPrompt) + ","
-            + "\"messages\":["
-            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
-            + "]}";
-
+        // Reviews must give the same findings on every run: temperature 0. A model that rejects
+        // the parameter (400) is asked again without it.
+        boolean temperature = request.kind() == AiRequest.Kind.REVIEW;
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))
             .build();
-        HttpRequest httpRequest = HttpRequest.newBuilder()
-            .uri(URI.create(API_URL))
-            .header("x-api-key", apiKey)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .header("Content-Type", "application/json")
-            .timeout(request.timeout())
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build();
-
-        HttpResponse<String> response =
-            client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> response = send(client, apiKey, request, model, systemPrompt, userPrompt, temperature);
+        if (temperature && response.statusCode() == 400 && response.body() != null
+            && response.body().contains("temperature")) {
+            response = send(client, apiKey, request, model, systemPrompt, userPrompt, false);
+        }
         if (response.statusCode() != 200) {
             throw new RuntimeException(
                 "Anthropic API error " + response.statusCode() + ": " + AiOutputSanitizer.errorDetail(response.body()));
@@ -66,6 +54,29 @@ public final class AnthropicProvider implements CommitMessageProvider {
             throw new RuntimeException("Unexpected Anthropic response: " + AiOutputSanitizer.errorDetail(response.body()));
         }
         return text.trim();
+    }
+
+    private static HttpResponse<String> send(HttpClient client, String apiKey, AiRequest request, String model,
+                                             String systemPrompt, String userPrompt, boolean temperature)
+            throws Exception {
+        // Anthropic API supports a top-level "system" field
+        String body = "{"
+            + "\"model\":" + JsonUtil.quoted(model) + ","
+            + "\"max_tokens\":" + request.maxOutputTokens() + ","
+            + (temperature ? "\"temperature\":0," : "")
+            + "\"system\":" + JsonUtil.quoted(systemPrompt) + ","
+            + "\"messages\":["
+            + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"
+            + "]}";
+        HttpRequest httpRequest = HttpRequest.newBuilder()
+            .uri(URI.create(API_URL))
+            .header("x-api-key", apiKey)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("Content-Type", "application/json")
+            .timeout(request.timeout())
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build();
+        return client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
     }
 
     @Override

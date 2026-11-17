@@ -33,6 +33,8 @@ public final class OllamaProvider implements CommitMessageProvider {
         String body = "{"
             + "\"model\":" + JsonUtil.quoted(model) + ","
             + "\"stream\":false,"
+            // Reviews must give the same findings on every run: greedy sampling with a fixed seed.
+            + (request.kind() == AiRequest.Kind.REVIEW ? "\"options\":{\"temperature\":0,\"seed\":0}," : "")
             + "\"messages\":["
             + "{\"role\":\"system\",\"content\":" + JsonUtil.quoted(systemPrompt) + "},"
             + "{\"role\":\"user\",\"content\":" + JsonUtil.quoted(userPrompt) + "}"

@@ -81,6 +81,13 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>2.11.1 — Inline suggestion and review fixes</h3>
+        <ul>
+            <li>Inline suggestions now appear with slow CLI providers and while the completion popup is open.</li>
+            <li>Inline Suggestions settings keep a model per provider, with the AI Provider layout.</li>
+            <li>CLI model lists hide models that are unavailable for the account or deprecated.</li>
+            <li>Code review no longer passes a file on the first run and flags it on the next.</li>
+        </ul>
         <h3>2.11.0 — Inline AI suggestions</h3>
         <ul>
             <li>Optional ghost-text code suggestions with Tab to accept and Esc to dismiss.</li>

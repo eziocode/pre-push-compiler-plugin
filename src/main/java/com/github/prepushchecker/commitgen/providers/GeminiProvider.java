@@ -43,7 +43,10 @@ public final class GeminiProvider implements CommitMessageProvider {
             + "\"parts\":[{\"text\":" + JsonUtil.quoted(systemPrompt) + "}]},"
             + "\"contents\":[{"
             + "\"parts\":[{\"text\":" + JsonUtil.quoted(userPrompt) + "}]"
-            + "}]}";
+            + "}]"
+            // Reviews must give the same findings on every run.
+            + (request.kind() == AiRequest.Kind.REVIEW ? ",\"generationConfig\":{\"temperature\":0}" : "")
+            + "}";
 
         HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(30))

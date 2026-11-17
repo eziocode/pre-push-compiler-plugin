@@ -1,83 +1,349 @@
 package com.github.prepushchecker.inline
 
+import com.github.prepushchecker.commitgen.AiProviderConfigurable
+import com.github.prepushchecker.commitgen.CliPathResolver
 import com.github.prepushchecker.commitgen.CommitMessageProvider.Id
+import com.github.prepushchecker.commitgen.CommitMessageSettings
+import com.github.prepushchecker.commitgen.ProviderUi
+import com.github.prepushchecker.commitgen.cli.AiCli
+import com.github.prepushchecker.commitgen.cli.AiCliDetector
+import com.github.prepushchecker.commitgen.cli.AiCliModels
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ModalityState
 import com.intellij.openapi.options.BoundSearchableConfigurable
 import com.intellij.openapi.options.ShowSettingsUtil
-import com.intellij.ui.SimpleListCellRenderer
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.ui.DialogPanel
+import com.intellij.ui.JBColor
+import com.intellij.ui.components.JBCheckBox
+import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBRadioButton
+import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.*
-import javax.swing.JList
+import com.intellij.util.ui.UIUtil
+import javax.swing.DefaultComboBoxModel
+import javax.swing.JComponent
 
-/** Settings → Tools → Pre-Push Checker → Inline Suggestions. */
+/**
+ * Settings → Tools → Pre-Push Checker → Inline Suggestions. The provider block mirrors the
+ * AI Provider page (source, provider, model combo for CLIs); keys and paths stay there.
+ *
+ * Each provider keeps its own model: the model widgets show the model of the provider currently
+ * selected and [work] holds every provider's model until Apply.
+ */
 class InlineSuggestConfigurable : BoundSearchableConfigurable(
     "Inline Suggestions", "prepushchecker.inline", "prepushchecker.inline") {
+
+    private enum class Source { API, CLI, IDE }
+
     private val state get() = InlineSuggestSettings.getInstance().settings()
 
-    override fun createPanel() = panel {
-        lateinit var enabled: Cell<com.intellij.ui.components.JBCheckBox>
-        row {
-            enabled = checkBox("Suggest code inline while typing (ghost text, Tab to accept)")
-                .bindSelected({ state.enabled }, { state.enabled = it })
-                .comment("Sends code around the caret to the provider below. Off by default. If another inline completion plugin is active, both may show suggestions.")
+    private val work = mutableMapOf<String, String>()
+    private var source = Source.API
+    private var apiId = Id.OPENAI
+    private var cliId = Id.CODEX_CLI
+    private var loading = false
+    private var built = false
+    private var summaryGeneration = 0L
+
+    private val apiRadio = JBRadioButton("API key")
+    private val cliRadio = JBRadioButton("Local CLI")
+    private val ideRadio = JBRadioButton("JetBrains AI")
+    private val apiCombo = ComboBox(DefaultComboBoxModel(ProviderUi.API_IDS.toTypedArray()))
+    private val cliCombo = ComboBox(DefaultComboBoxModel(ProviderUi.CLI_IDS.toTypedArray()))
+    private val apiModelField = JBTextField().apply { emptyText.text = PROVIDER_DEFAULT }
+    private val cliModelCombo = ComboBox<String>().apply { isEditable = true }
+    private val cliSummary = JBLabel()
+    private val modelsStatus = JBLabel()
+
+    private var apiRange: RowsRange? = null
+    private var cliRange: RowsRange? = null
+    private var ideRange: RowsRange? = null
+
+    private companion object {
+        const val PROVIDER_DEFAULT = "Provider default"
+    }
+
+    override fun createPanel(): DialogPanel {
+        listOf(apiRadio to Source.API, cliRadio to Source.CLI, ideRadio to Source.IDE).forEach { (radio, s) ->
+            radio.addActionListener { if (radio.isSelected && !loading) { source = s; updateVisibility() } }
         }
-        group("Provider") {
-            lateinit var provider: Cell<com.intellij.openapi.ui.ComboBox<Id>>
-            row("Provider:") {
-                provider = comboBox(Id.values().toList(), object : SimpleListCellRenderer<Id>() {
-                    override fun customize(list: JList<out Id>, value: Id?, index: Int, selected: Boolean, hasFocus: Boolean) {
-                        text = value?.displayName().orEmpty()
-                    }
-                }).bindItem({ InlineSuggestSettings.providerOf(state) }, { state.provider = it?.name ?: "OLLAMA" })
-            }
-            row("Model:") {
-                textField().bindText({ state.model }, { state.model = it })
-                    .applyToComponent { emptyText.text = "Provider default" }
-            }
+        apiCombo.renderer = ProviderUi.renderer { ProviderUi.apiName(it) }
+        cliCombo.renderer = ProviderUi.renderer { it.displayName() }
+        apiCombo.addActionListener {
+            if (loading) return@addActionListener
+            stashModels()
+            apiId = apiCombo.selectedItem as Id
+            loadApiModel()
+        }
+        cliCombo.addActionListener {
+            if (loading) return@addActionListener
+            stashModels()
+            cliId = cliCombo.selectedItem as Id
+            loadCli()
+        }
+        (cliModelCombo.editor.editorComponent as? JBTextField)?.emptyText?.text = PROVIDER_DEFAULT
+
+        val p = panel {
+            lateinit var enabled: Cell<JBCheckBox>
             row {
-                link("Configure provider...") {
-                    ShowSettingsUtil.getInstance().showSettingsDialog(null, "AI Provider")
-                }
+                enabled = checkBox("Suggest code inline while typing (ghost text, Tab to accept)")
+                    .bindSelected({ state.enabled }, { state.enabled = it })
+                    .comment("Sends code around the caret to the provider below. Off by default. " +
+                        "If another inline completion plugin is active, both may show suggestions.")
             }
-            val slowNote = row { comment("This provider is too slow for automatic suggestions. Use the shortcut (Alt+\\).") }
-            fun updateNote() { slowNote.visible(!InlineSuggestSettings.isFast(provider.component.item ?: Id.OLLAMA)) }
-            provider.component.addActionListener { updateNote() }
-            updateNote()
-        }.enabledIf(enabled.selected)
-        group("Trigger") {
-            buttonsGroup {
+
+            group("Provider") {
+                buttonsGroup {
+                    row("Source:") {
+                        cell(apiRadio)
+                        cell(cliRadio)
+                        cell(ideRadio)
+                    }.bottomGap(BottomGap.SMALL)
+                }
+                apiRange = rowsRange {
+                    row("Provider:") { cell(apiCombo) }
+                    row("Model:") {
+                        cell(apiModelField).columns(COLUMNS_MEDIUM)
+                            .comment("Blank uses the provider default.")
+                    }
+                }
+                cliRange = rowsRange {
+                    row("CLI:") { cell(cliCombo) }
+                    row("") { cell(cliSummary) }
+                    row("Model:") {
+                        cell(cliModelCombo).columns(COLUMNS_MEDIUM)
+                        link("Refresh models") { refreshModels() }
+                        cell(modelsStatus)
+                    }
+                    row("") { comment("Blank uses the CLI's default model.") }
+                }
+                ideRange = rowsRange {
+                    row { comment("Uses the JetBrains AI Assistant plugin and your signed-in JetBrains account.") }
+                }
                 row {
-                    radioButton("Automatically after a typing pause", InlineSuggestSettings.Trigger.AUTO)
-                    intTextField(100..2000).bindIntText({ state.debounceMs }, { state.debounceMs = it })
-                    label("ms")
+                    link("Configure provider…") {
+                        ShowSettingsUtil.getInstance().showSettingsDialog(null, AiProviderConfigurable::class.java)
+                    }.comment("API keys, CLI paths and sign-in are set on the AI Provider page.")
                 }
-                row { radioButton("Only on shortcut (Alt+\\)", InlineSuggestSettings.Trigger.MANUAL) }
-            }.bind({ InlineSuggestSettings.Trigger.valueOf(state.trigger) }, { state.trigger = it.name })
-        }.enabledIf(enabled.selected)
-        group("Suggestion") {
-            lateinit var multi: Cell<com.intellij.ui.components.JBCheckBox>
-            row { multi = checkBox("Multi-line").bindSelected({ state.multiLine }, { state.multiLine = it }) }
-            row("Max lines:") {
-                intTextField(1..30).bindIntText({ state.maxLines }, { state.maxLines = it }).enabledIf(multi.selected)
-            }
-        }.enabledIf(enabled.selected)
-        group("Context") {
-            row { checkBox("Include project classes and open files").bindSelected({ state.useProjectContext }, { state.useProjectContext = it }) }
-            row("Budget:") {
-                intTextField(0..20000).bindIntText({ state.contextChars }, { state.contextChars = it })
-                label("characters")
-            }
-        }.enabledIf(enabled.selected)
-        row("Disabled for file extensions:") {
-            textField().bindText({ state.disabledExtensions }, { state.disabledExtensions = it })
-                .comment("Comma-separated, e.g. md, txt")
-        }.enabledIf(enabled.selected)
-        row("Extra instructions:") {
-            textArea().rows(3).bindText({ state.extraInstructions }, { state.extraInstructions = it })
-        }.enabledIf(enabled.selected)
+            }.enabledIf(enabled.selected)
+
+            group("Trigger") {
+                buttonsGroup {
+                    row {
+                        radioButton("Automatically after a typing pause", InlineSuggestSettings.Trigger.AUTO)
+                        intTextField(100..2000).columns(5).bindIntText({ state.debounceMs }, { state.debounceMs = it })
+                        label("ms")
+                    }
+                    row { radioButton("Only on shortcut (Alt+\\)", InlineSuggestSettings.Trigger.MANUAL) }
+                }.bind({ InlineSuggestSettings.Trigger.valueOf(state.trigger) }, { state.trigger = it.name })
+            }.enabledIf(enabled.selected)
+
+            group("Suggestion") {
+                lateinit var multi: Cell<JBCheckBox>
+                row { multi = checkBox("Multi-line").bindSelected({ state.multiLine }, { state.multiLine = it }) }
+                row("Max lines:") {
+                    intTextField(1..30).columns(5).bindIntText({ state.maxLines }, { state.maxLines = it })
+                        .enabledIf(multi.selected)
+                }
+            }.enabledIf(enabled.selected)
+
+            group("Context") {
+                row { checkBox("Include project classes and open files").bindSelected({ state.useProjectContext }, { state.useProjectContext = it }) }
+                row("Budget:") {
+                    intTextField(0..20000).columns(7).bindIntText({ state.contextChars }, { state.contextChars = it })
+                    label("characters")
+                }
+            }.enabledIf(enabled.selected)
+
+            group("Filters") {
+                row("Disabled extensions:") {
+                    textField().columns(COLUMNS_MEDIUM).bindText({ state.disabledExtensions }, { state.disabledExtensions = it })
+                        .comment("Comma-separated, e.g. md, txt")
+                }
+                row("Extra instructions:") {
+                    textArea().rows(3).columns(COLUMNS_LARGE).bindText({ state.extraInstructions }, { state.extraInstructions = it })
+                        .comment("Added to every inline suggestion request.")
+                }
+            }.enabledIf(enabled.selected)
+        }
+        built = true
+        loadFromState()
+        return p
+    }
+
+    // ── Load / store ──────────────────────────────────────────────────────────
+
+    override fun reset() {
+        super.reset()
+        if (built) loadFromState()
+    }
+
+    override fun isModified(): Boolean {
+        if (super.isModified()) return true
+        if (!built) return false
+        stashModels()
+        val s = state
+        return currentId().name != s.provider || cleaned(work) != savedModels()
     }
 
     override fun apply() {
         super.apply()
+        if (built) {
+            stashModels()
+            InlineSuggestSettings.select(state, currentId(), work)
+        }
         InlineSuggestSettings.clamp(state)
         InlineSuggestService.getInstance().settingsChanged()
+    }
+
+    override fun disposeUIResources() {
+        summaryGeneration++
+        built = false
+        super.disposeUIResources()
+    }
+
+    private fun currentId(): Id = when (source) {
+        Source.API -> apiId
+        Source.CLI -> cliId
+        Source.IDE -> Id.INTELLIJ_AI
+    }
+
+    private fun cleaned(m: Map<String, String>): Map<String, String> =
+        m.mapValues { it.value.trim() }.filterValues { it.isNotEmpty() }
+
+    /** Saved models with the legacy single `model` migrated to the stored provider. */
+    private fun savedModels(): Map<String, String> {
+        val tmp = InlineSuggestSettings.State()
+        tmp.provider = state.provider
+        tmp.model = state.model
+        tmp.models = HashMap(state.models ?: emptyMap())
+        InlineSuggestSettings.normalizeModels(tmp)
+        return tmp.models
+    }
+
+    private fun loadFromState() {
+        work.clear()
+        work.putAll(savedModels())
+        val selected = InlineSuggestSettings.providerOf(state)
+        source = when (selected) {
+            Id.INTELLIJ_AI -> Source.IDE
+            in ProviderUi.CLI_IDS -> Source.CLI
+            else -> Source.API
+        }
+        apiId = if (selected in ProviderUi.API_IDS) selected else Id.OLLAMA
+        cliId = if (selected in ProviderUi.CLI_IDS) selected else Id.CODEX_CLI
+        loading = true
+        try {
+            apiRadio.isSelected = source == Source.API
+            cliRadio.isSelected = source == Source.CLI
+            ideRadio.isSelected = source == Source.IDE
+            apiCombo.selectedItem = apiId
+            cliCombo.selectedItem = cliId
+            loadApiModel()
+            loadCli()
+        } finally {
+            loading = false
+        }
+        updateVisibility()
+    }
+
+    /** Both model widgets always hold their own provider's text, so stash both. */
+    private fun stashModels() {
+        work[apiId.name] = apiModelField.text.trim()
+        work[cliId.name] = cliModelText()
+        work.entries.removeIf { it.value.isBlank() }
+    }
+
+    private fun cliModelText(): String =
+        ((cliModelCombo.editor.item as? String) ?: (cliModelCombo.selectedItem as? String) ?: "").trim()
+
+    private fun loadApiModel() {
+        apiModelField.text = work[apiId.name].orEmpty()
+    }
+
+    private fun cliModelsOf(cli: AiCli): List<String> = AiCliModels.staticModels(cli)
+
+    private fun loadCli() {
+        val wasLoading = loading
+        loading = true
+        try {
+            val model = work[cliId.name].orEmpty()
+            val cli = ProviderUi.cliOf(cliId, commitState()?.customCliBinary)
+            cliModelCombo.model = DefaultComboBoxModel(cliModelsOf(cli).toTypedArray())
+            cliModelCombo.editor.item = model
+            cliModelCombo.selectedItem = model
+            modelsStatus.text = ""
+        } finally {
+            loading = wasLoading
+        }
+        refreshCliSummary()
+    }
+
+    private fun updateVisibility() {
+        apiRange?.visible(source == Source.API)
+        cliRange?.visible(source == Source.CLI)
+        ideRange?.visible(source == Source.IDE)
+    }
+
+    // ── CLI summary and models (same behaviour as the AI Provider page) ───────
+
+    private fun commitState(): CommitMessageSettings.State? =
+        runCatching { CommitMessageSettings.getInstance()?.settings() }.getOrNull()
+
+    private fun cliBinary(cli: AiCli): String =
+        if (cliId == Id.CUSTOM_CLI) commitState()?.customCliBinary?.trim().orEmpty().ifEmpty { "sahaa" } else cli.binaryName()
+
+    private fun configuredPath(cli: AiCli): String = commitState()?.let { cli.configuredPath(it) }.orEmpty()
+
+    private fun refreshCliSummary() {
+        val generation = ++summaryGeneration
+        val cli = ProviderUi.cliOf(cliId, commitState()?.customCliBinary)
+        val binary = cliBinary(cli)
+        val name = cli.displayName()
+        val configured = configuredPath(cli)
+        cliSummary.text = "$name  ·  checking…"
+        cliSummary.foreground = UIUtil.getLabelForeground()
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val path = CliPathResolver.resolveOrNull(configured, binary)
+            val version = if (path == null) "" else AiCliDetector.version(path)
+            ApplicationManager.getApplication().invokeLater({
+                // A slower probe for the previous CLI must not replace the current selection.
+                if (generation != summaryGeneration) return@invokeLater
+                if (path == null) {
+                    cliSummary.text = "$name  ·  not found. Set its path on the AI Provider page."
+                    cliSummary.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
+                } else {
+                    cliSummary.text = "$name  ·  $path" + if (version.isBlank()) "" else "  ·  $version"
+                    cliSummary.foreground = UIUtil.getLabelForeground()
+                }
+            }, ModalityState.any())
+        }
+    }
+
+    private fun refreshModels() {
+        val cli = ProviderUi.cliOf(cliId, commitState()?.customCliBinary)
+        val binary = cliBinary(cli)
+        val configured = configuredPath(cli)
+        val listArgs = if (cliId == Id.CUSTOM_CLI) commitState()?.customCliModelsArgs?.trim() else null
+        val models = ProgressManager.getInstance().runProcessWithProgressSynchronously<List<String>, Exception>(
+            { AiCliModels.list(cli, CliPathResolver.resolveOrNull(configured, binary), listArgs) },
+            "Fetching models…", true, null)
+        val current = cliModelText()
+        if (models.isNullOrEmpty()) {
+            modelsStatus.text = "No models reported; type a name."
+            return
+        }
+        val wasLoading = loading
+        loading = true
+        try {
+            cliModelCombo.model = DefaultComboBoxModel(models.toTypedArray())
+            cliModelCombo.editor.item = current
+            cliModelCombo.selectedItem = current
+        } finally {
+            loading = wasLoading
+        }
+        modelsStatus.text = "${models.size} models"
     }
 }

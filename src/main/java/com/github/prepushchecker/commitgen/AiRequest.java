@@ -47,7 +47,12 @@ public record AiRequest(@NotNull String system,
         return kind == Kind.REVIEW || kind == Kind.FIX;
     }
 
-    public @NotNull AiRequest withTimeout(@NotNull Duration newTimeout) {
+    /** {@code true} for as-you-type completions, where a CLI should trade depth for latency. */
+    public boolean lowLatency() {
+        return kind == Kind.COMPLETION;
+    }
+
+        public @NotNull AiRequest withTimeout(@NotNull Duration newTimeout) {
         return new AiRequest(system, user, kind, maxOutputTokens, newTimeout, model);
     }
 
