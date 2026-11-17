@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.11.3] - 2026-11-17
+
 ### Fixed
 
 - **Code Review: "Review changes from the commit panel" link and Resolve no longer crash.**
@@ -23,6 +25,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
   imports the fix needs (added after the file's imports). A proposal that adds parse errors is
   sent back once with the errors; if it still does not parse, the diff dialog warns before
   applying. Fixes that change nothing are reported instead of shown.
+- **Resolve with AI retries instead of giving up on "The AI fix does not change the file".**
+  An answer that cannot be parsed or leaves the file unchanged is sent back up to twice, with
+  what was wrong, before the warning shows. The deleted-lines and syntax retries no longer swap
+  a real fix for one that changes nothing.
 
 ## [2.11.2] - 2026-11-17
 
