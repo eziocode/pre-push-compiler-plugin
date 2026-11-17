@@ -69,7 +69,14 @@ class CodeReviewConfigurable(private val project: Project) :
                 }
             }.bind({ ReviewSettings.mode(project) }, { ReviewSettings.setMode(project, it) })
             row {
-                comment("Content that was reviewed and has not changed since is never reviewed again.")
+                checkBox("Ignore changes brought in by merges")
+                    .bindSelected(
+                        { ReviewSettings.isIgnoreMergeChanges(project) },
+                        { ReviewSettings.setIgnoreMergeChanges(project, it) })
+                    .comment("After 'git merge main' (or pulling a remote branch in), only your own commits and conflict resolutions are reviewed, not the merged-in code that is already on the remote.")
+            }
+            row {
+                comment("Content that was reviewed and has not changed since is never reviewed again. Whitespace-only edits in code files are not sent to the AI.")
             }
         }.enabledIf(enabled.selected)
 

@@ -344,7 +344,14 @@ public final class PrePushLocalServer implements Disposable {
                 pathLimitExceeded ? Collections.emptyList() : requestedPaths,
                 rangeBase,
                 pushedHead);
-            PrePushValidationCoordinator.Outcome outcome = runCompile(request);
+            PrePushValidationCoordinator.Outcome outcome = runCompileWithProgress(request);
+            if (outcome == USER_CANCELED) {
+                out.write("ERRORS 1\n");
+                out.write("Pre-push check stopped from IntelliJ. Push again to re-run it.\n");
+                out.write("END\n");
+                out.flush();
+                return;
+            }
             if (outcome.status() == PrePushValidationCoordinator.Status.COMPLETED) {
                 com.github.prepushchecker.stats.SharedStats.getInstance().maybeAskConsent(project);
             }
@@ -374,7 +381,56 @@ public final class PrePushLocalServer implements Disposable {
         }
     }
 
-    private PrePushValidationCoordinator.Outcome runCompile(ValidationRequest request) {
+    /** Marker outcome: the user pressed Stop on the progress shown for this push. */
+    private static final PrePushValidationCoordinator.Outcome USER_CANCELED =
+        new PrePushValidationCoordinator.Outcome(PrePushValidationCoordinator.Status.CANCELED,
+            Collections.emptyList(), "stopped by the user");
+
+    /**
+     * Runs the check for a push as a cancellable background task, so a push started outside
+     * IntelliJ (terminal, other tools) shows its compile / AI review progress in the status bar
+     * like an IDE action, and the user can stop it there. The socket thread waits for the task.
+     */
+    private PrePushValidationCoordinator.Outcome runCompileWithProgress(ValidationRequest request) {
+        if (ApplicationManager.getApplication().isHeadlessEnvironment()) return runCompile(request, null);
+        java.util.concurrent.CompletableFuture<PrePushValidationCoordinator.Outcome> result =
+            new java.util.concurrent.CompletableFuture<>();
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Pre-push check", true) {
+            @Override
+            public void run(@org.jetbrains.annotations.NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
+                indicator.setIndeterminate(true);
+                indicator.setText("Checking pushed changes…");
+                PrePushValidationCoordinator.Outcome outcome = runCompile(request, indicator);
+                result.complete(indicator.isCanceled() ? USER_CANCELED : outcome);
+            }
+
+            @Override
+            public void onCancel() {
+                result.complete(USER_CANCELED);
+            }
+
+            @Override
+            public void onThrowable(@org.jetbrains.annotations.NotNull Throwable error) {
+                result.complete(PrePushValidationCoordinator.Outcome.failure(
+                    error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage()));
+            }
+        }.queue();
+        try {
+            return result.get(COMPILE_TIMEOUT_SECONDS + 30, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return PrePushValidationCoordinator.Outcome.canceled();
+        } catch (java.util.concurrent.TimeoutException e) {
+            return PrePushValidationCoordinator.Outcome.timeout();
+        } catch (java.util.concurrent.ExecutionException e) {
+            return PrePushValidationCoordinator.Outcome.failure(String.valueOf(e.getCause()));
+        }
+    }
+
+    private PrePushValidationCoordinator.Outcome runCompile(
+        ValidationRequest request,
+        @org.jetbrains.annotations.Nullable com.intellij.openapi.progress.ProgressIndicator waiter
+    ) {
         WriteSafeEdt.saveAllDocuments();
 
         List<String> normalizedPaths = restrictToProjectRoots(
@@ -438,7 +494,7 @@ public final class PrePushLocalServer implements Disposable {
                 }
                 return result;
             },
-            null,
+            waiter,
             COMPILE_TIMEOUT_SECONDS,
             TimeUnit.SECONDS);
         recordStats(normalizedRequest, requestKey, outcome, cacheHit.get());
@@ -492,7 +548,9 @@ public final class PrePushLocalServer implements Disposable {
                 Path.of(request.repositoryRoot()), paths,
                 request.rangeBase().isBlank() ? null : request.rangeBase(),
                 request.pushedHead().isBlank() ? null : request.pushedHead(),
-                com.intellij.openapi.progress.ProgressManager.getInstance().getProgressIndicator(),
+                // Runs on the coordinator thread: its owner indicator is canceled when the user
+                // stops the push's progress, and its text is mirrored to that progress.
+                PrePushValidationCoordinator.ownerIndicator(),
                 java.time.Duration.ofSeconds(REVIEW_BUDGET_SECONDS));
             if (!lines.isEmpty()) publishErrors(lines);
             return lines;

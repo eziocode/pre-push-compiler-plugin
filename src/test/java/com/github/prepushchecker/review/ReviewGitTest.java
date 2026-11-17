@@ -146,6 +146,73 @@ public class ReviewGitTest extends TestCase {
             new java.util.HashSet<>(ReviewGit.changedFiles(repo)));
     }
 
+    /** After "git merge main", only the developer's own files and hunks are left to review. */
+    public void testMergedInRemoteCodeIsSeparatedFromOwnChanges() throws Exception {
+        Path remote = Files.createTempDirectory("review-remote").toRealPath();
+        try {
+            String two = "class A {\n    void a() {\n        int x = 1;\n    }\n\n    void filler1() {}\n    void filler2() {}\n"
+                + "    void filler3() {}\n    void filler4() {}\n    void filler5() {}\n    void filler6() {}\n\n"
+                + "    void b() {\n        int y = 1;\n    }\n}\n";
+            Files.writeString(repo.resolve("src/A.java"), two);
+            git("commit", "-qam", "two methods");
+            git("init", "-q", "--bare", remote.toString());
+            git("remote", "add", "origin", remote.toString());
+            git("push", "-q", "origin", "HEAD:refs/heads/main");
+            git("fetch", "-q", "origin");
+
+            git("checkout", "-q", "-b", "feature");
+            Files.writeString(repo.resolve("src/A.java"), two.replace("int x = 1;", "int x = 2; // mine"));
+            Files.writeString(repo.resolve("src/U.java"), "class U {}\n");
+            git("add", ".");
+            git("commit", "-qm", "mine");
+
+            git("checkout", "-q", "-b", "upstream", "origin/main");
+            Files.writeString(repo.resolve("src/A.java"), two.replace("int y = 1;", "int y = 2; // theirs"));
+            Files.writeString(repo.resolve("src/M.java"), "class M {}\n");
+            git("add", ".");
+            git("commit", "-qm", "theirs");
+            git("push", "-q", "origin", "upstream:refs/heads/main");
+            git("fetch", "-q", "origin");
+            git("checkout", "-q", "feature");
+            git("merge", "-q", "--no-edit", "origin/main");
+
+            List<String> parents = ReviewGit.mergedRemoteParents(repo, "HEAD");
+            assertEquals(1, parents.size());
+            assertEquals(ReviewGit.resolveCommit(repo, "origin/main"), parents.get(0));
+
+            List<String> rels = List.of("src/A.java", "src/U.java", "src/M.java");
+            Map<String, String> blobs = ReviewGit.blobsAt(repo, "HEAD", rels);
+            assertEquals(java.util.Set.of("src/M.java"), ReviewService.mergedInOnly(repo, "HEAD", rels, blobs));
+
+            String own = ReviewGit.diffRange(repo, parents.get(0), "HEAD", "src/A.java");
+            assertTrue(own, own.contains("// mine"));
+            assertFalse(own, own.contains("// theirs"));
+
+            // Nothing pushed yet: all three are still pending; after pushing, none is.
+            assertTrue(ReviewGit.pendingFiles(repo).containsAll(List.of("src/A.java", "src/U.java")));
+            git("push", "-q", "origin", "feature:refs/heads/feature");
+            git("fetch", "-q", "origin");
+            assertEquals(java.util.Set.of(), ReviewGit.pendingFiles(repo));
+        } finally {
+            try (var walk = Files.walk(remote)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+            }
+        }
+    }
+
+    public void testWhitespaceOnlyChange() throws Exception {
+        String base = ReviewGit.headSha(repo);
+        Files.writeString(repo.resolve("src/A.java"), "class A {\n    void a() {\n            int x = 1;\n    }\n\n}\n");
+        git("commit", "-qam", "reindent");
+        assertTrue(ReviewGit.whitespaceOnly(repo, base, "HEAD", "src/A.java"));
+        Files.writeString(repo.resolve("src/A.java"), "class A {\n    void a() {\n        int x = 9;\n    }\n}\n");
+        git("commit", "-qam", "real");
+        assertFalse(ReviewGit.whitespaceOnly(repo, base, "HEAD", "src/A.java"));
+        assertTrue(ReviewService.isWhitespaceInsensitive("src/A.java"));
+        assertFalse(ReviewService.isWhitespaceInsensitive("conf/app.yaml"));
+        assertFalse(ReviewService.isWhitespaceInsensitive("Makefile"));
+    }
+
     private void git(String... args) throws Exception {
         List<String> cmd = new java.util.ArrayList<>(List.of("git"));
         cmd.addAll(List.of(args));

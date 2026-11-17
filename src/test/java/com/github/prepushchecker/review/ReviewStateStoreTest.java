@@ -72,4 +72,16 @@ public class ReviewStateStoreTest extends TestCase {
         assertFalse(store.isApproved("/r/A.java", "v0"));
         assertTrue(store.isApproved("/r/A.java", "v2"));
     }
+
+    public void testRetainOnlyDropsSettledFilesOfThatRootOnly() {
+        ReviewStateStore store = new ReviewStateStore();
+        store.record("/r/a/X.java", "1", List.of());
+        store.record("/r/a/Y.java", "2", List.of());
+        store.record("/r/b/Z.java", "3", List.of());
+        assertEquals(1, store.retainOnly("/r/a/", java.util.Set.of("X.java")));
+        assertNotNull(store.review("/r/a/X.java"));
+        assertNull(store.review("/r/a/Y.java"));
+        assertNotNull(store.review("/r/b/Z.java"));
+        assertEquals(0, store.retainOnly("/r/a/", java.util.Set.of("X.java")));
+    }
 }

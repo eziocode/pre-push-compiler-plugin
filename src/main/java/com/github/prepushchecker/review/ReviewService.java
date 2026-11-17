@@ -28,6 +28,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -162,10 +163,25 @@ public final class ReviewService {
         List<Target> out = new ArrayList<>();
         Map<String, String> blobs = ReviewGit.blobsAt(root, rev, rels);
         String from = base != null ? base : ReviewGit.upstreamBase(root);
+        List<String> merged = ReviewSettings.isIgnoreMergeChanges(project)
+            ? ReviewGit.mergedRemoteParents(root, rev) : List.of();
         for (String rel : rels) {
             String blob = blobs.get(rel);
             if (blob == null) continue;
             String raw = from == null ? "" : ReviewGit.diffRange(root, from, rev, rel);
+            boolean mergedIn = false;
+            // A merged-in remote parent as base drops the hunks that merge brought in; the
+            // smallest diff is the developer's own change (plus any conflict resolution).
+            for (String parent : merged) {
+                String own = ReviewGit.diffRange(root, parent, rev, rel);
+                if (own.isBlank()) {
+                    mergedIn = ReviewGit.blobsAt(root, parent, List.of(rel)).containsKey(rel);
+                    if (mergedIn) break;
+                    continue;
+                }
+                if (raw.isBlank() || own.length() < raw.length()) raw = own;
+            }
+            if (mergedIn) continue;
             String diff;
             if (!raw.isBlank()) {
                 diff = ReviewPrompt.numberDiff(raw);
@@ -283,16 +299,24 @@ public final class ReviewService {
                 List<Path> copy = addGitChanges ? withGitChanges(given) : given;
                 boolean anyRules = hasAnyRules(copy);
                 if (!anyRules) {
-                    report(RunResult.empty(true), copy.size());
+                    report(RunResult.empty(true), copy.size(), 0);
                     return;
                 }
                 List<String> collectErrors = new ArrayList<>();
                 List<Target> targets = workingTargets(copy, collectErrors);
+                int unchanged = 0;
+                if (addGitChanges) {
+                    // "Review Local Changes" again: content reviewed before keeps its results, no AI call.
+                    int before = targets.size();
+                    targets = new ArrayList<>(targets);
+                    targets.removeIf(t -> alreadyReviewed(t));
+                    unchanged = before - targets.size();
+                }
                 RunResult r = review(targets, indicator, null);
                 List<String> errors = new ArrayList<>(collectErrors);
                 errors.addAll(r.errors());
-                int outOfScope = Math.max(0, copy.size() - targets.size() - collectErrors.size());
-                report(new RunResult(r.reviewed(), outOfScope, r.findings(), false, errors), copy.size());
+                int outOfScope = Math.max(0, copy.size() - targets.size() - unchanged - collectErrors.size());
+                report(new RunResult(r.reviewed(), outOfScope, r.findings(), false, errors), copy.size(), unchanged);
             }
 
             @Override
@@ -311,7 +335,7 @@ public final class ReviewService {
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setIndeterminate(true);
                 RunResult r = review(pushTargets(root, rels, null), indicator, null);
-                report(r, rels.size());
+                report(r, rels.size(), 0);
             }
 
             @Override
@@ -321,7 +345,15 @@ public final class ReviewService {
         });
     }
 
-    private void report(@NotNull RunResult r, int requested) {
+    /** {@code true} when this exact content already has a recorded review (clean, approved or with findings). */
+    private boolean alreadyReviewed(@NotNull Target t) {
+        ReviewStateStore store = ReviewStateStore.getInstance(project);
+        if (store.isApproved(t.absolutePath(), t.contentId())) return true;
+        ReviewStateStore.FileReview review = store.review(t.absolutePath());
+        return review != null && review.contentId.equals(t.contentId());
+    }
+
+    private void report(@NotNull RunResult r, int requested, int unchanged) {
         if (r.noRules()) {
             notify("No review rule file found (" + ReviewRules.DEFAULT_FILE_NAME + "). Create one in "
                 + "Settings → Tools → Pre-Push Checker → Code Review.", NotificationType.WARNING, null);
@@ -331,6 +363,11 @@ public final class ReviewService {
             notify("AI review failed: " + AiOutputSanitizer.truncate(String.join("\n", r.errors()), 600),
                 NotificationType.ERROR, null);
             if (r.reviewed() == 0) return;
+        }
+        if (r.reviewed() == 0 && unchanged > 0 && r.errors().isEmpty()) {
+            notify(unchanged + " file(s) unchanged since their last review; results kept, nothing new to review. "
+                + "Use Clear Reviews to review them again.", NotificationType.INFORMATION, "Show Findings");
+            return;
         }
         if (r.reviewed() == 0) {
             notify(requested == 0 ? "No files selected for review."
@@ -345,6 +382,7 @@ public final class ReviewService {
                 // Some files failed: a "passed" here would read as a pass for those too.
                 : "No issues in " + r.reviewed() + " reviewed file(s); the rest could not be reviewed.";
         if (r.outOfScope() > 0) text += " " + r.outOfScope() + " file(s) not in review scope.";
+        if (unchanged > 0) text += " " + unchanged + " unchanged file(s) kept their earlier results.";
         notify(text, r.findings() == 0 ? NotificationType.INFORMATION : NotificationType.WARNING,
             r.findings() == 0 ? null : "Show Findings");
     }
@@ -390,6 +428,14 @@ public final class ReviewService {
         Path repo = root;
         boolean history = rels.size() <= MAX_REMOTE_LOOKUPS;
         rels.removeIf(r -> alreadyOnRemote(repo, r, blobs.get(r), base, history));
+        if (!rels.isEmpty() && ReviewSettings.isIgnoreMergeChanges(project)) {
+            rels.removeAll(mergedInOnly(root, rev, rels, blobs));
+        }
+        if (base != null) {
+            String from = base;
+            String to = rev;
+            rels.removeIf(r -> isWhitespaceInsensitive(r) && ReviewGit.whitespaceOnly(repo, from, to, r));
+        }
         if (rels.isEmpty()) return List.of();
 
         Classified c = classify(root, rels, blobs);
@@ -419,6 +465,34 @@ public final class ReviewService {
     static final int MAX_REMOTE_LOOKUPS = 200;
 
     /**
+     * Files whose pushed content equals their content in a remote commit merged into the push:
+     * a {@code git merge main} brought them in unchanged, so there is no code of the developer's
+     * own to review.
+     */
+    static @NotNull Set<String> mergedInOnly(@NotNull Path root, @NotNull String rev, @NotNull List<String> rels,
+                                             @NotNull Map<String, String> blobs) {
+        Set<String> out = new HashSet<>();
+        for (String parent : ReviewGit.mergedRemoteParents(root, rev)) {
+            Map<String, String> there = ReviewGit.blobsAt(root, parent, rels);
+            for (String r : rels) {
+                String b = blobs.get(r);
+                if (b != null && b.equals(there.get(r))) out.add(r);
+            }
+        }
+        return out;
+    }
+
+    /** Languages where a whitespace-only change cannot change behaviour (not YAML, Python, Makefiles…). */
+    private static final Set<String> WHITESPACE_INSENSITIVE = Set.of(
+        "java", "kt", "kts", "groovy", "gradle", "scala", "js", "jsx", "ts", "tsx", "mjs", "cjs",
+        "css", "scss", "less", "json", "c", "h", "cc", "cpp", "hpp", "cs", "go", "rs", "swift", "php", "sql");
+
+    static boolean isWhitespaceInsensitive(@NotNull String rel) {
+        int dot = rel.lastIndexOf('.');
+        return dot > rel.lastIndexOf('/') && WHITESPACE_INSENSITIVE.contains(rel.substring(dot + 1).toLowerCase(java.util.Locale.ROOT));
+    }
+
+    /**
      * {@code true} when the pushed content of {@code rel} is already on the remote: unchanged from
      * the range base, or equal to a version in remote history (a revert of pushed code, or a merge
      * that brings in the remote's own changes). Pushing it adds no new code to review.
@@ -436,7 +510,7 @@ public final class ReviewService {
         ReviewRules rules = rules(root);
         if (!ReviewSettings.isEnabled(project) || rules == null) return "off";
         return ReviewSettings.mode(project) + "/" + ReviewSettings.isMandatory(project, rules) + "/"
-            + rules.body().hashCode() + "/" + ReviewStateStore.getInstance(project).modificationCount();
+            + rules.body().hashCode() + "/" + ReviewSettings.isIgnoreMergeChanges(project) + "/" + ReviewStateStore.getInstance(project).modificationCount();
     }
 
     private record Classified(List<String> unreviewed, List<String> open) {}
@@ -497,6 +571,23 @@ public final class ReviewService {
             showTab();
         }));
         n.notify(project);
+    }
+
+    // ── Stale results ────────────────────────────────────────────────────────
+
+    /**
+     * Removes review results for files of {@code root} that no longer have anything unpushed or
+     * uncommitted: pushed (with or without the gate), reverted, or reset. The Code Review tab
+     * then only lists what can still matter. Skipped while a review or push check runs.
+     */
+    public void pruneStale(@NotNull Path root) {
+        ReviewStateStore store = ReviewStateStore.getInstance(project);
+        if (store.isEmpty() || running.get()) return;
+        Path canonical = ReviewGit.canonical(root);
+        Set<String> pending = ReviewGit.pendingFiles(canonical);
+        if (pending == null || running.get()) return; // git failed: keep everything
+        int removed = store.retainOnly(key(canonical) + "/", pending);
+        if (removed > 0) LOG.info("Cleared " + removed + " review result(s) with nothing left to push in " + canonical);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
