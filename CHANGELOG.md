@@ -8,6 +8,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [2.11.2] - 2026-11-17
+
+### Fixed
+
+- **AI Provider settings no longer throw away the CLI you just picked.** In 2026.3 the Settings
+  dialog resets unmodified pages when it gets focus back, and the "Choose CLI…" dialog and the
+  modal "Detecting…" / "Fetching models…" progress made that happen on every switch: the page
+  jumped back to the saved CLI and cleared the typed model. The CLI is now a combo on the page
+  (installed CLIs detected in the background, not-installed ones marked), "Browse…" picks any
+  other executable, and Refresh models runs in the background on both the AI Provider and
+  Inline Suggestions pages. Switching between "Other CLI" binaries no longer carries the previous
+  binary's model or arguments over.
+- **Codex inline: no more "Codex CLI returned an empty response".** An empty answer means the
+  model has nothing to insert there; it now shows no suggestion instead of an error, and no longer
+  counts toward pausing suggestions. An empty `--output-last-message` file falls back to stdout.
+  Suggest Now (Alt+\) says "No suggestion here" in that case.
+
+### Changed
+
+- **Faster CLI suggestions.** Claude Code completions run without tools, MCP servers or session
+  saving, and use `haiku` when no model is set (about 9 s to 5.5 s per suggestion in testing).
+  Codex completions run with `--ephemeral`. The Copilot `gh` token is cached for 10 minutes. A
+  running request whose answer can no longer be used (text before it changed, caret moved before
+  it) is cancelled so the next suggestion starts at once.
+
+### Added
+
+- **Inline suggestions status bar icon.** Spins while a suggestion is generated, greys out when
+  off, and shows an error badge when paused or failing. Click it to switch suggestions on or off,
+  resume, suggest now, turn them off for the current file type, see the last error, or open the
+  Inline Suggestions and AI Provider settings.
+
 ## [2.11.1] - 2026-11-17
 
 ### Fixed

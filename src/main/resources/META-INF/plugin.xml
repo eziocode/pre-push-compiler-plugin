@@ -1107,6 +1107,8 @@
         <applicationConfigurable parentId="prepushchecker.settings" id="prepushchecker.inline"
             instance="com.github.prepushchecker.inline.InlineSuggestConfigurable" displayName="Inline Suggestions"/>
         <applicationService serviceImplementation="com.github.prepushchecker.inline.InlineSuggestService"/>
+        <statusBarWidgetFactory id="PrePushInlineSuggest"
+            implementation="com.github.prepushchecker.inline.InlineStatusBarWidgetFactory"/>
         <typedHandler implementation="com.github.prepushchecker.inline.InlineTypedHandler"/>
         <enterHandlerDelegate implementation="com.github.prepushchecker.inline.InlineEnterHandler"/>
         <backspaceHandlerDelegate implementation="com.github.prepushchecker.inline.InlineBackspaceHandler"/>

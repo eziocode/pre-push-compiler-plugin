@@ -22,14 +22,31 @@ public final class AiCliCommand {
     /** {@code claude -p --output-format text [--model M] [extra…]}; prompt goes on stdin. */
     public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
                                                @Nullable String extraArgs) {
+        return claude(path, model, extraArgs, false);
+    }
+
+    /**
+     * As {@link #claude(String, String, String)}; {@code lowLatency} (inline completions) turns off
+     * tools, MCP servers and session saving, which roughly halves the time to answer. The user's
+     * extra args come after and can still override these.
+     */
+    public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
+                                               @Nullable String extraArgs, boolean lowLatency) {
         List<String> cmd = new ArrayList<>(List.of(path, "-p", "--output-format", "text"));
         if (!isBlank(model)) {
             cmd.add("--model");
             cmd.add(model.trim());
         }
+        if (lowLatency) {
+            cmd.addAll(CLAUDE_LOW_LATENCY);
+        }
         cmd.addAll(tokenize(extraArgs));
         return cmd;
     }
+
+    /** Flags added for inline completions: no tools, no MCP servers, no saved session. */
+    static final List<String> CLAUDE_LOW_LATENCY =
+        List.of("--tools", "", "--strict-mcp-config", "--no-session-persistence");
 
     /** Config override that makes {@code codex exec} answer faster; used for inline completions only. */
     static final String CODEX_LOW_EFFORT = "model_reasoning_effort=\"low\"";
@@ -60,6 +77,7 @@ public final class AiCliCommand {
         cmd.add("--output-last-message");
         cmd.add(lastMessageFile.toString());
         if (lowLatency) {
+            cmd.add("--ephemeral");
             cmd.add("-c");
             cmd.add(CODEX_LOW_EFFORT);
         }

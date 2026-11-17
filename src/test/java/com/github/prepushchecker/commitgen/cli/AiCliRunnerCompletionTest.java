@@ -34,19 +34,19 @@ public class AiCliRunnerCompletionTest extends TestCase {
             AiCliRunner.finish("llm", "```\ncount++;\ncount--;\n```", HINT, REQ));
     }
 
-    public void testBlankOutputThrowsEmptyResult() {
+    public void testBlankOutputMeansNoSuggestion() {
+        // The model choosing to insert nothing is not a failure (it must not pause inline suggestions).
+        assertEquals("", AiCliRunner.finish("Codex CLI", " \n", HINT, REQ));
+        assertEquals("", AiCliRunner.finish("Codex CLI", null, HINT, REQ));
+        assertEquals("", AiCliRunner.finish("Claude CLI", "<think>only thoughts</think>", HINT, REQ));
+    }
+
+    public void testBlankOutputStillFailsForCommitMessages() {
         try {
-            AiCliRunner.finish("Claude CLI", " \n", HINT, REQ);
+            AiCliRunner.finish("Claude CLI", " \n", HINT, AiRequest.commitMessage("s", "u"));
             fail("expected RuntimeException");
         } catch (RuntimeException e) {
             assertTrue(e.getMessage().contains("returned an empty response"));
-            assertTrue(e.getMessage().contains(HINT));
-        }
-        try {
-            AiCliRunner.finish("Claude CLI", "<think>only thoughts</think>", HINT, REQ);
-            fail("expected RuntimeException");
-        } catch (RuntimeException e) {
-            assertTrue(e.getMessage().contains(AiOutputSanitizer.EMPTY_RESULT_MESSAGE));
         }
     }
 }

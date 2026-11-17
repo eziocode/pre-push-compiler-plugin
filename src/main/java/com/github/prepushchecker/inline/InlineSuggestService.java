@@ -78,6 +78,11 @@ public final class InlineSuggestService implements Disposable {
     private @Nullable Answer lastAnswer;
     /** Document whose change is being processed (EDT only); caret moves caused by it are not user moves. */
     private @Nullable Document changing;
+    /** Message of the last automatic failure, cleared by the next success or a settings change. */
+    private volatile @Nullable String lastError;
+
+    /** What the status bar shows. */
+    public enum Status { IDLE, LOADING, DISABLED, PAUSED, ERROR }
 
     public InlineSuggestService() {
         EditorEventMulticaster multicaster = EditorFactory.getInstance().getEventMulticaster();
@@ -119,15 +124,27 @@ public final class InlineSuggestService implements Disposable {
 
     /**
      * EDT. Asks for a fresh automatic suggestion. A request already running for this editor is left
-     * alone and only told that a follow-up is wanted should its answer not fit the new text.
+     * alone and only told that a follow-up is wanted should its answer not fit the new text, unless its
+     * answer can no longer be used (text before its offset changed, or the caret moved before it): then
+     * it is cancelled so a slow CLI does not delay the next suggestion.
      */
     private void request(Editor editor, Target target, InlineSuggestSettings.State s) {
         Request r = current;
-        if (r != null && !r.cancelled && r.editor == editor && r.isRunning()) {
+        if (r != null && !r.cancelled && r.editor == editor && r.isRunning() && stillUseful(r, editor)) {
             r.followUp = true;
             return;
         }
         schedule(editor, target, s);
+    }
+
+    /** EDT. Whether {@code r}'s answer could still be shown: same text before its offset, caret at or after it. */
+    private static boolean stillUseful(@NotNull Request r, @NotNull Editor editor) {
+        Document document = editor.getDocument();
+        if (document != r.document) return false;
+        int caret = editor.getCaretModel().getOffset();
+        int start = r.offset - r.prefixTail.length();
+        if (start < 0 || caret < r.offset || r.offset > document.getTextLength()) return false;
+        return r.prefixTail.contentEquals(document.getCharsSequence().subSequence(start, r.offset));
     }
 
     /** EDT. Manual request: ignores trigger mode, pause and debounce. */
@@ -155,9 +172,31 @@ public final class InlineSuggestService implements Disposable {
         failures = 0;
         failureReported = false;
         lastAnswer = null;
+        lastError = null;
         cache.clear();
         cancelCurrent();
         for (Editor editor : EditorFactory.getInstance().getAllEditors()) InlineGhostText.dismiss(editor);
+        fireStatus();
+    }
+
+    /** Current state for the status bar widget. */
+    public @NotNull Status status() {
+        if (!settings().enabled) return Status.DISABLED;
+        if (paused) return Status.PAUSED;
+        Request r = current;
+        if (r != null && !r.cancelled && r.isRunning()) return Status.LOADING;
+        return lastError != null ? Status.ERROR : Status.IDLE;
+    }
+
+    public @Nullable String lastError() {
+        return lastError;
+    }
+
+    /** Tells the status bar to repaint; safe from any thread. Pure UI update, so any modality is fine. */
+    static void fireStatus() {
+        ApplicationManager.getApplication().invokeLater(() ->
+            ApplicationManager.getApplication().getMessageBus().syncPublisher(InlineStatusListener.TOPIC).statusChanged(),
+            ModalityState.any());
     }
 
     public boolean isPaused() {
@@ -238,13 +277,19 @@ public final class InlineSuggestService implements Disposable {
             old = current;
             current = r;
         }
-        if (old != null) old.cancel();
+        if (old != null) {
+            old.cancel();
+            fireStatus();
+        }
     }
 
     private void cancelCurrent() {
         alarm.cancelAllRequests();
         Request r = current;
-        if (r != null) r.cancel();
+        if (r != null) {
+            r.cancel();
+            fireStatus();
+        }
     }
 
     private void launch(Request r) {
@@ -253,6 +298,7 @@ public final class InlineSuggestService implements Disposable {
             Future<?> f = ApplicationManager.getApplication().executeOnPooledThread(() -> run(r));
             r.future = f;
         }
+        fireStatus();
     }
 
     /** Pooled thread. */
@@ -308,12 +354,14 @@ public final class InlineSuggestService implements Disposable {
         if (r.cancelled || r != current) return;
         r.finished = true;
         if (r.editor.isDisposed() || r.project.isDisposed()) return;
+        fireStatus();
         if (error != null) {
             onFailure(r, error);
             return;
         }
         failures = 0;
         paused = false;
+        lastError = null;
         if (!onSuccess(r, text) && r.followUp) followUp(r.editor);
     }
 
@@ -321,7 +369,10 @@ public final class InlineSuggestService implements Disposable {
     private boolean onSuccess(Request r, @Nullable String text) {
         if (!settings().enabled) return false;
         if (r.manual) HintManager.getInstance().hideAllHints();
-        if (text == null || text.isEmpty()) return false;
+        if (text == null || text.isEmpty()) {
+            if (r.manual && !r.editor.isDisposed()) HintManager.getInstance().showInformationHint(r.editor, "No suggestion here");
+            return false;
+        }
         cache.put(r.file.getPath(), r.prefixTail, text);
         Answer answer = new Answer(r.document, r.offset, r.prefixTail, text);
         lastAnswer = answer;
@@ -352,9 +403,11 @@ public final class InlineSuggestService implements Disposable {
             return;
         }
         LOG.info("Inline suggestion request failed: " + message);
+        lastError = message;
         failures++;
         if (failures >= FAILURES_BEFORE_PAUSE && !paused) {
             paused = true;
+            fireStatus();
             notifyPaused(r.project, message);
         } else if (!failureReported) {
             failureReported = true;

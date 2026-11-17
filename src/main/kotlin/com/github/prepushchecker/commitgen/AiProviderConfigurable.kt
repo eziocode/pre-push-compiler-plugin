@@ -11,9 +11,7 @@ import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.options.SearchableConfigurable
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.ui.ComboBox
-import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.TextBrowseFolderListener
 import com.intellij.openapi.ui.TextFieldWithBrowseButton
 import com.intellij.ui.JBColor
@@ -22,7 +20,6 @@ import javax.swing.JList
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPasswordField
 import com.intellij.ui.components.JBRadioButton
-import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.COLUMNS_LARGE
 import com.intellij.ui.dsl.builder.COLUMNS_MEDIUM
@@ -31,28 +28,26 @@ import com.intellij.ui.dsl.builder.Row
 import com.intellij.ui.dsl.builder.RowsRange
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
-import com.intellij.ui.table.JBTable
-import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.intellij.util.xmlb.XmlSerializerUtil
-import java.awt.event.ActionEvent
-import javax.swing.AbstractAction
-import javax.swing.Action
 import javax.swing.DefaultComboBoxModel
 import javax.swing.JComponent
-import javax.swing.ListSelectionModel
-import javax.swing.table.DefaultTableModel
 
 /**
  * Settings → Tools → Pre-Push Checker → AI Provider: which AI the commit message generator and
- * the code review use. Pick a source (API key, local CLI, JetBrains AI); for a CLI, one
- * "Choose CLI…" button detects the installed CLIs, and the details sit under Advanced.
+ * the code review use. Pick a source (API key, local CLI, JetBrains AI); for a CLI, pick it in
+ * the CLI combo (installed CLIs are detected in the background), and the details sit under Advanced.
+ *
+ * No modal window is opened while choosing a CLI or refreshing models: since 2026.3 the Settings
+ * dialog resets pages it saw as unmodified when it gets focus back, which used to throw the
+ * freshly chosen CLI and model away ("resetUnmodifiedOnWindowFocus").
  */
 class AiProviderConfigurable : SearchableConfigurable {
 
     companion object {
         /** Kept from the pre-2.10 page so existing links to it still open this page. */
         const val ID = "com.github.prepushchecker.commitgen.CommitMessageSettingsConfigurable"
+        private const val MODAL_GUARD_MS = 3_000L
         private val API_IDS = listOf(Id.OPENAI, Id.ANTHROPIC, Id.GEMINI, Id.OLLAMA)
         private val CLI_IDS = setOf(Id.CODEX_CLI, Id.CLAUDE_CLI, Id.GH_COPILOT, Id.LLM_CLI, Id.CUSTOM_CLI)
 
@@ -96,6 +91,8 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     // CLI
     private val cliSummary = JBLabel()
+    private val cliCombo = ComboBox(DefaultComboBoxModel(AiCli.values()))
+    @Volatile private var detected: Map<AiCli, AiCliDetector.DetectedCli> = emptyMap()
     private val cliModelCombo = ComboBox<String>().apply { isEditable = true }
     private val cliPathField = TextFieldWithBrowseButton(JBTextField().apply { emptyText.text = "blank = find on PATH" }).apply {
         addBrowseFolderListener(TextBrowseFolderListener(
@@ -128,6 +125,11 @@ class AiProviderConfigurable : SearchableConfigurable {
     private var component: JComponent? = null
     private var loading = false
     private var cliSummaryGeneration = 0L
+    private var detectGeneration = 0L
+    private var modelsGeneration = 0L
+    private var listenersInstalled = false
+    /** Until this time a reset() from the platform is ignored when the page has unsaved edits: see class doc. */
+    private var ownModalUntil = 0L
     @Volatile private var pendingKeySave: java.util.concurrent.Future<*>? = null
 
     override fun getId() = ID
@@ -135,6 +137,19 @@ class AiProviderConfigurable : SearchableConfigurable {
     override fun getDisplayName() = "AI Provider"
 
     override fun createComponent(): JComponent {
+        // The platform may dispose and recreate the page: the widgets are fields, so listeners go on once.
+        if (!listenersInstalled) {
+            listenersInstalled = true
+            installListeners()
+        }
+        val p = buildPanel()
+        component = p
+        reset()
+        detectClis()
+        return p
+    }
+
+    private fun installListeners() {
         listOf(apiRadio to Source.API, cliRadio to Source.CLI, ideRadio to Source.IDE).forEach { (radio, s) ->
             radio.addActionListener { if (radio.isSelected && !loading) { source = s; updateVisibility() } }
         }
@@ -156,8 +171,29 @@ class AiProviderConfigurable : SearchableConfigurable {
                 if (!loading) templateField.emptyText.text = presetHint()
             }
         })
+        cliCombo.renderer = object : SimpleListCellRenderer<AiCli>() {
+            override fun customize(list: JList<out AiCli>, value: AiCli?, index: Int, selected: Boolean, hasFocus: Boolean) {
+                if (value == null) { text = ""; return }
+                val d = detected[value]
+                text = when {
+                    d == null -> value.displayName()
+                    d.found() -> value.displayName()
+                    else -> value.displayName() + "  (not installed)"
+                }
+                if (d != null && !d.found() && !selected) foreground = UIUtil.getContextHelpForeground()
+            }
+        }
+        cliCombo.addActionListener {
+            if (loading) return@addActionListener
+            val cli = cliCombo.selectedItem as? AiCli ?: return@addActionListener
+            stashCliInto(work)
+            selectCli(cli)
+            updateVisibility()
+        }
+    }
 
-        val p = panel {
+    private fun buildPanel(): JComponent {
+        return panel {
             buttonsGroup {
                 row("Source:") {
                     cell(apiRadio)
@@ -178,9 +214,10 @@ class AiProviderConfigurable : SearchableConfigurable {
 
             cliRange = rowsRange {
                 row("CLI:") {
-                    cell(cliSummary)
-                    button("Choose CLI…") { chooseCli() }
+                    cell(cliCombo)
+                    link("Browse…") { browseCli() }
                 }
+                row("") { cell(cliSummary) }
                 row("Model:") {
                     cell(cliModelCombo).columns(COLUMNS_MEDIUM)
                     link("Refresh models") { refreshModels() }
@@ -200,9 +237,6 @@ class AiProviderConfigurable : SearchableConfigurable {
                 cell(testResult)
             }
         }
-        component = p
-        reset()
-        return p
     }
 
     private fun advancedCliRows(panel: Panel) = with(panel) {
@@ -242,6 +276,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     // ── Load / store ──────────────────────────────────────────────────────────
 
     override fun reset() {
+        if (component != null && System.currentTimeMillis() < ownModalUntil && isModified) return
         work = XmlSerializerUtil.createCopy(saved)
         typedApiKeys.clear()
         typedCliKeys.clear()
@@ -302,6 +337,8 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     override fun disposeUIResources() {
         cliSummaryGeneration++
+        detectGeneration++
+        modelsGeneration++
         component = null
     }
 
@@ -392,6 +429,7 @@ class AiProviderConfigurable : SearchableConfigurable {
             templateField.emptyText.text = presetHint()
             listModelsArgsField.text = work.customCliModelsArgs.orEmpty()
             val cli = cliOf(cliId, work.customCliBinary)
+            cliCombo.selectedItem = cli
             cliModelCombo.model = DefaultComboBoxModel(AiCliModels.staticModels(cli).toTypedArray())
             cliModelCombo.editor.item = model.orEmpty()
             cliModelCombo.selectedItem = model.orEmpty()
@@ -448,48 +486,69 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     // ── CLI: choose, summary, models, sign-in ─────────────────────────────────
 
-    private fun chooseCli() {
-        stashCliInto(work)
-        val scan = ProgressManager.getInstance().runProcessWithProgressSynchronously<List<AiCliDetector.DetectedCli>, Exception>(
-            { AiCliDetector.scanAll(work) }, "Detecting installed AI CLIs…", true, null) ?: return
-        val dialog = ChooseCliDialog(scan, cliOf(cliId, work.customCliBinary))
-        if (!dialog.showAndGet()) return
-        val chosenPath = dialog.browsedPath
-        val chosen = dialog.selected()
-        when {
-            chosenPath != null -> {
-                val name = java.nio.file.Path.of(chosenPath).fileName.toString()
-                val known = AiCli.byBinary(name)
-                if (known != null && !known.isCustom) {
-                    useCli(known, chosenPath)
-                } else {
-                    cliId = Id.CUSTOM_CLI
-                    if (work.customCliBinary != name) work.customCliArgs = ""
-                    work.customCliBinary = name
-                    work.customCliPath = chosenPath
-                    loadCli()
-                }
-            }
-            chosen != null && chosen.found() -> useCli(chosen.cli(), chosen.path() ?: "")
-            else -> return
+    /** Background scan of every CLI; the combo shows which are installed and the summary their sign-in. */
+    private fun detectClis() {
+        val generation = ++detectGeneration
+        val snapshot = XmlSerializerUtil.createCopy(work)
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val scan = runCatching { AiCliDetector.scanAll(snapshot) }.getOrDefault(emptyList())
+            ApplicationManager.getApplication().invokeLater({
+                if (generation != detectGeneration) return@invokeLater
+                detected = scan.associateBy { it.cli() }
+                cliCombo.repaint()
+            }, ModalityState.any())
         }
-        updateVisibility()
     }
 
-    private fun useCli(cli: AiCli, path: String) {
-        when (cli) {
-            AiCli.CODEX -> work.codexCliPath = path
-            AiCli.CLAUDE -> work.claudeCliPath = path
-            AiCli.GH -> work.ghCliPath = path
-            AiCli.LLM -> work.llmCliPath = path
-            else -> {
-                if (work.customCliBinary != cli.binaryName()) work.customCliArgs = ""
-                work.customCliBinary = cli.binaryName()
-                work.customCliPath = path
+    /** Switches to [cli], keeping each CLI's own path and model. */
+    private fun selectCli(cli: AiCli) {
+        if (cli.isCustom) {
+            if (work.customCliBinary != cli.binaryName()) {
+                // The "Other CLI" fields are shared by every custom binary: drop the previous binary's values.
+                work.customCliArgs = ""
+                work.customCliModel = ""
+                work.customCliModelsArgs = ""
+                work.customCliPath = detected[cli]?.path().orEmpty()
             }
+            work.customCliBinary = cli.binaryName()
         }
         cliId = cli.providerId()
         loadCli()
+    }
+
+    /** Picks an unlisted executable. The file chooser is modal: see [ownModalUntil]. */
+    private fun browseCli() {
+        stashCliInto(work)
+        val file = FileChooser.chooseFile(
+            FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().withTitle("Select CLI Executable"),
+            component, null, null)
+        ownModalUntil = System.currentTimeMillis() + MODAL_GUARD_MS
+        if (file == null) return
+        val chosenPath = file.path
+        val name = java.nio.file.Path.of(chosenPath).fileName.toString()
+        val known = AiCli.byBinary(name)
+        if (known != null && !known.isCustom) {
+            when (known) {
+                AiCli.CODEX -> work.codexCliPath = chosenPath
+                AiCli.CLAUDE -> work.claudeCliPath = chosenPath
+                AiCli.GH -> work.ghCliPath = chosenPath
+                AiCli.LLM -> work.llmCliPath = chosenPath
+                else -> {}
+            }
+            cliId = known.providerId()
+        } else {
+            cliId = Id.CUSTOM_CLI
+            if (work.customCliBinary != name) {
+                work.customCliArgs = ""
+                work.customCliModel = ""
+                work.customCliModelsArgs = ""
+            }
+            work.customCliBinary = name
+            work.customCliPath = chosenPath
+        }
+        loadCli()
+        updateVisibility()
+        ownModalUntil = System.currentTimeMillis() + MODAL_GUARD_MS
     }
 
     private fun refreshCliSummary(): java.util.concurrent.Future<*> {
@@ -498,7 +557,7 @@ class AiProviderConfigurable : SearchableConfigurable {
         val binary = if (cliId == Id.CUSTOM_CLI) customBinaryField.text.trim().ifEmpty { "sahaa" } else cli.binaryName()
         val name = if (cliId == Id.CUSTOM_CLI) AiCli.byBinary(binary)?.displayName() ?: binary else cli.displayName()
         val configured = cliPathField.text.trim()
-        cliSummary.text = "$name  ·  checking…"
+        cliSummary.text = "checking…"
         cliSummary.foreground = UIUtil.getLabelForeground()
         return ApplicationManager.getApplication().executeOnPooledThread {
             val path = CliPathResolver.resolveOrNull(configured, binary)
@@ -507,33 +566,50 @@ class AiProviderConfigurable : SearchableConfigurable {
                 // A slower probe for the previous CLI must not replace the current selection.
                 if (generation != cliSummaryGeneration) return@invokeLater
                 if (path == null) {
-                    cliSummary.text = "$name  ·  not found. Use Choose CLI… or set the path under Advanced."
+                    cliSummary.text = "$name not found. Install it, use Browse…, or set the path under Advanced."
                     cliSummary.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
                 } else {
-                    cliSummary.text = "$name  ·  $path" + if (version.isBlank()) "" else "  ·  $version"
+                    val auth = detected[cli]?.takeIf { it.found() }?.auth().orEmpty()
+                    cliSummary.text = "$path" + (if (version.isBlank()) "" else "  ·  $version") +
+                        (if (auth.isBlank()) "" else "  ·  $auth")
                     cliSummary.foreground = UIUtil.getLabelForeground()
                 }
             }, ModalityState.any())
         }
     }
 
+    /** Lists models off the UI thread (no modal progress: see class doc) and keeps the typed model. */
     private fun refreshModels() {
+        val generation = ++modelsGeneration
+        val forCli = cliId
         val cli = cliOf(cliId, customBinaryField.text.trim())
         val binary = if (cliId == Id.CUSTOM_CLI) customBinaryField.text.trim().ifEmpty { "sahaa" } else cli.binaryName()
         val configured = cliPathField.text.trim()
         val listArgs = if (cliId == Id.CUSTOM_CLI) listModelsArgsField.text.trim() else null
-        val models = ProgressManager.getInstance().runProcessWithProgressSynchronously<List<String>, Exception>(
-            { AiCliModels.list(cli, CliPathResolver.resolveOrNull(configured, binary), listArgs) },
-            "Fetching models…", true, null)
-        val current = (cliModelCombo.editor.item as? String).orEmpty()
-        if (models.isNullOrEmpty()) {
-            modelsStatus.text = "No models reported; type a name."
-            return
+        modelsStatus.text = "loading…"
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val models = runCatching {
+                AiCliModels.list(cli, CliPathResolver.resolveOrNull(configured, binary), listArgs)
+            }.getOrDefault(emptyList())
+            ApplicationManager.getApplication().invokeLater({
+                if (generation != modelsGeneration || forCli != cliId) return@invokeLater
+                if (models.isNullOrEmpty()) {
+                    modelsStatus.text = "No models reported; type a name."
+                    return@invokeLater
+                }
+                val current = (cliModelCombo.editor.item as? String).orEmpty()
+                val wasLoading = loading
+                loading = true
+                try {
+                    cliModelCombo.model = DefaultComboBoxModel(models.toTypedArray())
+                    cliModelCombo.editor.item = current
+                    cliModelCombo.selectedItem = current
+                } finally {
+                    loading = wasLoading
+                }
+                modelsStatus.text = "${models.size} models"
+            }, ModalityState.any())
         }
-        cliModelCombo.model = DefaultComboBoxModel(models.toTypedArray())
-        cliModelCombo.editor.item = current
-        cliModelCombo.selectedItem = current
-        modelsStatus.text = "${models.size} models"
     }
 
     private fun refreshCodexStatus() {
@@ -552,6 +628,7 @@ class AiProviderConfigurable : SearchableConfigurable {
         stashCliInto(work)
         saved.codexCliPath = work.codexCliPath // the login runs the configured binary
         codexStatus.text = "opening a terminal…"
+        ownModalUntil = System.currentTimeMillis() + MODAL_GUARD_MS
         ChatGPTOAuthFlow.startSignIn { refreshCodexStatus() }
     }
 
@@ -590,55 +667,5 @@ class AiProviderConfigurable : SearchableConfigurable {
                 }
             }, ModalityState.any())
         }
-    }
-
-    /** Installed CLIs with path, version and sign-in state; "Browse…" picks an unlisted binary. */
-    private class ChooseCliDialog(private val rows: List<AiCliDetector.DetectedCli>, selectedCli: AiCli) : DialogWrapper(true) {
-        private val table = JBTable(object : DefaultTableModel(
-            rows.map { d ->
-                arrayOf<Any>(
-                    d.cli().displayName(),
-                    if (d.found()) d.path() ?: "" else "not installed",
-                    d.version(),
-                    if (d.found()) d.auth() else d.cli().installHint())
-            }.toTypedArray(),
-            arrayOf("CLI", "Path", "Version", "Sign-in")) {
-            override fun isCellEditable(row: Int, column: Int) = false
-        })
-        var browsedPath: String? = null
-            private set
-
-        init {
-            title = "Choose CLI"
-            setOKButtonText("Use Selected")
-            table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
-            table.setShowGrid(false)
-            val selectedRow = rows.indexOfFirst { it.cli() == selectedCli }
-                .takeIf { it >= 0 } ?: rows.indexOfFirst { it.found() }
-            if (selectedRow >= 0) table.setRowSelectionInterval(selectedRow, selectedRow)
-            table.selectionModel.addListSelectionListener { isOKActionEnabled = selected()?.found() == true }
-            isOKActionEnabled = selected()?.found() == true
-            init()
-        }
-
-        fun selected(): AiCliDetector.DetectedCli? = table.selectedRow.takeIf { it >= 0 }?.let { rows[it] }
-
-        override fun createCenterPanel(): JComponent = panel {
-            row {
-                cell(JBScrollPane(table).apply { preferredSize = JBUI.size(720, 240) })
-                    .align(com.intellij.ui.dsl.builder.Align.FILL)
-            }.resizableRow()
-            row { comment("Not listed? Use Browse… to pick any CLI executable.") }
-        }
-
-        override fun createLeftSideActions(): Array<Action> = arrayOf(object : AbstractAction("Browse…") {
-            override fun actionPerformed(e: ActionEvent?) {
-                val file = FileChooser.chooseFile(
-                    FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().withTitle("Select CLI Executable"),
-                    contentPanel, null, null) ?: return
-                browsedPath = file.path
-                close(OK_EXIT_CODE)
-            }
-        })
     }
 }

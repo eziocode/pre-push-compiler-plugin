@@ -19,6 +19,14 @@ public class AiCliCommandTest extends TestCase {
             AiCliCommand.claude("/bin/claude", " opus ", "--max-turns 1"));
     }
 
+    public void testClaudeCompletionSkipsToolsMcpAndSession() {
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text", "--model", "haiku",
+                "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--effort", "low"),
+            AiCliCommand.claude("/bin/claude", "haiku", "--effort low", true));
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text"),
+            AiCliCommand.claude("/bin/claude", null, null, false));
+    }
+
     public void testCodexReadsPromptFromStdinAndWritesLastMessage() {
         Path out = Path.of("/tmp/x/last.txt");
         assertEquals(List.of("/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
@@ -33,7 +41,7 @@ public class AiCliCommandTest extends TestCase {
         Path out = Path.of("/tmp/x/last.txt");
         assertEquals(List.of("/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
                 "--color", "never", "--output-last-message", "/tmp/x/last.txt",
-                "-c", "model_reasoning_effort=\"low\"", "-c", "a=b", "-"),
+                "--ephemeral", "-c", "model_reasoning_effort=\"low\"", "-c", "a=b", "-"),
             AiCliCommand.codex("/bin/codex", null, "-c a=b", out, true));
         assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false).contains("model_reasoning_effort=\"low\""));
         assertTrue(AiRequest.completion("s", "u", null, AiRequest.COMPLETION_SLOW_TIMEOUT).lowLatency());
