@@ -287,6 +287,30 @@ public final class ReviewPrompt {
         return sb.toString();
     }
 
+    /**
+     * Follow-up prompt when the previous answer was unusable: {@code previous} null means it was
+     * not the JSON shape (or its line range was outside the file); otherwise it left the file
+     * exactly as it was.
+     */
+    public static @NotNull String fixNoChangeRetryUserPrompt(@NotNull String firstUserPrompt, @Nullable Fix previous,
+                                                             int lineCount) {
+        StringBuilder sb = new StringBuilder(firstUserPrompt);
+        if (previous == null) {
+            sb.append("\nYour previous answer could not be used: it was not a single JSON object with "
+                + "\"startLine\", \"endLine\" and \"replacement\", or its lines were outside 1-")
+                .append(lineCount).append(".\n");
+        } else {
+            sb.append("\nYour previous answer replaced lines ").append(previous.startLine()).append('-')
+                .append(previous.endLine()).append(" with text identical to what is already there, so the file "
+                    + "does not change at all:\n```\n").append(previous.replacement().strip()).append("\n```\n");
+        }
+        sb.append("The finding must be fixed by editing the file. Make the change the finding and its suggested "
+            + "fix ask for (whitespace-only edits do not count). Use the line numbers shown in front of each "
+            + "line, put the new text without line numbers in \"replacement\", and answer with only the JSON "
+            + "object.\n");
+        return sb.toString();
+    }
+
     /** Follow-up prompt when a fix leaves the file with parse errors. */
     public static @NotNull String fixSyntaxRetryUserPrompt(@NotNull String firstUserPrompt, @NotNull Fix previous,
                                                            @NotNull List<String> errors) {

@@ -83,6 +83,16 @@ public final class ReviewFixer {
                 List<String> errors = List.of();
                 try {
                     fix = askForFix(system, user, original, lines);
+                    // An unparseable or no-op answer is usually a one-off: ask again with what was wrong.
+                    for (int attempt = 0; attempt < MAX_NO_CHANGE_RETRIES && !changes(original, fix); attempt++) {
+                        indicator.checkCanceled();
+                        indicator.setText(fix == null
+                            ? "AI answer was not usable, asking again…"
+                            : "AI fix did not change the file, asking again…");
+                        ReviewPrompt.Fix retry = askForFix(system,
+                            ReviewPrompt.fixNoChangeRetryUserPrompt(user, fix, lines), original, lines);
+                        if (retry != null || fix == null) fix = retry;
+                    }
                     if (fix != null) dropped = ReviewPrompt.droppedLines(original, fix);
                     if (!dropped.isEmpty()) {
                         // The AI replaced more than it rewrote. Ask once more, showing what went missing.
@@ -90,7 +100,7 @@ public final class ReviewFixer {
                         indicator.setText("AI fix removed existing lines, asking again…");
                         ReviewPrompt.Fix retry = askForFix(system,
                             ReviewPrompt.fixRetryUserPrompt(user, fix, dropped), original, lines);
-                        if (retry != null) {
+                        if (changes(original, retry)) {
                             List<String> retryDropped = ReviewPrompt.droppedLines(original, retry);
                             if (retryDropped.size() <= dropped.size()) {
                                 fix = retry;
@@ -107,7 +117,7 @@ public final class ReviewFixer {
                             indicator.setText("AI fix does not parse, asking again…");
                             ReviewPrompt.Fix retry = askForFix(system,
                                 ReviewPrompt.fixSyntaxRetryUserPrompt(user, fix, errors), original, lines);
-                            if (retry != null) {
+                            if (changes(original, retry)) {
                                 List<String> retryErrors = newErrors(
                                     syntaxErrors(project, vf, ReviewPrompt.apply(original, retry)), baseline);
                                 List<String> retryDropped = ReviewPrompt.droppedLines(original, retry);
@@ -152,6 +162,14 @@ public final class ReviewFixer {
         String raw = CommitMessageGeneratorService.resolveProvider().generate(AiRequest.fix(system, user));
         ReviewPrompt.Fix fix = ReviewPrompt.parseFix(AiOutputSanitizer.cleanStructured(raw, "replacement"), lines);
         return fix == null ? null : ReviewPrompt.normalize(original, fix);
+    }
+
+    /** Extra attempts when the AI answer is unusable or leaves the file unchanged. */
+    static final int MAX_NO_CHANGE_RETRIES = 2;
+
+    /** {@code true} when {@code fix} is usable and actually edits {@code original}. */
+    static boolean changes(@NotNull String original, @Nullable ReviewPrompt.Fix fix) {
+        return fix != null && !ReviewPrompt.apply(original, fix).equals(original);
     }
 
     private static final int MAX_REPORTED_ERRORS = 8;

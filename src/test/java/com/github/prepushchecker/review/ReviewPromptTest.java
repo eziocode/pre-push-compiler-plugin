@@ -292,4 +292,21 @@ public class ReviewPromptTest extends TestCase {
         assertTrue(retry.contains("replaced lines 2-6"));
         assertTrue(retry.contains("addRowToReport(desc, null, \"\");"));
     }
+
+    public void testNoChangeRetryPromptExplainsWhatWasWrong() {
+        String noOp = ReviewPrompt.fixNoChangeRetryUserPrompt("USER", new ReviewPrompt.Fix(3, 4, "same"), 10);
+        assertTrue(noOp.startsWith("USER"));
+        assertTrue(noOp.contains("replaced lines 3-4"));
+        assertTrue(noOp.contains("does not change at all"));
+        String unusable = ReviewPrompt.fixNoChangeRetryUserPrompt("USER", null, 10);
+        assertTrue(unusable.contains("outside 1-10"));
+    }
+
+    public void testChangesDetectsNoOpFix() {
+        String content = "a\n    b\nc\n";
+        assertFalse(ReviewFixer.changes(content, null));
+        assertFalse(ReviewFixer.changes(content, new ReviewPrompt.Fix(2, 2, "    b")));
+        assertFalse(ReviewFixer.changes(content, ReviewPrompt.normalize(content, new ReviewPrompt.Fix(2, 2, "b  "))));
+        assertTrue(ReviewFixer.changes(content, new ReviewPrompt.Fix(2, 2, "    x")));
+    }
 }
