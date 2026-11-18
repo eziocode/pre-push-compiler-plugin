@@ -454,7 +454,8 @@ public final class ReviewService {
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
         if (decision.action() == ReviewGate.Action.REVIEW_NOW) {
             int threshold = ReviewSettings.confirmFileThreshold(project);
-            boolean mergeUnsure = merge && !mergeNarrowed;
+            // Merge question only when the user chose to ignore merges but the merged-in code could not be told apart.
+            boolean mergeUnsure = merge && ReviewSettings.isIgnoreMergeChanges(project) && !mergeNarrowed;
             if ((threshold > 0 && decision.toReview().size() > threshold) || mergeUnsure) {
                 LargePushPrompt.Answer answer = prompt.ask(project, decision.toReview(), mergeUnsure,
                     ReviewSettings.confirmTimeoutSeconds(project));
