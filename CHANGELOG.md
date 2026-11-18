@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.2.3] - 2026-11-18
+
+### Fixed
+- Choosing **Uninstall** now cleans tracked repositories even when IntelliJ requires a restart. Pending hook repairs and settings writes can no longer recreate the files after cleanup.
+- Declared the bundled Version Control plugin dependency for IntelliJ IDEA 2026.3 so repository monitoring and commit actions can resolve the VCS APIs.
+- If the installation is removed outside IntelliJ, the next push cleans the updated hook and repository cache. A missing helper no longer blocks a push, and repository-owned hooks and exclude backups are preserved.
+
 ## [3.2.2] - 2026-11-18
 
 ### Fixed

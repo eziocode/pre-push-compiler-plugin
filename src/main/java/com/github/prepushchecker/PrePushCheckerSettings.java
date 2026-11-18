@@ -170,7 +170,6 @@ public final class PrePushCheckerSettings {
         if (repositoryRoot.isBlank()) return;
         Path settingsFile = Path.of(repositoryRoot, ".idea/pre-push-checker/settings");
         try {
-            Files.createDirectories(settingsFile.getParent());
             boolean disableFallback = isBuildToolFallbackDisabled(project);
             StringBuilder content = new StringBuilder();
             content.append("disableBuildToolFallback=").append(disableFallback).append('\n');
@@ -193,7 +192,8 @@ public final class PrePushCheckerSettings {
                     && text.equals(Files.readString(settingsFile, StandardCharsets.UTF_8))) {
                 return; // unchanged: no write, no VFS event
             }
-            Files.writeString(settingsFile, text, StandardCharsets.UTF_8);
+            GitHookInstaller.writeRepositoryCache(repositoryRoot, settingsFile.getParent(),
+                () -> Files.writeString(settingsFile, text, StandardCharsets.UTF_8));
         } catch (IOException ignored) {
             // Non-fatal; hook falls back to default (fallback enabled).
         }
@@ -209,9 +209,8 @@ public final class PrePushCheckerSettings {
         for (String root : bypassRoots(project)) {
             Path tokenFile = Path.of(root, ".idea/pre-push-checker", BYPASS_TOKEN_NAME);
             try {
-                Files.createDirectories(tokenFile.getParent());
-                Files.writeString(tokenFile, String.valueOf(activatedAtMillis) + '\n',
-                    StandardCharsets.UTF_8);
+                GitHookInstaller.writeRepositoryCache(root, tokenFile.getParent(),
+                    () -> Files.writeString(tokenFile, activatedAtMillis + "\n", StandardCharsets.UTF_8));
             } catch (IOException ignored) {}
         }
     }

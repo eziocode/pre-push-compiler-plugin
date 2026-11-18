@@ -100,7 +100,7 @@ public final class RepositoryStateMonitor {
     private void refresh(@NotNull String root) {
         pending.remove(root);
         try {
-            if (project.isDisposed()) return;
+            if (project.isDisposed() || GitHookInstaller.isRemovalStarted()) return;
             PrePushLocalServer server = project.getService(PrePushLocalServer.class);
             if (server != null) server.publishPortFile(root);
             // Push, commit, reset or checkout: drop review results with nothing left to push.
@@ -112,7 +112,7 @@ public final class RepositoryStateMonitor {
             if (last != null && now - last < REPAIR_INTERVAL_MILLIS) return;
             lastRepairAt.put(root, now);
             GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(root);
-            if (!result.isSuccess()) {
+            if (!result.isSuccess() && !GitHookInstaller.isRemovalStarted()) {
                 HookNotifier.showNotInstalled(project, List.of(result));
             }
         } catch (Throwable failure) {

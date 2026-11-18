@@ -1,12 +1,20 @@
 package com.github.prepushchecker;
 
+import com.intellij.ide.AppLifecycleListener;
 import com.intellij.ide.plugins.DynamicPluginListener;
 import com.intellij.ide.plugins.IdeaPluginDescriptor;
+import com.intellij.ide.plugins.PluginStateListener;
+import com.intellij.ide.plugins.PluginStateManager;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.project.ProjectManager;
+import git4idea.repo.GitRepositoryManager;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.Set;
 
 /**
  * Cleans up plugin-owned files (managed hooks, <code>.idea/pre-push-checker/</code> cache,
@@ -15,10 +23,40 @@ import org.jetbrains.annotations.NotNull;
  * <p>Ignores unload events that are part of an update — those are followed by an immediate
  * re-install which would have to re-create everything anyway.
  */
-public final class PluginLifecycleListener implements DynamicPluginListener {
+public final class PluginLifecycleListener implements DynamicPluginListener, AppLifecycleListener {
 
     private static final Logger LOG = Logger.getInstance(PluginLifecycleListener.class);
     private static final String OUR_PLUGIN_ID = "com.github.prepushchecker";
+
+    // Plugin Settings also sends this event for a removal queued for the next restart.
+    @Service
+    public static final class UninstallWatcher implements PluginStateListener, Disposable {
+        public UninstallWatcher() {
+            PluginStateManager.addStateListener(this);
+        }
+
+        @Override
+        public void uninstall(@NotNull IdeaPluginDescriptor descriptor) {
+            if (isOurPlugin(descriptor)) cleanRepositories();
+        }
+
+        @Override
+        public void install(@NotNull IdeaPluginDescriptor descriptor) {}
+
+        @Override
+        public void dispose() {
+            PluginStateManager.removeStateListener(this);
+        }
+    }
+
+    static void watchForUninstall() {
+        ApplicationManager.getApplication().getService(UninstallWatcher.class);
+    }
+
+    @Override
+    public void welcomeScreenDisplayed() {
+        watchForUninstall();
+    }
 
     @Override
     public void pluginLoaded(@NotNull IdeaPluginDescriptor descriptor) {
@@ -27,6 +65,7 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
         // Newer IDEs replay ProjectActivities on dynamic load, older ones not reliably. Install
         // here as well so the hook is in place right away; GitHookInstaller serialises repairs
         // per root, so overlapping with a replayed activity is harmless.
+        watchForUninstall();
         GitHookInstaller.touchGlobalMarker();
         ApplicationManager.getApplication().executeOnPooledThread(this::installHooksForOpenProjects);
     }
@@ -36,20 +75,26 @@ public final class PluginLifecycleListener implements DynamicPluginListener {
         if (isUpdate) return;
         if (!isOurPlugin(descriptor)) return;
 
-        // Remove the global marker and proactively clean previously managed repos,
-        // including those that are not currently open in this IDE session.
-        GitHookInstaller.removeGlobalMarker();
-        GitHookInstaller.uninstallTrackedRepos();
+        cleanRepositories();
+    }
 
+    private static void cleanRepositories() {
+        GitHookInstaller.beginRemoval();
+        Set<String> roots = GitHookInstaller.snapshotTrackedRepos();
         for (Project project : ProjectManager.getInstance().getOpenProjects()) {
             if (project.isDisposed()) continue;
             String basePath = project.getBasePath();
-            if (basePath != null) {
-                try {
-                    GitHookInstaller.uninstall(basePath);
-                } catch (Throwable t) {
-                    LOG.warn("Cleanup failed for project " + project.getName(), t);
-                }
+            if (basePath != null) roots.add(basePath);
+            var repositories = project.getServiceIfCreated(GitRepositoryManager.class);
+            if (repositories != null) {
+                repositories.getRepositories().forEach(repo -> roots.add(repo.getRoot().getPath()));
+            }
+        }
+        for (String root : roots) {
+            try {
+                GitHookInstaller.uninstall(root);
+            } catch (RuntimeException failure) {
+                LOG.warn("Could not clean pre-push files in " + root, failure);
             }
         }
     }

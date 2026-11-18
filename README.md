@@ -196,7 +196,7 @@ If another plugin or a manual edit overwrites the hook, the plugin rechecks it o
 
 ### Disable / Uninstall Cleanup
 
-When the plugin is disabled or uninstalled, it removes plugin-owned leftovers from tracked repositories:
+When you choose **Uninstall** in IntelliJ, the plugin cleans the repositories it has tracked, including closed projects, even if IntelliJ schedules removal for the next restart. Disabling the plugin also triggers cleanup when IntelliJ unloads it.
 
 - The managed `pre-push-prepushchecker` hook and plugin-managed wrapper/snippet
 - `.idea/pre-push-checker/` cache and hook settings files
@@ -204,6 +204,12 @@ When the plugin is disabled or uninstalled, it removes plugin-owned leftovers fr
 - Stale plugin-managed hooks in legacy `.git/hooks` when the repo uses `core.hooksPath`
 
 User-authored hook logic and the repository's `core.hooksPath` setting are preserved.
+
+If the plugin files are removed outside IntelliJ, an updated hook detects the missing installation on the next push and cleans that repository before compilation or review runs.
+
+**Already blocked after removing an older version?** Install version 3.2.3 or later, open the affected repository once, then choose **Uninstall** in IntelliJ. This upgrades the old hook and removes the plugin's entries while keeping any other pre-push checks.
+
+For immediate recovery without reinstalling, run `git rev-parse --git-path hooks/pre-push` from the affected repository. In that file, remove the block from `# BEGIN pre-push-compilation-checker-plugin` through its matching `# END` marker. Older versions used `# pre-push-compilation-checker-plugin` followed by the `SCRIPT_DIR` assignment and the call to `pre-push-prepushchecker`. Remove those three lines if present. If the hook contained only the plugin wrapper, delete it. Then delete `pre-push-prepushchecker` from the same directory and retry the push normally.
 
 ---
 

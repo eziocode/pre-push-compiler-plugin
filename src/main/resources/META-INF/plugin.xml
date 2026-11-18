@@ -418,8 +418,11 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lang</depends>
+    <depends>com.intellij.modules.vcs</depends>
     <depends>com.intellij.java</depends>
     <depends>Git4Idea</depends>
+    <!-- Newer IDEs package the VCS APIs in a separate bundled plugin. -->
+    <depends optional="true" config-file="prepush-vcs.xml">com.intellij.platform.vcs</depends>
 
     <!-- Optional soft dependency: JetBrains AI Assistant plugin -->
     <depends optional="true" config-file="commitgen-intellij-ai.xml">com.intellij.ml.llm</depends>
@@ -532,6 +535,8 @@
     </actions>
 
     <applicationListeners>
+        <listener class="com.github.prepushchecker.PluginLifecycleListener"
+                  topic="com.intellij.ide.AppLifecycleListener"/>
         <listener class="com.github.prepushchecker.PluginLifecycleListener"
                   topic="com.intellij.ide.plugins.DynamicPluginListener"/>
     </applicationListeners>

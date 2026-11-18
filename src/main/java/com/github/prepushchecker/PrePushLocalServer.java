@@ -204,9 +204,10 @@ public final class PrePushLocalServer implements Disposable {
         if (repositoryRoot.isBlank() || activeServer == null || activeServer.isClosed()) return;
         Path descriptor = Path.of(repositoryRoot, PORT_FILE_RELATIVE);
         try {
-            Files.createDirectories(descriptor.getParent());
-            writePortFileAtomically(descriptor, activeServer.getLocalPort());
-            portFiles.add(descriptor);
+            GitHookInstaller.writeRepositoryCache(repositoryRoot, descriptor.getParent(), () -> {
+                writePortFileAtomically(descriptor, activeServer.getLocalPort());
+                portFiles.add(descriptor);
+            });
         } catch (IOException failure) {
             LOG.warn("Could not publish IDE compiler port for " + repositoryRoot, failure);
         }

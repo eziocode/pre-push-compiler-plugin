@@ -81,17 +81,6 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertFalse(script.contains("git clean -fd"));
     }
 
-    public void testManagedHookContainsSelfCleanup() {
-        String script = GitHookInstaller.buildManagedHookScript();
-
-        assertTrue("Hook should check global marker",
-            script.contains(".prepush-checker/installed"));
-        assertTrue("Hook should self-remove managed hook on uninstall",
-            script.contains("Plugin uninstalled. Cleaned up hooks and cache."));
-        assertTrue("Hook should resolve hooks dir via git",
-            script.contains("git rev-parse --git-path hooks"));
-    }
-
     public void testManagedHookScriptHasValidShellSyntax() throws Exception {
         Path script = Files.createTempFile("prepushchecker-managed-hook-", ".sh");
         script.toFile().deleteOnExit();
@@ -118,9 +107,11 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
                 + "echo foreign-before\n"
                 + GitHookInstaller.HOOK_BLOCK_BEGIN + "\n"
                 + "echo modified-owned-content\n"
+                + "\"$(dirname \"$0\")/" + GitHookInstaller.MANAGED_HOOK_NAME + "\" \"$@\" || exit $?\n"
                 + GitHookInstaller.HOOK_BLOCK_END + "\n"
-                + "echo foreign-after\n",
+                + "echo foreign-after\nexit 37\n",
             StandardCharsets.UTF_8);
+        assertTrue(mainHook.toFile().setExecutable(true));
 
         Path managedHook = hooksDir.resolve(GitHookInstaller.MANAGED_HOOK_NAME);
         Files.writeString(managedHook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
@@ -134,7 +125,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         Files.writeString(fakePgrep, "#!/usr/bin/env sh\nexit 1\n", StandardCharsets.UTF_8);
         assertTrue(fakePgrep.toFile().setExecutable(true, false));
 
-        ProcessBuilder processBuilder = new ProcessBuilder(managedHook.toString())
+        ProcessBuilder processBuilder = new ProcessBuilder(mainHook.toString())
             .directory(repo)
             .redirectErrorStream(true);
         processBuilder.environment().put("HOME", fakeHome.toString());
@@ -144,7 +135,8 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         process.getOutputStream().close();
         assertTrue(process.waitFor(10, TimeUnit.SECONDS));
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(output, 0, process.exitValue());
+        assertEquals(output, 37, process.exitValue());
+        assertTrue(output.contains("foreign-after"));
 
         assertFalse(Files.exists(managedHook));
         assertTrue(Files.exists(mainHook));
@@ -185,6 +177,33 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(snippet.contains(GitHookInstaller.HOOK_BLOCK_BEGIN));
         assertTrue(snippet.contains(GitHookInstaller.HOOK_BLOCK_END));
         assertEquals(1, GitHookInstaller.countMarkerOccurrences(snippet));
+    }
+
+    public void testPushWithMissingHelperStillRunsRepositoryHook() throws Exception {
+        File repo = createTempDir("prepushchecker-partial-uninstall");
+        runGit(repo, "init");
+        File remote = createTempDir("prepushchecker-remote");
+        runGit(remote, "init", "--bare");
+        runGit(repo, "-c", "user.name=Tester", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-m", "first");
+        Path hook = repo.toPath().resolve(".git/hooks/pre-push");
+        Files.writeString(hook, GitHookInstaller.buildWrapperHookScript());
+        assertTrue(hook.toFile().setExecutable(true));
+        runGit(repo, "push", remote.getAbsolutePath(), "HEAD:refs/heads/wrapper");
+
+        Files.writeString(hook, "#!/bin/sh\n" + GitHookInstaller.buildDelegatingSnippet()
+            + "cat > push-input\nexit 1\n");
+        Process process = new ProcessBuilder("git", "push", remote.getAbsolutePath(), "HEAD:refs/heads/shared")
+            .directory(repo).redirectErrorStream(true).start();
+        assertTrue(process.waitFor(10, TimeUnit.SECONDS));
+        assertTrue("repository hook should reject the push", process.exitValue() != 0);
+        assertTrue(Files.readString(repo.toPath().resolve("push-input")).contains("refs/heads/shared"));
+
+        Files.writeString(hook, "#!/bin/sh\nfalse\n" + GitHookInstaller.buildDelegatingSnippet());
+        Process implicitFailure = new ProcessBuilder("git", "push", remote.getAbsolutePath(), "HEAD:refs/heads/shared")
+            .directory(repo).redirectErrorStream(true).start();
+        assertTrue(implicitFailure.waitFor(10, TimeUnit.SECONDS));
+        assertTrue("the user's final command can also reject a push", implicitFailure.exitValue() != 0);
     }
 
     public void testStripManagedHookSectionsPreservesForeignContentAroundModifiedOwnedBlock() {
@@ -597,6 +616,62 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
                 + "\nOutput:\n" + output,
             run.exitValue() != 0);
         assertTrue(output.contains("Compilation failed"));
+    }
+
+    public void testHookSelfRemovesWhenPluginDirGoneEvenIfIdeRunning() throws Exception {
+        File repo = createTempDir("prepushchecker-uninstalled-restart");
+        runGit(repo, "init");
+        Path repoPath = repo.toPath();
+        Files.writeString(repoPath.resolve("Example.java"), "class Example {}\n");
+        runGit(repo, "add", "Example.java");
+        runGit(repo, "-c", "user.name=Tester", "-c", "user.email=test@example.com", "commit", "-m", "source");
+        File remote = createTempDir("prepushchecker-uninstalled-remote");
+        runGit(remote, "init", "--bare");
+        runGit(repo, "config", "core.hooksPath", "custom hooks");
+        Path hooks = Files.createDirectories(repoPath.resolve("custom hooks"));
+        Path hook = hooks.resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        Files.writeString(hook, GitHookInstaller.buildManagedHookScript(), StandardCharsets.UTF_8);
+        assertTrue(hook.toFile().setExecutable(true, false));
+        Path wrapper = hooks.resolve("pre-push");
+        Files.writeString(wrapper, GitHookInstaller.buildWrapperHookScript(), StandardCharsets.UTF_8);
+        assertTrue(wrapper.toFile().setExecutable(true));
+        Path exclude = repoPath.resolve(".git/info/exclude");
+        Files.writeString(exclude, "*.mine\n" + GitHookInstaller.HOOK_BLOCK_BEGIN
+            + "\n/.idea/pre-push-checker/\n" + GitHookInstaller.HOOK_BLOCK_END + "\n*.other\n");
+        Path backup = exclude.resolveSibling("exclude.bak");
+        Files.writeString(backup, "my backup\n");
+        Path cache = Files.createDirectories(repoPath.resolve(".idea/pre-push-checker"));
+        Files.writeString(cache.resolve("settings"), "reviewMandatory=true\n");
+
+        Path fakeHome = repoPath.resolve("fake-home");
+        Files.createDirectories(fakeHome.resolve(".prepush-checker"));
+        // Marker survives (restart-required uninstall) but the plugin dir (line 3) is gone.
+        Path marker = fakeHome.resolve(".prepush-checker/installed");
+        Files.writeString(marker, "1\n/cfg\n" + repoPath.resolve("no-such-plugin-dir") + "\n");
+        Path repos = marker.resolveSibling("repos.txt");
+        Files.writeString(repos, repoPath + "\n/other/repository\n");
+        Path fakeBin = repoPath.resolve("fake-bin");
+        Files.createDirectories(fakeBin);
+        Path fakePgrep = fakeBin.resolve("pgrep");
+        Files.writeString(fakePgrep, "#!/usr/bin/env sh\nexit 0\n", StandardCharsets.UTF_8);
+        assertTrue(fakePgrep.toFile().setExecutable(true, false));
+
+        ProcessBuilder pb = new ProcessBuilder("git", "push", remote.getAbsolutePath(), "HEAD:refs/heads/main")
+            .directory(repo).redirectErrorStream(true);
+        pb.environment().put("HOME", fakeHome.toString());
+        pb.environment().put("PATH", fakeBin + File.pathSeparator + System.getenv().getOrDefault("PATH", "/usr/bin:/bin"));
+        Process run = pb.start();
+        run.getOutputStream().close();
+        assertTrue(run.waitFor(20, TimeUnit.SECONDS));
+        assertEquals(new String(run.getInputStream().readAllBytes(), StandardCharsets.UTF_8), 0, run.exitValue());
+        assertEquals(runGitOutput(repo, "rev-parse", "HEAD"), runGitOutput(remote, "rev-parse", "refs/heads/main"));
+        assertFalse("managed hook must be removed", Files.exists(hook));
+        assertFalse("wrapper must be removed", Files.exists(wrapper));
+        assertFalse(Files.exists(cache));
+        assertFalse(Files.exists(marker));
+        assertEquals("/other/repository\n", Files.readString(repos));
+        assertEquals("*.mine\n*.other\n", Files.readString(exclude));
+        assertEquals("my backup\n", Files.readString(backup));
     }
 
     public void testConcurrentFallbackHooksShareOneBuildResult() throws Exception {

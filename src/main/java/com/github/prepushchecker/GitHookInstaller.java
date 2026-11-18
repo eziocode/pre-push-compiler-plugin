@@ -1,6 +1,7 @@
 package com.github.prepushchecker;
 
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.PathManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
@@ -31,11 +32,19 @@ public final class GitHookInstaller {
     static final String HOOK_BLOCK_BEGIN = "# BEGIN " + HOOK_MARKER;
     static final String HOOK_BLOCK_END = "# END " + HOOK_MARKER;
     static final String MANAGED_HOOK_NAME = "pre-push-prepushchecker";
+    private static final String SAVE_STATUS = "_prepushchecker_previous_status=$?";
+    private static final String RESTORE_STATUS = "(exit \"$_prepushchecker_previous_status\")";
+    private static final String SCRIPT_DIR_LINE = "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"";
+    private static final String HELPER_PATH = "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\"";
+    private static final String CALL_HELPER = HELPER_PATH + " \"$@\"";
+    private static final String GUARDED_CALL = "if [ -f " + HELPER_PATH + " ]; then " + CALL_HELPER + " || exit $?; fi";
+    private static final String UNINSTALL_CHECK = loadUninstallCheck();
     static final String EXTERNAL_LOG_RELATIVE_PATH = ".idea/pre-push-checker/last-run.log";
     private static final Path GLOBAL_STATE_DIR = Path.of(System.getProperty("user.home"), ".prepush-checker");
     private static final Path GLOBAL_INSTALL_MARKER = GLOBAL_STATE_DIR.resolve("installed");
     private static final Path GLOBAL_TRACKED_REPOS = GLOBAL_STATE_DIR.resolve("repos.txt");
     private static final Object GLOBAL_REPO_LOCK = new Object();
+    private static volatile boolean removalStarted;
     // Startup, dynamic-load and repository-change events can all repair the same root at once.
     private static final ConcurrentHashMap<String, Object> ROOT_LOCKS = new ConcurrentHashMap<>();
     private static final Set<PosixFilePermission> HOOK_PERMISSIONS = EnumSet.of(
@@ -211,7 +220,6 @@ public final class GitHookInstaller {
      * (required for IntelliJ 2026.1+) can call it directly.
      */
     public static void runStartup(@NotNull Project project) {
-        touchGlobalMarker();
         // The bypass switch always starts off; drop any token left by a previous session.
         BypassController.getInstance(project).resetOnStartup();
         // Git repositories are usually not registered yet this early, so this pass is
@@ -227,7 +235,8 @@ public final class GitHookInstaller {
      *               "Install Pre-Push Hook" notification, and a healthy result clears it
      */
     static List<HookRepairResult> installForProject(@NotNull Project project, boolean notify) {
-        if (project.isDisposed()) return List.of();
+        if (project.isDisposed() || removalStarted) return List.of();
+        PluginLifecycleListener.watchForUninstall();
         touchGlobalMarker();
 
         LinkedHashSet<String> roots = new LinkedHashSet<>();
@@ -255,7 +264,7 @@ public final class GitHookInstaller {
             }
         }
 
-        if (notify) {
+        if (notify && !removalStarted) {
             if (!failures.isEmpty()) {
                 HookNotifier.showNotInstalled(project, failures);
             } else if (!results.isEmpty()) {
@@ -371,9 +380,13 @@ public final class GitHookInstaller {
         if (before.hooksDirectory() == null) {
             return new HookRepairResult(false, before, before, before.statusText());
         }
+        synchronized (GLOBAL_REPO_LOCK) {
+            if (removalStarted) return new HookRepairResult(false, before, before, "plugin removal in progress");
+            // Register before the first mutation so uninstall also waits for an in-flight repair.
+            trackRepo(basePath);
+        }
         if (before.isHealthy()) {
             // Runs on every repository change; avoid rewriting healthy hooks.
-            trackRepo(basePath);
             return new HookRepairResult(true, before, before, null);
         }
 
@@ -400,7 +413,6 @@ public final class GitHookInstaller {
 
             addToRepoLocalExclude(basePath, hooksDirectory);
             cleanupLegacyManagedHooks(before);
-            trackRepo(basePath);
 
             HookInspectionResult after = inspect(basePath);
             return new HookRepairResult(after.isHealthy(), before, after, null);
@@ -417,12 +429,13 @@ public final class GitHookInstaller {
      */
     private static void writeAtomically(@NotNull Path target, @NotNull String content) throws IOException {
         if (Files.isSymbolicLink(target)) {
-            // Keep a user's symlinked hook intact; a rename would replace the link itself.
-            Files.writeString(target, content, StandardCharsets.UTF_8);
-            return;
+            target = target.toRealPath();
         }
         Path temp = Files.createTempFile(target.getParent(), "." + target.getFileName() + ".", ".tmp");
         try {
+            if (Files.isRegularFile(target)) {
+                Files.copy(target, temp, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.COPY_ATTRIBUTES);
+            }
             Files.writeString(temp, content, StandardCharsets.UTF_8);
             try {
                 Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -465,7 +478,7 @@ public final class GitHookInstaller {
     }
 
     /**
-     * Reverse of {@link #runActivity} and {@link #addToRepoLocalExclude}. Invoked when the
+     * Reverse of {@link #runStartup} and {@link #addToRepoLocalExclude}. Invoked when the
      * plugin is being uninstalled or disabled so the repo is left in a clean state:
      * <ul>
      *   <li>Removes the managed hook script ({@value #MANAGED_HOOK_NAME}).</li>
@@ -485,17 +498,15 @@ public final class GitHookInstaller {
 
     private static void uninstallLocked(@NotNull String basePath) {
         HookPaths paths = resolveHookPaths(basePath);
-        if (paths.hooksDirectory != null) {
-            removeManagedHookArtifacts(paths.hooksDirectory);
-        }
+        boolean cleaned = paths.hooksDirectory == null || removeManagedHookArtifacts(paths.hooksDirectory);
         if (paths.legacyHooksDirectory != null
             && (paths.hooksDirectory == null || !samePath(paths.hooksDirectory, paths.legacyHooksDirectory))) {
-            removeManagedHookArtifacts(paths.legacyHooksDirectory);
+            cleaned &= removeManagedHookArtifacts(paths.legacyHooksDirectory);
         }
 
         // Remove plugin cache + log dir.
         Path cacheDir = Path.of(basePath, ".idea", "pre-push-checker");
-        deleteRecursively(cacheDir);
+        cleaned &= deleteRecursively(cacheDir);
 
         // Strip the .git/info/exclude block.
         Path gitDir = resolveGitCommonDir(basePath);
@@ -506,28 +517,16 @@ public final class GitHookInstaller {
                     String existing = Files.readString(excludeFile, StandardCharsets.UTF_8);
                     String stripped = stripExistingBlock(existing);
                     if (!stripped.equals(existing)) {
-                        Files.writeString(excludeFile, stripped, StandardCharsets.UTF_8);
+                        writeAtomically(excludeFile, stripped);
                     }
-                } catch (IOException ignored) {}
+                } catch (IOException failure) {
+                    cleaned = false;
+                    LOG.warn("Could not clean " + excludeFile, failure);
+                }
             }
         }
 
-        untrackRepo(basePath);
-        LOG.info("Pre-Push Compilation Checker: cleaned hooks and cache under " + basePath);
-    }
-
-    /**
-     * Best-effort cleanup for repos that were managed by this plugin but are not currently open.
-     * Called on uninstall/disable so stale hook files do not survive until the next manual push.
-     */
-    static void uninstallTrackedRepos() {
-        for (String repoPath : snapshotTrackedRepos()) {
-            try {
-                uninstall(repoPath);
-            } catch (Throwable t) {
-                LOG.warn("Cleanup failed for tracked repo " + repoPath, t);
-            }
-        }
+        if (cleaned) untrackRepo(basePath);
     }
 
     /**
@@ -540,65 +539,60 @@ public final class GitHookInstaller {
      * another tool's hook logic.
      */
     static String stripManagedHookSections(String content) {
-        StringBuilder out = new StringBuilder(content.length());
-        String[] lines = normalizeLineEndings(content).split("\n", -1);
-        for (int i = 0; i < lines.length; i++) {
-            String line = lines[i];
+        return stripManagedSections(content, false);
+    }
 
-            if (line.trim().equals(HOOK_BLOCK_BEGIN)) {
-                int end = findBlockEnd(lines, i + 1);
-                if (end >= 0) {
+    private static String stripManagedSections(String content, boolean exclude) {
+        if (!content.contains(HOOK_MARKER)) return content;
+        String[] lines = content.split("(?<=\\n)|(?<=\\r)(?!\\n)");
+        StringBuilder out = new StringBuilder(content.length());
+        for (int i = 0; i < lines.length; i++) {
+            String line = lines[i].trim();
+            if (line.equals(HOOK_BLOCK_BEGIN)) {
+                int end = i + 1;
+                while (end < lines.length && !lines[end].trim().equals(HOOK_BLOCK_BEGIN)
+                        && !lines[end].trim().equals(HOOK_BLOCK_END)) end++;
+                if (end < lines.length && lines[end].trim().equals(HOOK_BLOCK_END)) {
                     i = end;
                     continue;
                 }
-                // Damaged/unclosed block: preserve it and everything after it verbatim.
-                appendRemainingLines(out, lines, i);
-                return out.toString();
-            }
-
-            if (line.trim().equals(HOOK_BLOCK_END)) {
-                // Stray owned END marker is safe to remove without touching nearby content.
+                // An unmatched BEGIN cannot claim arbitrary subsequent user code.
+                if (!exclude && i + 4 < lines.length && SAVE_STATUS.equals(lines[i + 1].trim())
+                        && isOwnedScriptDirectoryLine(lines[i + 2]) && GUARDED_CALL.equals(lines[i + 3].trim())
+                        && RESTORE_STATUS.equals(lines[i + 4].trim())) {
+                    i += 4;
+                    continue;
+                }
+                if (exclude || i + 2 >= lines.length || !isOwnedScriptDirectoryLine(lines[i + 1])
+                        || !isOwnedManagedHookInvocation(lines[i + 2])) {
+                    out.append(lines[i]);
+                    continue;
+                }
+            } else if (line.equals(HOOK_BLOCK_END)) {
+                continue;
+            } else if (!line.equals("# " + HOOK_MARKER)) {
+                out.append(lines[i]);
                 continue;
             }
 
-            if (line.trim().equals("# " + HOOK_MARKER)) {
-                // Legacy format had no END marker. Remove only the exact known lines that
-                // immediately followed its marker; never consume arbitrary neighboring logic.
-                int next = i + 1;
-                if (next < lines.length && isOwnedScriptDirectoryLine(lines[next])) next++;
-                if (next < lines.length && isOwnedManagedHookInvocation(lines[next])) next++;
-                i = next - 1;
-                continue;
+            if (exclude) {
+                if (i + 1 < lines.length && lines[i + 1].trim().equals("/.idea/pre-push-checker/")) i++;
+            } else {
+                if (i + 1 < lines.length && isOwnedScriptDirectoryLine(lines[i + 1])) i++;
+                if (i + 1 < lines.length && isOwnedManagedHookInvocation(lines[i + 1])) i++;
             }
-
-            out.append(line);
-            if (i < lines.length - 1) out.append('\n');
         }
         return out.toString();
     }
 
-    private static int findBlockEnd(String[] lines, int fromIndex) {
-        for (int i = fromIndex; i < lines.length; i++) {
-            if (lines[i].trim().equals(HOOK_BLOCK_END)) return i;
-        }
-        return -1;
-    }
-
-    private static void appendRemainingLines(StringBuilder out, String[] lines, int fromIndex) {
-        for (int i = fromIndex; i < lines.length; i++) {
-            out.append(lines[i]);
-            if (i < lines.length - 1) out.append('\n');
-        }
-    }
-
     private static boolean isOwnedScriptDirectoryLine(String line) {
-        return line.trim().equals("SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"");
+        return line.trim().equals(SCRIPT_DIR_LINE);
     }
 
     private static boolean isOwnedManagedHookInvocation(String line) {
         String trimmed = line.trim();
-        return trimmed.equals("\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\"")
-            || trimmed.equals("\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\" || exit $?");
+        return trimmed.equals(CALL_HELPER) || trimmed.equals(CALL_HELPER + " || exit $?")
+            || trimmed.equals(GUARDED_CALL);
     }
 
     private static String buildRepairedMainHookContent(String existingContent) {
@@ -606,12 +600,12 @@ public final class GitHookInstaller {
             return buildWrapperHookScript();
         }
 
-        String cleaned = stripManagedHookSections(existingContent)
-            .replaceAll("\\n{3,}", "\n\n");
+        String cleaned = stripManagedHookSections(existingContent);
         if (!hasSubstantiveHookContent(cleaned)) {
             return buildWrapperHookScript();
         }
-        return stripTrailingLineBreaks(cleaned) + buildDelegatingSnippet();
+        String snippet = buildDelegatingSnippet();
+        return cleaned.endsWith("\n") ? cleaned + snippet.substring(1) : cleaned + snippet;
     }
 
     private static void cleanupLegacyManagedHooks(HookInspectionResult before) {
@@ -624,33 +618,26 @@ public final class GitHookInstaller {
         removeManagedHookArtifacts(before.legacyHooksDirectory());
     }
 
-    private static void removeManagedHookArtifacts(Path hooksDirectory) {
-        Path managedHook = hooksDirectory.resolve(MANAGED_HOOK_NAME);
-        try {
-            Files.deleteIfExists(managedHook);
-        } catch (IOException e) {
-            LOG.warn("Could not delete managed hook " + managedHook + ": " + e.getMessage());
-        }
-
+    private static boolean removeManagedHookArtifacts(Path hooksDirectory) {
         Path mainHook = hooksDirectory.resolve("pre-push");
-        if (!Files.exists(mainHook)) return;
         try {
-            String content = Files.readString(mainHook, StandardCharsets.UTF_8);
-            if (isWrapperHookContent(content)) {
-                Files.deleteIfExists(mainHook);
-                return;
+            if (Files.isRegularFile(mainHook)) {
+                String content = Files.readString(mainHook, StandardCharsets.UTF_8);
+                String cleaned = stripManagedHookSections(content);
+                if (!cleaned.equals(content)) {
+                    if (!hasSubstantiveHookContent(cleaned) && !Files.isSymbolicLink(mainHook)) {
+                        Files.deleteIfExists(mainHook);
+                    } else {
+                        writeAtomically(mainHook, cleaned);
+                    }
+                }
             }
-            if (!content.contains(HOOK_MARKER)) return;
-
-            String cleaned = stripManagedHookSections(content)
-                .replaceAll("\\n{3,}", "\n\n");
-            if (!hasSubstantiveHookContent(cleaned)) {
-                Files.deleteIfExists(mainHook);
-            } else {
-                Files.writeString(mainHook, stripTrailingLineBreaks(cleaned) + '\n', StandardCharsets.UTF_8);
-            }
+            // Older wrappers unconditionally execute the helper. Detach them first.
+            Files.deleteIfExists(hooksDirectory.resolve(MANAGED_HOOK_NAME));
+            return true;
         } catch (IOException e) {
-            LOG.warn("Could not clean managed hook content from " + mainHook + ": " + e.getMessage());
+            LOG.warn("Could not clean managed hook in " + hooksDirectory, e);
+            return false;
         }
     }
 
@@ -703,53 +690,19 @@ public final class GitHookInstaller {
         return content.replace("\r\n", "\n").replace('\r', '\n');
     }
 
-    private static String stripTrailingLineBreaks(String content) {
-        int end = content.length();
-        while (end > 0) {
-            char c = content.charAt(end - 1);
-            if (c != '\n' && c != '\r') break;
-            end--;
+    private static boolean deleteRecursively(Path path) {
+        if (Files.notExists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) return true;
+        try (var stream = Files.walk(path)) {
+            for (Path entry : stream.sorted(Comparator.reverseOrder()).toList()) Files.deleteIfExists(entry);
+            return true;
+        } catch (IOException | java.io.UncheckedIOException e) {
+            LOG.warn("Could not clean " + path, e);
+            return false;
         }
-        return content.substring(0, end);
-    }
-
-    private static void deleteRecursively(Path path) {
-        if (!Files.exists(path)) return;
-        try {
-            try (var stream = Files.walk(path)) {
-                stream.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
-                    try { Files.deleteIfExists(p); } catch (IOException ignored) {}
-                });
-            }
-        } catch (IOException ignored) {}
     }
 
     private static String stripExistingBlock(String content) {
-        if (content.isEmpty()) return content;
-        String begin = "# BEGIN " + HOOK_MARKER;
-        String end = "# END " + HOOK_MARKER;
-        int b = content.indexOf(begin);
-        if (b < 0) {
-            // Legacy unversioned single-line marker -> remove stray lines referencing it.
-            StringBuilder out = new StringBuilder(content.length());
-            for (String line : content.split("\n", -1)) {
-                if (line.contains(HOOK_MARKER)) continue;
-                if (line.equals("/.idea/pre-push-checker/")) continue;
-                out.append(line).append('\n');
-            }
-            // Trim the trailing newline we just added when the source didn't have one.
-            if (!content.endsWith("\n") && out.length() > 0 && out.charAt(out.length() - 1) == '\n') {
-                out.setLength(out.length() - 1);
-            }
-            return out.toString();
-        }
-        int e = content.indexOf(end, b);
-        if (e < 0) return content.substring(0, b);
-        int stopLine = content.indexOf('\n', e);
-        int stop = stopLine < 0 ? content.length() : stopLine + 1;
-        // Also consume one blank separator line left over from a previous append.
-        while (stop < content.length() && content.charAt(stop) == '\n') stop++;
-        return content.substring(0, b) + content.substring(stop);
+        return stripManagedSections(content, true);
     }
 
     private static String buildExcludeBlock(String basePath, @Nullable Path hooksDirectory) {
@@ -1030,6 +983,19 @@ public final class GitHookInstaller {
         return BuildTool.UNKNOWN;
     }
 
+    private static String loadUninstallCheck() {
+        try (var stream = GitHookInstaller.class.getResourceAsStream("hooks/uninstall.sh")) {
+            if (stream == null) throw new IllegalStateException("Missing hook uninstall script");
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8)
+                .replace("@MARKER@", HOOK_MARKER).replace("@HELPER@", MANAGED_HOOK_NAME)
+                .replace("@SCRIPT_DIR@", SCRIPT_DIR_LINE).replace("@CALL@", CALL_HELPER)
+                .replace("@GUARDED_CALL@", GUARDED_CALL)
+                .replace("@SAVE_STATUS@", SAVE_STATUS).replace("@RESTORE_STATUS@", RESTORE_STATUS);
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     static String buildManagedHookScript() {
         return String.join("\n",
             "#!/usr/bin/env sh",
@@ -1046,60 +1012,7 @@ public final class GitHookInstaller {
             "REPO_ROOT=\"$(git rev-parse --show-toplevel 2>/dev/null || pwd)\"",
             "cd \"$REPO_ROOT\" || exit 1",
             "",
-            "# ── Self-cleanup: if the plugin was uninstalled, remove ourselves and exit ─────",
-            "GLOBAL_MARKER=\"$HOME/.prepush-checker/installed\"",
-            "if [ ! -f \"$GLOBAL_MARKER\" ]; then",
-            "  # Only self-remove when IntelliJ is NOT running — avoids premature cleanup",
-            "  # during a brief window between IDE restart and marker refresh.",
-            "  _ide_running=0",
-            "  if command -v pgrep >/dev/null 2>&1; then",
-            "    _uid=\"$(id -u 2>/dev/null || printf '')\"",
-            "    if [ -n \"$_uid\" ]; then",
-            "      pgrep -u \"$_uid\" -f 'IntelliJ IDEA|idea\\.app|idea64|com\\.jetbrains\\.idea' >/dev/null 2>&1 && _ide_running=1",
-            "    else",
-            "      pgrep -f 'IntelliJ IDEA|idea\\.app|idea64|com\\.jetbrains\\.idea' >/dev/null 2>&1 && _ide_running=1",
-            "    fi",
-            "  fi",
-            "  if [ \"$_ide_running\" -eq 0 ]; then",
-            "    # Resolve hooks dir the same way the plugin does.",
-            "    _hooks_dir=\"$(git rev-parse --git-path hooks 2>/dev/null)\"",
-            "    [ -z \"$_hooks_dir\" ] && _hooks_dir=\"$(git rev-parse --git-dir 2>/dev/null)/hooks\"",
-            "    if [ -n \"$_hooks_dir\" ] && [ -d \"$_hooks_dir\" ]; then",
-            "      rm -f \"$_hooks_dir/" + MANAGED_HOOK_NAME + "\" 2>/dev/null",
-            "      # Remove only our delimited block (plus the legacy three-line snippet).",
-            "      if [ -f \"$_hooks_dir/pre-push\" ]; then",
-            "        if grep -qF '" + HOOK_MARKER + "' \"$_hooks_dir/pre-push\" 2>/dev/null; then",
-            "          _other_content=\"$(awk '",
-            "            $0 == \"" + HOOK_BLOCK_BEGIN + "\" { in_owned=1; block=$0; next }",
-            "            in_owned { block=block ORS $0; if ($0 == \"" + HOOK_BLOCK_END + "\") { in_owned=0; block=\"\" }; next }",
-            "            $0 == \"# " + HOOK_MARKER + "\" { legacy=1; next }",
-            "            legacy && $0 ~ /^SCRIPT_DIR=.*CDPATH=/ { next }",
-            "            legacy && index($0, \"" + MANAGED_HOOK_NAME + "\") > 0 { legacy=0; next }",
-            "            { legacy=0; print }",
-            "            END { if (in_owned) print block }",
-            "          ' \"$_hooks_dir/pre-push\")\"",
-            "          _other_logic=\"$(printf '%s\\n' \"$_other_content\" | sed '/^[[:space:]]*$/d; /^#!/d')\"",
-            "          if [ -z \"$_other_logic\" ]; then",
-            "            rm -f \"$_hooks_dir/pre-push\" 2>/dev/null",
-            "          else",
-            "            printf '%s\\n' \"$_other_content\" > \"$_hooks_dir/pre-push\" 2>/dev/null",
-            "          fi",
-            "        fi",
-            "      fi",
-            "    fi",
-            "    rm -rf \"$REPO_ROOT/.idea/pre-push-checker\" 2>/dev/null",
-            "    # Strip plugin block from .git/info/exclude.",
-            "    _git_dir=\"$(git rev-parse --git-common-dir 2>/dev/null)\"",
-            "    [ -z \"$_git_dir\" ] && _git_dir=\"$(git rev-parse --git-dir 2>/dev/null)\"",
-            "    _exclude=\"${_git_dir}/info/exclude\"",
-            "    if [ -f \"$_exclude\" ]; then",
-            "      sed -i.bak '/# BEGIN " + HOOK_MARKER + "/,/# END " + HOOK_MARKER + "/d' \"$_exclude\" 2>/dev/null",
-            "      rm -f \"${_exclude}.bak\" 2>/dev/null",
-            "    fi",
-            "    printf '[pre-push] Plugin uninstalled. Cleaned up hooks and cache. Push allowed.\\n' >&2",
-            "    exit 0",
-            "  fi",
-            "fi",
+            UNINSTALL_CHECK,
             "",
             "# ── Plugin disabled in IntelliJ: the marker records the installing IDE's config dir (line 2).",
             "# Only that profile's disabled_plugins.txt counts, so another IDE install cannot bypass checks.",
@@ -1862,22 +1775,17 @@ public final class GitHookInstaller {
     }
 
     static String buildWrapperHookScript() {
-        return String.join("\n",
-            "#!/usr/bin/env sh",
-            HOOK_BLOCK_BEGIN,
-            "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
-            "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\"",
-            HOOK_BLOCK_END,
-            ""
-        );
+        return "#!/usr/bin/env sh" + buildDelegatingSnippet();
     }
 
     static String buildDelegatingSnippet() {
         return String.join("\n",
             "",
             HOOK_BLOCK_BEGIN,
-            "SCRIPT_DIR=\"$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd)\"",
-            "\"$SCRIPT_DIR/" + MANAGED_HOOK_NAME + "\" \"$@\" || exit $?",
+            SAVE_STATUS,
+            SCRIPT_DIR_LINE,
+            GUARDED_CALL,
+            RESTORE_STATUS,
             HOOK_BLOCK_END,
             ""
         );
@@ -1889,38 +1797,65 @@ public final class GitHookInstaller {
      * the IDE started. Called on every project open.
      */
     static void touchGlobalMarker() {
-        try {
-            Files.createDirectories(GLOBAL_STATE_DIR);
-            // Line 1: timestamp. Line 2: this IDE's config dir, read by the hook to honour disabled_plugins.txt.
-            Files.writeString(GLOBAL_INSTALL_MARKER,
-                System.currentTimeMillis() + "\n" + com.intellij.openapi.application.PathManager.getConfigDir() + "\n",
-                StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            LOG.warn("Could not write global install marker: " + e.getMessage());
+        synchronized (GLOBAL_REPO_LOCK) {
+            if (removalStarted) return;
+            Path location = PathManager.getJarForClass(GitHookInstaller.class);
+            // A packaged plugin lives in <installation>/lib/<versioned jar>. The installation
+            // directory survives an update and disappears when IntelliJ removes the plugin.
+            if (location != null && Files.isRegularFile(location)) {
+                Path lib = location.getParent();
+                if (lib != null && lib.endsWith("lib") && lib.getParent() != null) location = lib.getParent();
+            }
+            String path = location == null ? "" : location.toString();
+            try {
+                Files.createDirectories(GLOBAL_STATE_DIR);
+                writeAtomically(GLOBAL_INSTALL_MARKER,
+                    System.currentTimeMillis() + "\n" + PathManager.getConfigDir() + "\n" + path + "\n");
+            } catch (IOException e) {
+                LOG.warn("Could not write global install marker", e);
+            }
         }
     }
 
-    /**
-     * Deletes the global install marker so orphaned hooks in other repositories
-     * self-remove on their next invocation. Called when the plugin is uninstalled.
-     */
-    static void removeGlobalMarker() {
-        try {
-            Files.deleteIfExists(GLOBAL_INSTALL_MARKER);
-            deleteGlobalStateDirIfEmpty();
-        } catch (IOException e) {
-            LOG.warn("Could not remove global install marker: " + e.getMessage());
+    static boolean isRemovalStarted() {
+        return removalStarted;
+    }
+
+    static void beginRemoval() {
+        synchronized (GLOBAL_REPO_LOCK) {
+            removalStarted = true;
+            try {
+                Files.deleteIfExists(GLOBAL_INSTALL_MARKER);
+                deleteGlobalStateDirIfEmpty();
+            } catch (IOException e) {
+                LOG.warn("Could not remove global install marker", e);
+            }
         }
     }
 
+    @FunctionalInterface
+    interface CacheWrite {
+        void run() throws IOException;
+    }
+
+    // Only filesystem operations belong here. Resolve project services before entering.
+    static void writeRepositoryCache(String root, Path directory, CacheWrite write) throws IOException {
+        synchronized (GLOBAL_REPO_LOCK) {
+            if (removalStarted) return;
+            if (!Files.isDirectory(directory)) {
+                trackRepo(root);
+                Files.createDirectories(directory);
+            }
+            write.run();
+        }
+    }
+
+    // Called under GLOBAL_REPO_LOCK, before creating hook or cache files.
     private static void trackRepo(String basePath) {
         String normalized = normalizePath(basePath);
         if (normalized == null) return;
-        synchronized (GLOBAL_REPO_LOCK) {
-            LinkedHashSet<String> repos = readTrackedRepos();
-            if (!repos.add(normalized)) return;
-            writeTrackedRepos(repos);
-        }
+        LinkedHashSet<String> repos = readTrackedRepos();
+        if (repos.add(normalized)) writeTrackedRepos(repos);
     }
 
     private static void untrackRepo(String basePath) {
@@ -1933,9 +1868,9 @@ public final class GitHookInstaller {
         }
     }
 
-    private static List<String> snapshotTrackedRepos() {
+    static Set<String> snapshotTrackedRepos() {
         synchronized (GLOBAL_REPO_LOCK) {
-            return new ArrayList<>(readTrackedRepos());
+            return readTrackedRepos();
         }
     }
 
@@ -1963,13 +1898,9 @@ public final class GitHookInstaller {
             Files.createDirectories(GLOBAL_STATE_DIR);
             List<String> sorted = new ArrayList<>(repos);
             sorted.sort(Comparator.naturalOrder());
-            Files.writeString(
-                GLOBAL_TRACKED_REPOS,
-                String.join("\n", sorted) + '\n',
-                StandardCharsets.UTF_8
-            );
-        } catch (IOException ignored) {
-            // Best-effort bookkeeping only.
+            writeAtomically(GLOBAL_TRACKED_REPOS, String.join("\n", sorted) + '\n');
+        } catch (IOException e) {
+            LOG.warn("Could not update the list of repositories to clean on uninstall", e);
         }
     }
 
