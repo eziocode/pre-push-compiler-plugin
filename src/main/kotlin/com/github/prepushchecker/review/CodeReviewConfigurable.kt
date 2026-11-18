@@ -12,6 +12,8 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.ui.dsl.builder.COLUMNS_MEDIUM
 import com.intellij.ui.dsl.builder.bind
 import com.intellij.ui.dsl.builder.bindSelected
+import com.intellij.ui.dsl.builder.bindIntText
+import com.intellij.ui.dsl.builder.bindItem
 import com.intellij.ui.dsl.builder.bindText
 import com.intellij.ui.dsl.builder.columns
 import com.intellij.ui.dsl.builder.panel
@@ -77,6 +79,37 @@ class CodeReviewConfigurable(private val project: Project) :
             }
             row {
                 comment("Content that was reviewed and has not changed since is never reviewed again. Whitespace-only edits in code files are not sent to the AI.")
+            }
+        }.enabledIf(enabled.selected)
+
+        group("Large or Merge Pushes (On push mode)") {
+            row("Ask before reviewing more than") {
+                intTextField(0..100000)
+                    .bindIntText({ ReviewSettings.confirmFileThreshold(project) }, { ReviewSettings.setConfirmFileThreshold(project, it) })
+                    .columns(5)
+                label("files")
+            }.comment("Also asks when the push contains a merge. 0 turns off the file-count question. You choose: review, skip the review, or abort the push.")
+            row("If nobody answers within") {
+                intTextField(5..3600)
+                    .bindIntText({ ReviewSettings.confirmTimeoutSeconds(project) }, { ReviewSettings.setConfirmTimeoutSeconds(project, it) })
+                    .columns(5)
+                label("seconds:")
+                comboBox(listOf(ReviewSettings.TimeoutAction.ABORT, ReviewSettings.TimeoutAction.SKIP, ReviewSettings.TimeoutAction.REVIEW),
+                    object : com.intellij.ui.SimpleListCellRenderer<ReviewSettings.TimeoutAction>() {
+                        override fun customize(
+                            list: javax.swing.JList<out ReviewSettings.TimeoutAction>,
+                            value: ReviewSettings.TimeoutAction?,
+                            index: Int, selected: Boolean, hasFocus: Boolean
+                        ) {
+                            text = when (value) {
+                                ReviewSettings.TimeoutAction.ABORT -> "Abort the push"
+                                ReviewSettings.TimeoutAction.SKIP -> "Skip the AI review"
+                                ReviewSettings.TimeoutAction.REVIEW -> "Run the AI review"
+                                null -> ""
+                            }
+                        }
+                    })
+                    .bindItem({ ReviewSettings.confirmTimeoutAction(project) }, { ReviewSettings.setConfirmTimeoutAction(project, it ?: ReviewSettings.TimeoutAction.ABORT) })
             }
         }.enabledIf(enabled.selected)
 

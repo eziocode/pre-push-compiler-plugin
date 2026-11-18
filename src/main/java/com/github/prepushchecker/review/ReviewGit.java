@@ -170,6 +170,7 @@ final class ReviewGit {
     }
 
     static final int MAX_MERGES = 20;
+    static final int MAX_OWN_COMMITS = 150;
 
     /**
      * Parents of the not-yet-pushed merge commits in {@code head}'s history that are already on a
@@ -190,6 +191,44 @@ final class ReviewGit {
             for (int i = 1; i < ids.length; i++) if (!ids[i].isEmpty() && !unpushed.contains(ids[i])) out.add(ids[i]);
         }
         return new ArrayList<>(out);
+    }
+
+    /** {@code true} when the unpushed history of {@code head} contains a merge commit. */
+    static boolean hasUnpushedMerge(@NotNull Path root, @NotNull String head) {
+        String out = git(root, List.of("rev-list", "--merges", "-n", "1", head, "--not", "--remotes"));
+        return out != null && !out.isBlank();
+    }
+
+    /**
+     * Files the developer changed themselves in the unpushed history of {@code head}: files touched
+     * by non-merge commits on the first-parent chain, plus files a merge changed relative to
+     * <em>all</em> its parents (conflict resolutions). Code a {@code git merge} brought in from a
+     * second parent is not included, whether or not that parent is known to a remote. {@code null}
+     * when git failed (the caller must not narrow anything then).
+     */
+    static @Nullable java.util.Set<String> ownChangedFiles(@NotNull Path root, @NotNull String head) {
+        String commits = git(root, List.of("rev-list", "--first-parent", head, "--not", "--remotes"));
+        if (commits == null) return null;
+        java.util.Set<String> out = new java.util.HashSet<>();
+        String[] ids = commits.split("\n");
+        if (ids.length > MAX_OWN_COMMITS) return null; // one git call per commit: too slow, do not narrow
+        for (String c : ids) {
+            c = c.trim();
+            if (c.isEmpty()) continue;
+            String names;
+            String parents = git(root, List.of("rev-list", "--parents", "-n", "1", c));
+            boolean isMerge = parents != null && parents.trim().split("\\s+").length > 2;
+            if (isMerge) {
+                names = git(root, List.of("diff-tree", "--cc", "--no-commit-id", "--name-only", "-r", "-z", c));
+            } else {
+                // --root: a first commit has no parent to diff against, so its files would be dropped.
+                names = git(root, List.of("diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z",
+                    "--no-renames", "--diff-filter=ACMR", c));
+            }
+            if (names == null) return null;
+            for (String p : names.split("\0")) if (!p.isBlank()) out.add(p);
+        }
+        return out;
     }
 
     /** {@code true} when {@code base..head} changes only whitespace in {@code relPath}. */

@@ -34,8 +34,8 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("PRE_PUSH_CHECKER_COMMAND"));
         assertTrue(script.contains("No source or build changes detected. Skipping compilation check."));
         assertTrue(script.contains("run_build_tool_command"));
-        assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache $_gradle_tasks"));
-        assertTrue(script.contains("mvn -q -T1C -Dmaven.javadoc.skip=true \"$_maven_goal\""));
+        assertTrue(script.contains("./gradlew --console=plain --quiet --parallel --build-cache --configure-on-demand $_off_g $_gradle_tasks"));
+        assertTrue(script.contains("mvn -q $_off_m -T1C -Dmaven.javadoc.skip=true \"$_maven_goal\""));
         assertTrue(script.contains("mvn -q -Dmaven.javadoc.skip=true clean \"$_maven_goal\""));
         assertFalse(script.contains("maven.compiler.useIncrementalCompilation=false"));
         assertTrue(script.contains("setup_maven_java_home"));
@@ -51,6 +51,13 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertFalse(script.contains("FALLBACK_SUCCESS_TTL_SECONDS"));
         assertFalse(script.contains("publish_success_result"));
         assertTrue(script.contains("CHECK 2"));
+        assertTrue(script.contains("Offline build could not resolve dependencies; retrying once online."));
+        assertTrue(script.contains("Pre-Push Checker plugin is disabled in IntelliJ"));
+        // Disabled check reads only the installing IDE profile recorded in the marker (line 2).
+        assertTrue(script.contains("sed -n '2p' \"$GLOBAL_MARKER\""));
+        // 'Skip the check when IntelliJ is closed' must be decided before the mandatory review block.
+        assertTrue(script.indexOf("Compilation check and AI review skipped")
+            < script.indexOf("AI review is mandatory for this repository"));
         assertTrue(script.contains("ROOT=%s"));
         assertTrue(script.contains("HEAD=%s"));
         assertTrue(script.contains("UPDATES=%s"));
@@ -62,7 +69,7 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertTrue(script.contains("NoSuchFileException:"));
         assertTrue(script.contains("package[[:space:]]+[^[:space:]]+[[:space:]]+does not exist"));
         assertTrue(script.contains("cannot access[[:space:]]"));
-        assertTrue(script.contains("mvnd -q -T1C -Dmaven.javadoc.skip=true"));
+        assertTrue(script.contains("mvnd -q $_off_m -T1C -Dmaven.javadoc.skip=true"));
         assertTrue(script.contains("mvnd -q -T1 -Dmaven.javadoc.skip=true clean"));
         assertFalse(script.contains("if [ $rc -ne 0 ] && suppression_hard_gate_allows"));
         assertTrue(script.contains("git -C \"$REPO_ROOT\" worktree add --detach"));

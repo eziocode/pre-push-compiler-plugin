@@ -69,6 +69,8 @@ public final class ReviewService {
 
     private final Project project;
     private final AtomicBoolean running = new AtomicBoolean();
+    /** Replaced in tests. */
+    volatile LargePushPrompt.Asker prompt = LargePushPrompt.dialog();
 
     public ReviewService(@NotNull Project project) {
         this.project = project;
@@ -428,8 +430,18 @@ public final class ReviewService {
         Path repo = root;
         boolean history = rels.size() <= MAX_REMOTE_LOOKUPS;
         rels.removeIf(r -> alreadyOnRemote(repo, r, blobs.get(r), base, history));
+        boolean merge = ReviewGit.hasUnpushedMerge(root, rev);
+        boolean mergeNarrowed = false;
         if (!rels.isEmpty() && ReviewSettings.isIgnoreMergeChanges(project)) {
             rels.removeAll(mergedInOnly(root, rev, rels, blobs));
+            if (merge) {
+                // Files only a merge brought in (any parent, pushed or not) are not the developer's code.
+                Set<String> own = ReviewGit.ownChangedFiles(root, rev);
+                if (own != null) {
+                    rels.retainAll(own);
+                    mergeNarrowed = true;
+                }
+            }
         }
         if (base != null) {
             String from = base;
@@ -441,6 +453,28 @@ public final class ReviewService {
         Classified c = classify(root, rels, blobs);
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
         if (decision.action() == ReviewGate.Action.REVIEW_NOW) {
+            int threshold = ReviewSettings.confirmFileThreshold(project);
+            boolean mergeUnsure = merge && !mergeNarrowed;
+            if ((threshold > 0 && decision.toReview().size() > threshold) || mergeUnsure) {
+                LargePushPrompt.Answer answer = prompt.ask(project, decision.toReview(), mergeUnsure,
+                    ReviewSettings.confirmTimeoutSeconds(project));
+                if (answer == LargePushPrompt.Answer.TIMEOUT) {
+                    answer = switch (ReviewSettings.confirmTimeoutAction(project)) {
+                        case SKIP -> LargePushPrompt.Answer.SKIP;
+                        case REVIEW -> LargePushPrompt.Answer.REVIEW;
+                        case ABORT -> LargePushPrompt.Answer.TIMEOUT;
+                    };
+                }
+                if (answer == LargePushPrompt.Answer.SKIP) {
+                    notifySkipped(root, decision.toReview(), merge);
+                    return List.of();
+                }
+                if (answer != LargePushPrompt.Answer.REVIEW) {
+                    return List.of("Push aborted: the AI review of " + decision.toReview().size()
+                        + " file(s) was not confirmed. Push again and choose Review Now or Skip AI Review in IntelliJ "
+                        + "(Settings > Tools > Pre-Push Checker > Code Review sets the question and its timeout).");
+                }
+            }
             RunResult r = review(pushTargets(root, decision.toReview(), base, rev), indicator, budget);
             c = classify(root, rels, blobs);
             decision = ReviewGate.afterPushReview(mandatory, c.unreviewed, c.open);
@@ -510,7 +544,7 @@ public final class ReviewService {
         ReviewRules rules = rules(root);
         if (!ReviewSettings.isEnabled(project) || rules == null) return "off";
         return ReviewSettings.mode(project) + "/" + ReviewSettings.isMandatory(project, rules) + "/"
-            + rules.body().hashCode() + "/" + ReviewSettings.isIgnoreMergeChanges(project) + "/" + ReviewStateStore.getInstance(project).modificationCount();
+            + rules.body().hashCode() + "/" + ReviewSettings.isIgnoreMergeChanges(project) + "/" + ReviewSettings.confirmFileThreshold(project) + "/" + ReviewStateStore.getInstance(project).modificationCount();
     }
 
     private record Classified(List<String> unreviewed, List<String> open) {}
@@ -553,6 +587,20 @@ public final class ReviewService {
         List<String> out = new ArrayList<>(lines);
         for (String e : errors) out.add("AI review could not complete: " + AiOutputSanitizer.truncate(e, 300));
         return out;
+    }
+
+    private void notifySkipped(@NotNull Path root, @NotNull List<String> rels, boolean merge) {
+        Notification n = NotificationGroupManager.getInstance().getNotificationGroup(NOTIFICATION_GROUP)
+            .createNotification("AI review skipped",
+                "AI review was skipped for " + rels.size() + " file(s) because the push is "
+                    + (merge ? "a merge push that could not be told apart from your own changes"
+                              : "larger than the confirmation limit")
+                    + ". The push went ahead.", NotificationType.WARNING);
+        n.addAction(NotificationAction.createSimpleExpiring("Review Now", () -> {
+            reviewCommittedInBackground(root, rels);
+            showTab();
+        }));
+        n.notify(project);
     }
 
     private void notifyBlocked(@NotNull Path root, @NotNull ReviewGate.Decision d) {
