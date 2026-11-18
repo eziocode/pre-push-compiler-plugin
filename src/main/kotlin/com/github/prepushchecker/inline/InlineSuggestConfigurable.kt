@@ -1,6 +1,9 @@
 package com.github.prepushchecker.inline
 
+import com.github.prepushchecker.commitgen.AiOutputSanitizer
 import com.github.prepushchecker.commitgen.AiProviderConfigurable
+import com.github.prepushchecker.commitgen.AiRequest
+import com.github.prepushchecker.commitgen.CommitMessageGeneratorService
 import com.github.prepushchecker.commitgen.CliPathResolver
 import com.github.prepushchecker.commitgen.CommitMessageProvider.Id
 import com.github.prepushchecker.commitgen.CommitMessageSettings
@@ -56,6 +59,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
     private val cliModelCombo = ComboBox<String>().apply { isEditable = true }
     private val cliSummary = JBLabel()
     private val modelsStatus = JBLabel()
+    private val testResult = JBLabel()
 
     private var apiRange: RowsRange? = null
     private var cliRange: RowsRange? = null
@@ -127,6 +131,10 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
                         ShowSettingsUtil.getInstance().showSettingsDialog(null, AiProviderConfigurable::class.java)
                     }.comment("API keys, CLI paths and sign-in are set on the AI Provider page.")
                 }
+                row {
+                    link("Test") { testProvider() }
+                    cell(testResult)
+                }
             }.enabledIf(enabled.selected)
 
             group("Trigger") {
@@ -171,6 +179,32 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         built = true
         loadFromState()
         return p
+    }
+
+    // ── Test ──────────────────────────────────────────────────────────────────
+
+    /** Sends a tiny completion request with the provider and model chosen here (unsaved edits are applied first). */
+    private fun testProvider() {
+        if (isModified) apply()
+        val s = state
+        val id = InlineSuggestSettings.providerOf(s)
+        val model = s.model?.trim()?.takeIf { it.isNotEmpty() }
+        val timeout = if (InlineSuggestSettings.isFast(id)) AiRequest.COMPLETION_FAST_TIMEOUT
+            else AiRequest.COMPLETION_SLOW_TIMEOUT
+        testResult.foreground = UIUtil.getContextHelpForeground()
+        testResult.text = "Testing…"
+        testResult.toolTipText = null
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val started = System.currentTimeMillis()
+            val result = runCatching {
+                val raw = CommitMessageGeneratorService.providerFor(id).generate(
+                    AiRequest.completion("You are a test. Reply with exactly one word: OK", "Test prompt.", model, timeout))
+                AiOutputSanitizer.cleanCompletion(raw).ifBlank { throw IllegalStateException("The provider returned an empty reply.") }
+            }
+            ApplicationManager.getApplication().invokeLater({
+                ProviderUi.showTestResult(testResult, result, System.currentTimeMillis() - started)
+            }, ModalityState.any())
+        }
     }
 
     // ── Load / store ──────────────────────────────────────────────────────────

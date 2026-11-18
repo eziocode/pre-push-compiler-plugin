@@ -348,7 +348,8 @@ final class CommitMessagePromptBuilder {
         StringBuilder sb = new StringBuilder();
         sb.append("You are a commit message writer. ")
           .append("Generate a single, ready-to-use git commit message for the provided diff. ")
-          .append("Return ONLY the commit message text — no explanations, no markdown fences, no surrounding quotes.\n\n");
+          .append("Return ONLY the commit message text — no explanations, no markdown fences, no surrounding quotes. ")
+          .append("Never add trailers or attribution such as Co-Authored-By, Signed-off-by or 'Generated with …'.\n\n");
 
         // ── Project rules (loaded first so they take highest priority) ──────────
         String mdRules = loadMarkdownRules(project, s.customRulesFilePath);

@@ -98,6 +98,10 @@ class AiProviderConfigurable : SearchableConfigurable {
         addBrowseFolderListener(TextBrowseFolderListener(
             FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().withTitle("Select CLI Executable")))
     }
+    private val effortCombo = ComboBox(DefaultComboBoxModel(ProviderUi.EFFORTS.toTypedArray())).apply {
+        renderer = ProviderUi.effortRenderer()
+    }
+    private val speedHint = JBLabel()
     private val customBinaryField = JBTextField()
     private val extraArgsField = JBTextField()
     private val templateField = JBTextField()
@@ -118,6 +122,8 @@ class AiProviderConfigurable : SearchableConfigurable {
     private var urlRow: Row? = null
     private var binaryRow: Row? = null
     private var extraArgsRow: Row? = null
+    private var effortRow: Row? = null
+    private var speedHintRow: Row? = null
     private var templateRow: Row? = null
     private var listArgsRow: Row? = null
     private var cliKeyRow: Row? = null
@@ -183,6 +189,13 @@ class AiProviderConfigurable : SearchableConfigurable {
                 if (d != null && !d.found() && !selected) foreground = UIUtil.getContextHelpForeground()
             }
         }
+        cliModelCombo.addActionListener { updateSpeedHint() }
+        (cliModelCombo.editor.editorComponent as? javax.swing.text.JTextComponent)?.document?.addDocumentListener(
+            object : javax.swing.event.DocumentListener {
+                override fun insertUpdate(e: javax.swing.event.DocumentEvent) = updateSpeedHint()
+                override fun removeUpdate(e: javax.swing.event.DocumentEvent) = updateSpeedHint()
+                override fun changedUpdate(e: javax.swing.event.DocumentEvent) = updateSpeedHint()
+            })
         cliCombo.addActionListener {
             if (loading) return@addActionListener
             val cli = cliCombo.selectedItem as? AiCli ?: return@addActionListener
@@ -222,6 +235,11 @@ class AiProviderConfigurable : SearchableConfigurable {
                     cell(cliModelCombo).columns(COLUMNS_MEDIUM)
                     link("Refresh models") { refreshModels() }
                     cell(modelsStatus)
+                }
+                speedHintRow = row("") { cell(speedHint) }
+                effortRow = row("Reasoning effort:") {
+                    cell(effortCombo)
+                    comment("Commit messages only. Low is fastest; review and fix keep the CLI default.")
                 }
                 collapsibleGroup("Advanced") { advancedCliRows(this) }
             }
@@ -355,7 +373,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     private fun fingerprint(s: CommitMessageSettings.State): List<Any?> = listOf(
         s.selectedProvider, s.openAiModel, s.anthropicModel, s.geminiModel, s.ollamaModel, s.ollamaBaseUrl,
         s.codexCliPath, s.codexModel, s.codexExtraArgs, s.ghCliPath, s.ghModel, s.llmCliPath, s.llmModel,
-        s.claudeCliPath, s.claudeModel, s.claudeExtraArgs, s.customCliBinary, s.customCliPath, s.customCliArgs,
+        s.claudeCliPath, s.claudeModel, s.claudeExtraArgs, s.claudeEffort, s.codexEffort, s.customCliBinary, s.customCliPath, s.customCliArgs,
         s.customCliModel, s.customCliModelsArgs)
 
     private fun stashApi() = stashApiInto(work)
@@ -396,8 +414,14 @@ class AiProviderConfigurable : SearchableConfigurable {
         val path = cliPathField.text.trim()
         val model = (cliModelCombo.editor.item as? String ?: cliModelCombo.selectedItem as? String ?: "").trim()
         when (cliId) {
-            Id.CODEX_CLI -> { s.codexCliPath = path; s.codexModel = model; s.codexExtraArgs = extraArgsField.text.trim() }
-            Id.CLAUDE_CLI -> { s.claudeCliPath = path; s.claudeModel = model; s.claudeExtraArgs = extraArgsField.text.trim() }
+            Id.CODEX_CLI -> {
+                s.codexCliPath = path; s.codexModel = model; s.codexExtraArgs = extraArgsField.text.trim()
+                s.codexEffort = effortCombo.selectedItem as? String ?: ""
+            }
+            Id.CLAUDE_CLI -> {
+                s.claudeCliPath = path; s.claudeModel = model; s.claudeExtraArgs = extraArgsField.text.trim()
+                s.claudeEffort = effortCombo.selectedItem as? String ?: ""
+            }
             Id.GH_COPILOT -> { s.ghCliPath = path; s.ghModel = model }
             Id.LLM_CLI -> { s.llmCliPath = path; s.llmModel = model }
             Id.CUSTOM_CLI -> {
@@ -434,6 +458,11 @@ class AiProviderConfigurable : SearchableConfigurable {
             cliModelCombo.editor.item = model.orEmpty()
             cliModelCombo.selectedItem = model.orEmpty()
             cliKeyField.text = typedCliKeys[cliId].orEmpty()
+            effortCombo.selectedItem = when (cliId) {
+                Id.CODEX_CLI -> work.codexEffort
+                Id.CLAUDE_CLI -> work.claudeEffort
+                else -> ""
+            }.orEmpty()
             modelsStatus.text = ""
         } finally {
             loading = wasLoading
@@ -441,6 +470,14 @@ class AiProviderConfigurable : SearchableConfigurable {
         updateKeyHints()
         refreshCliSummary()
         if (cliId == Id.CODEX_CLI) refreshCodexStatus()
+    }
+
+    private fun updateSpeedHint() {
+        val model = (cliModelCombo.editor.item as? String ?: cliModelCombo.selectedItem as? String ?: "").trim()
+        val slow = ProviderUi.slowModelHint(cliId, model)
+        speedHint.text = slow ?: ProviderUi.fastModelsHint(cliId).orEmpty()
+        speedHint.foreground = if (slow != null) JBColor.namedColor("Label.errorForeground", JBColor.RED)
+            else UIUtil.getContextHelpForeground()
     }
 
     private fun presetHint(): String {
@@ -479,6 +516,9 @@ class AiProviderConfigurable : SearchableConfigurable {
             templateRow?.visible(custom)
             listArgsRow?.visible(custom)
             extraArgsRow?.visible(cliId == Id.CODEX_CLI || cliId == Id.CLAUDE_CLI)
+            effortRow?.visible(cliId == Id.CODEX_CLI || cliId == Id.CLAUDE_CLI)
+            speedHintRow?.visible(cliId == Id.CODEX_CLI || cliId == Id.CLAUDE_CLI)
+            updateSpeedHint()
             cliKeyRow?.visible(cliId == Id.CODEX_CLI || cliId == Id.CLAUDE_CLI)
             codexRow?.visible(cliId == Id.CODEX_CLI)
         }
@@ -649,22 +689,14 @@ class AiProviderConfigurable : SearchableConfigurable {
         testResult.text = "Testing…"
         testResult.toolTipText = null
         ApplicationManager.getApplication().executeOnPooledThread {
+            val started = System.currentTimeMillis()
             runCatching { pendingKeySave?.get(30, java.util.concurrent.TimeUnit.SECONDS) }
             val result = runCatching {
                 AiOutputSanitizer.cleanOrThrow(CommitMessageGeneratorService.providerFor(id)
                     .generate("You are a test. Reply with exactly one word: OK", "Test prompt."))
             }
             ApplicationManager.getApplication().invokeLater({
-                result.onSuccess {
-                    testResult.foreground = UIUtil.getLabelSuccessForeground()
-                    testResult.text = "Connected. Reply: " + AiOutputSanitizer.truncate(it, 60)
-                }.onFailure {
-                    val msg = it.message ?: it.toString()
-                    testResult.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
-                    testResult.text = "Failed: " + AiOutputSanitizer.truncate(msg.lineSequence().first(), 120)
-                    testResult.toolTipText = "<html><pre>" + com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(
-                        AiOutputSanitizer.truncate(msg, 2000)) + "</pre></html>"
-                }
+                ProviderUi.showTestResult(testResult, result, System.currentTimeMillis() - started)
             }, ModalityState.any())
         }
     }

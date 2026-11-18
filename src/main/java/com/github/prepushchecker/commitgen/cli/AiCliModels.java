@@ -32,7 +32,7 @@ import java.util.regex.Pattern;
 public final class AiCliModels {
 
     static final List<String> CLAUDE_STATIC = List.of(
-        "sonnet", "opus", "haiku",
+        "haiku", "sonnet", "opus",
         "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-haiku-4-5");
 
     /**
@@ -41,7 +41,7 @@ public final class AiCliModels {
      * with a ChatGPT account" for them.
      */
     static final List<String> CODEX_STATIC = List.of(
-        "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        "gpt-6.2-sol", "gpt-6.2-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna");
 
     static final List<String> COPILOT_STATIC = List.of(

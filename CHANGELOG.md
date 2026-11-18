@@ -8,6 +8,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-11-18
+
+### Fixed
+- The Code Review detail pane no longer stays on a finding after it is resolved: selection moves
+  to the next open finding, or the pane hides. The panel also refreshes when a run ends having
+  recorded nothing.
+- Commit messages from AI CLIs no longer keep `Co-Authored-By:`, `Signed-off-by:`, "Generated with …"
+  or robot-emoji footers, and the prompt now forbids them.
+
+### Added
+- Reasoning effort setting for the Claude and Codex CLIs (AI Provider page), default Low, used for
+  commit messages so they come back faster. A hint recommends faster models and warns about slow
+  ones (Opus, Codex Astra).
+- Test link on the Inline Suggestions page, reporting reply and response time.
+- Codex model list includes gpt-6.2-sol and gpt-6.2-astra; Claude list leads with haiku.
+
 ## [3.2.1] - 2026-11-18
 
 Fixes from the review of 3.2.0.

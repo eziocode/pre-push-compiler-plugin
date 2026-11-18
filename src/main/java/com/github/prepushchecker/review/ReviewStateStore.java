@@ -214,8 +214,17 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         return c;
     }
 
+    /** Re-notifies listeners without a data change, e.g. when a run ends having recorded nothing. */
+    public void refresh() {
+        notifyListeners();
+    }
+
     private void fireChanged() {
         modCount.incrementAndGet();
+        notifyListeners();
+    }
+
+    private void notifyListeners() {
         if (listeners.isEmpty()) return;
         var app = ApplicationManager.getApplication();
         if (app == null) {

@@ -113,4 +113,13 @@ public class AiCliCommandTest extends TestCase {
             assertEquals("", cli.defaultArgsTemplate());
         }
     }
+
+    public void testEffortFlags() {
+        java.nio.file.Path out = java.nio.file.Path.of("/tmp/o.txt");
+        assertTrue(AiCliCommand.claude("/bin/claude", null, null, false, "low").containsAll(List.of("--effort", "low")));
+        assertFalse(AiCliCommand.claude("/bin/claude", null, null, false, "").contains("--effort"));
+        assertTrue(AiCliCommand.codex("/bin/codex", null, "", out, false, "medium")
+            .contains("model_reasoning_effort=\"medium\""));
+        assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false, "").toString().contains("reasoning"));
+    }
 }

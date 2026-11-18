@@ -39,13 +39,20 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(LABEL, request, s.claudeCliPath, request.modelOr(s.claudeModel), s.claudeExtraArgs);
+        return run(LABEL, request, s.claudeCliPath, request.modelOr(s.claudeModel), s.claudeExtraArgs,
+            AiCliCommand.effortFor(request, s.claudeEffort));
+    }
+
+    static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
+                               @Nullable String configuredPath, @Nullable String model,
+                               @Nullable String extraArgs) throws Exception {
+        return run(label, request, configuredPath, model, extraArgs, null);
     }
 
     /** Runs {@code claude -p} with explicit settings; also used by the "Other CLI" provider. */
     static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
                                @Nullable String configuredPath, @Nullable String model,
-                               @Nullable String extraArgs) throws Exception {
+                               @Nullable String extraArgs, @Nullable String effort) throws Exception {
         CommitMessageSettings cfg = CommitMessageSettings.getInstance();
         String path = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
         if (path == null) {
@@ -60,7 +67,7 @@ public final class ClaudeCliProvider implements CommitMessageProvider {
 
         // Inline completions with no model chosen: haiku answers in a fraction of the default's time.
         String effectiveModel = (model == null || model.isBlank()) && request.lowLatency() ? INLINE_DEFAULT_MODEL : model;
-        List<String> cmd = AiCliCommand.claude(path, effectiveModel, extraArgs, request.lowLatency());
+        List<String> cmd = AiCliCommand.claude(path, effectiveModel, extraArgs, request.lowLatency(), effort);
         Path workDir = AiCliRunner.createWorkDir();
         try {
             String out = AiCliRunner.run(label, cmd,

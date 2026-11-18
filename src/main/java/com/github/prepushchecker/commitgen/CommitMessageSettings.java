@@ -47,6 +47,8 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
         public String claudeCliPath  = "";   // blank = auto-detect
         public String claudeModel    = "";   // blank = CLI default model
         public String claudeExtraArgs = ""; // extra args appended to `claude -p`
+        public String claudeEffort = "low"; // --effort for commit messages; blank = CLI default
+        public String codexEffort = "low";  // model_reasoning_effort for commit messages; blank = CLI default
 
         // Other local CLI (sahaa, gemini, cursor-agent, …)
         public String customCliBinary     = "sahaa"; // binary name used for auto-detect

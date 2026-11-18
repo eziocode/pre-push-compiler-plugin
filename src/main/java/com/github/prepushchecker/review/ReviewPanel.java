@@ -142,7 +142,10 @@ public final class ReviewPanel extends JPanel implements Disposable {
     // ── Model ────────────────────────────────────────────────────────────────
 
     private void reload() {
-        String selectedId = selectedFinding() != null ? selectedFinding().id : null;
+        ReviewFinding previous = selectedFinding();
+        String selectedId = previous != null ? previous.id : null;
+        boolean wasOpen = previous != null && previous.isOpen();
+        List<String> oldOrder = findingIds();
         rootNode.removeAllChildren();
         int open = 0;
         int resolved = 0;
@@ -158,12 +161,51 @@ public final class ReviewPanel extends JPanel implements Disposable {
         }
         model.reload();
         TreeUtil.expandAll(tree);
-        if (selectedId != null) select(selectedId);
+        if (selectedId != null) restoreSelection(selectedId, wasOpen, oldOrder);
         status.setText(files == 0 ? "Review runs on the files checked in the commit panel."
             : open + " open · " + resolved + " resolved · " + files + " file(s) reviewed");
         status.setForeground(open > 0 ? JBColor.namedColor("Label.errorForeground", JBColor.RED)
             : UIUtil.getContextHelpForeground());
         showDetails();
+    }
+
+    private List<String> findingIds() {
+        List<String> ids = new ArrayList<>();
+        TreeUtil.treeNodeTraverser(rootNode).traverse().forEach(n -> {
+            if (n instanceof DefaultMutableTreeNode d && d.getUserObject() instanceof ReviewFinding f) ids.add(f.id);
+        });
+        return ids;
+    }
+
+    /**
+     * Keeps the selection on the same finding. A finding that was open and has just been resolved
+     * is not kept (that left a stale "(resolved)" pane up): selection moves to the next open finding,
+     * or clears so the detail pane hides. A resolved finding the user opened themselves stays.
+     */
+    private void restoreSelection(String id, boolean wasOpen, List<String> oldOrder) {
+        ReviewFinding current = findFinding(id);
+        if (current == null) return;
+        if (!wasOpen || current.isOpen()) {
+            select(id);
+            return;
+        }
+        List<String> newOrder = findingIds();
+        int from = Math.max(0, oldOrder.indexOf(id));
+        String next = null;
+        for (int i = 0; i < newOrder.size() && next == null; i++) {
+            String candidate = newOrder.get((from + i) % newOrder.size());
+            ReviewFinding f = findFinding(candidate);
+            if (f != null && f.isOpen()) next = candidate;
+        }
+        if (next != null) select(next); else tree.clearSelection();
+    }
+
+    private @Nullable ReviewFinding findFinding(String id) {
+        for (var it = TreeUtil.treeNodeTraverser(rootNode).traverse().iterator(); it.hasNext(); ) {
+            Object n = it.next();
+            if (n instanceof DefaultMutableTreeNode d && d.getUserObject() instanceof ReviewFinding f && f.id.equals(id)) return f;
+        }
+        return null;
     }
 
     private void select(String findingId) {

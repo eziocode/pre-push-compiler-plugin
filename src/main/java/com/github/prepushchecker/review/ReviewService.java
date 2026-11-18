@@ -324,6 +324,7 @@ public final class ReviewService {
             @Override
             public void onFinished() {
                 running.set(false);
+                ReviewStateStore.getInstance(project).refresh();
                 if (onDone != null) ApplicationManager.getApplication().invokeLater(onDone);
             }
         });
@@ -343,6 +344,7 @@ public final class ReviewService {
             @Override
             public void onFinished() {
                 running.set(false);
+                ReviewStateStore.getInstance(project).refresh();
             }
         });
     }

@@ -32,6 +32,16 @@ public final class AiCliCommand {
      */
     public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
                                                @Nullable String extraArgs, boolean lowLatency) {
+        return claude(path, model, extraArgs, lowLatency, null);
+    }
+
+    /**
+     * As {@link #claude(String, String, String, boolean)}; a non-blank {@code effort} adds
+     * {@code --effort <effort>} before the user's extra args, which can still override it.
+     */
+    public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
+                                               @Nullable String extraArgs, boolean lowLatency,
+                                               @Nullable String effort) {
         List<String> cmd = new ArrayList<>(List.of(path, "-p", "--output-format", "text"));
         if (!isBlank(model)) {
             cmd.add("--model");
@@ -40,8 +50,20 @@ public final class AiCliCommand {
         if (lowLatency) {
             cmd.addAll(CLAUDE_LOW_LATENCY);
         }
+        if (!isBlank(effort)) {
+            cmd.add("--effort");
+            cmd.add(effort.trim());
+        }
         cmd.addAll(tokenize(extraArgs));
         return cmd;
+    }
+
+    /**
+     * The configured reasoning effort applies to commit messages only; review and fix keep the CLI's
+     * own default (they need the depth) and inline completions are forced low elsewhere.
+     */
+    public static @Nullable String effortFor(@NotNull AiRequest request, @Nullable String configured) {
+        return request.kind() == AiRequest.Kind.COMMIT_MESSAGE ? configured : null;
     }
 
     /** Flags added for inline completions: no tools, no MCP servers, no saved session. */
@@ -68,6 +90,17 @@ public final class AiCliCommand {
     public static @NotNull List<String> codex(@NotNull String path, @Nullable String model,
                                               @Nullable String extraArgs,
                                               @NotNull Path lastMessageFile, boolean lowLatency) {
+        return codex(path, model, extraArgs, lastMessageFile, lowLatency, null);
+    }
+
+    /**
+     * As {@link #codex(String, String, String, Path, boolean)}; a non-blank {@code effort} (and not
+     * {@code lowLatency}, which already forces low) adds {@code -c model_reasoning_effort="<effort>"}.
+     */
+    public static @NotNull List<String> codex(@NotNull String path, @Nullable String model,
+                                              @Nullable String extraArgs,
+                                              @NotNull Path lastMessageFile, boolean lowLatency,
+                                              @Nullable String effort) {
         List<String> cmd = new ArrayList<>(List.of(
             path, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never"));
         if (!isBlank(model)) {
@@ -80,6 +113,9 @@ public final class AiCliCommand {
             cmd.add("--ephemeral");
             cmd.add("-c");
             cmd.add(CODEX_LOW_EFFORT);
+        } else if (!isBlank(effort)) {
+            cmd.add("-c");
+            cmd.add("model_reasoning_effort=\"" + effort.trim() + "\"");
         }
         cmd.addAll(tokenize(extraArgs));
         cmd.add("-");

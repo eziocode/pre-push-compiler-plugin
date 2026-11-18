@@ -42,7 +42,14 @@ public final class CodexCliProvider implements CommitMessageProvider {
     @Override
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
-        return run(LABEL, request, s.codexCliPath, request.modelOr(s.codexModel), s.codexExtraArgs);
+        return run(LABEL, request, s.codexCliPath, request.modelOr(s.codexModel), s.codexExtraArgs,
+            AiCliCommand.effortFor(request, s.codexEffort));
+    }
+
+    static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
+                               @Nullable String configuredPath, @Nullable String model,
+                               @Nullable String extraArgs) throws Exception {
+        return run(label, request, configuredPath, model, extraArgs, null);
     }
 
     /** Runs {@code codex exec} with explicit settings; also used by the "Other CLI" provider. */
@@ -57,7 +64,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
 
     static @NotNull String run(@NotNull String label, @NotNull AiRequest request,
                                @Nullable String configuredPath, @Nullable String model,
-                               @Nullable String extraArgs) throws Exception {
+                               @Nullable String extraArgs, @Nullable String effort) throws Exception {
         CommitMessageSettings cfg = CommitMessageSettings.getInstance();
         String path = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
         if (path == null) {
@@ -77,7 +84,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             Path lastMessage = workDir.resolve("last-message.txt");
-            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage, request.lowLatency());
+            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage, request.lowLatency(), effort);
             String stdout;
             try {
                 stdout = AiCliRunner.run(label, cmd,
