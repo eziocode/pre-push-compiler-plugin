@@ -8,6 +8,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-11-18
+
+Fixes from the review of 3.2.0.
+
+### Fixed
+- The plugin-disabled check reads only the IntelliJ profile that installed the hook, so another
+  IDE installation can no longer bypass checks.
+- A clean AI review no longer skips the final snapshot check when the checkout changed while the
+  compile and the review ran in parallel.
+- Stop on the compilation row now ends the wait for the AI review at once.
+- Identical pushes share one running AI review (one confirmation prompt, one AI call).
+- A first push that contains a merge keeps the files of its root commit in review.
+
+## [3.2.0] - 2026-11-18
+
+Faster, clearer pre-push checks, and the skip settings now work.
+
+### Added
+- The compilation check and the AI review run in parallel, each with its own row in IntelliJ's
+  Processes ("Pre-push: compilation check", "Pre-push: AI review") and live stage text.
+- On-push review asks first when the push has more files than a limit (default 10, Settings →
+  Code Review) or contains a merge that could not be separated from your own changes: Review Now,
+  Skip AI Review (with a warning notification) or Abort Push. An unanswered question follows a
+  setting (default abort, timeout 60 s).
+
+### Fixed
+- "Skip the check when IntelliJ is closed" now also skips a mandatory AI review.
+- A terminal push no longer enforces the checks while the plugin is disabled in IntelliJ.
+- Merged-in code is no longer sent to review when the merged branch is unknown to every remote
+  (local `main` ahead of origin, a pulled URL, a pruned branch).
+
+### Changed
+- Build-tool fallback tries offline first (Gradle `--offline --configure-on-demand`, Maven `-o`)
+  and retries online only when dependencies cannot be resolved.
+
 ## [3.1.0] - 2026-11-17
 
 AI code review spends less time and fewer tokens on pushes, and pushes from outside IntelliJ

@@ -147,6 +147,70 @@ public class ReviewGitTest extends TestCase {
     }
 
     /** After "git merge main", only the developer's own files and hunks are left to review. */
+    /** A first push: the root commit's files must stay review candidates even with a merge in history. */
+    public void testOwnChangedFilesKeepsRootCommitFiles() throws Exception {
+        // No remote at all: every commit, the root included, is unpushed.
+        git("checkout", "-q", "-b", "side");
+        Files.writeString(repo.resolve("src/C.java"), "class C {}\n");
+        git("add", ".");
+        git("commit", "-qm", "side");
+        git("checkout", "-q", "-b", "mine", "HEAD~1");
+        Files.writeString(repo.resolve("src/U.java"), "class U {}\n");
+        git("add", ".");
+        git("commit", "-qm", "mine");
+        git("merge", "-q", "--no-edit", "side");
+
+        assertTrue(ReviewGit.hasUnpushedMerge(repo, "HEAD"));
+        java.util.Set<String> own = ReviewGit.ownChangedFiles(repo, "HEAD");
+        assertNotNull(own);
+        assertTrue(own.toString(), own.contains("src/A.java"));
+        assertTrue(own.toString(), own.contains("src/U.java"));
+        assertFalse(own.toString(), own.contains("src/C.java"));
+    }
+
+    /** Merged-in code from a branch no remote knows (local main ahead of origin, FETCH_HEAD, pruned branch). */
+    public void testOwnChangedFilesIgnoresMergedInCodeUnknownToRemotes() throws Exception {
+        Path remote = Files.createTempDirectory("review-remote").toRealPath();
+        try {
+            git("init", "-q", "--bare", remote.toString());
+            git("remote", "add", "origin", remote.toString());
+            git("push", "-q", "origin", "HEAD:refs/heads/main");
+            git("fetch", "-q", "origin");
+            assertFalse(ReviewGit.hasUnpushedMerge(repo, "HEAD"));
+
+            git("checkout", "-q", "-b", "other", "origin/main");
+            Files.writeString(repo.resolve("src/M.java"), "class M {}\n");
+            Files.writeString(repo.resolve("src/C.java"), "class C {\n    int v = 1;\n}\n");
+            git("add", ".");
+            git("commit", "-qm", "theirs, never pushed");
+
+            git("checkout", "-q", "-b", "feature", "origin/main");
+            Files.writeString(repo.resolve("src/U.java"), "class U {}\n");
+            Files.writeString(repo.resolve("src/C.java"), "class C {\n    int v = 2;\n}\n");
+            git("add", ".");
+            git("commit", "-qm", "mine");
+            // conflict on C.java, resolved by the developer
+            try { git("merge", "-q", "--no-edit", "other"); } catch (AssertionError | Exception expected) { /* conflict */ }
+            Files.writeString(repo.resolve("src/C.java"), "class C {\n    int v = 3;\n}\n");
+            git("add", ".");
+            git("commit", "-qm", "merge other");
+
+            assertTrue(ReviewGit.hasUnpushedMerge(repo, "HEAD"));
+            // The merged parent is not on any remote, so the remote-parent heuristic cannot see it ...
+            assertTrue(ReviewGit.mergedRemoteParents(repo, "HEAD").isEmpty());
+            // ... but the first-parent view still separates own work from the merge.
+            java.util.Set<String> own = ReviewGit.ownChangedFiles(repo, "HEAD");
+            assertNotNull(own);
+            assertTrue(own.toString(), own.contains("src/U.java"));
+            assertTrue(own.toString(), own.contains("src/C.java"));
+            assertFalse(own.toString(), own.contains("src/M.java"));
+        } finally {
+            try (var walk = Files.walk(remote)) {
+                walk.sorted(java.util.Comparator.reverseOrder()).map(Path::toFile).forEach(File::delete);
+            }
+        }
+    }
+
     public void testMergedInRemoteCodeIsSeparatedFromOwnChanges() throws Exception {
         Path remote = Files.createTempDirectory("review-remote").toRealPath();
         try {

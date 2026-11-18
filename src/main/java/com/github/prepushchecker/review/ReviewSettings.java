@@ -26,7 +26,47 @@ public final class ReviewSettings {
     private static final String RULE_FILE = "prepushchecker.review.ruleFile";
     private static final String IGNORE_MERGES = "prepushchecker.review.ignoreMergeChanges";
 
+    private static final String CONFIRM_THRESHOLD = "prepushchecker.review.confirmFileThreshold";
+    private static final String CONFIRM_TIMEOUT = "prepushchecker.review.confirmTimeoutSeconds";
+    private static final String CONFIRM_ACTION = "prepushchecker.review.confirmTimeoutAction";
+
+    /** What an unanswered large/merge push prompt does after its timeout. */
+    public enum TimeoutAction { ABORT, SKIP, REVIEW }
+
+    public static final int DEFAULT_CONFIRM_THRESHOLD = 10;
+    public static final int DEFAULT_CONFIRM_TIMEOUT_SECONDS = 60;
+
     private ReviewSettings() {}
+
+    /** An on-push review of more files than this asks first. 0 disables the file-count prompt. */
+    public static int confirmFileThreshold(@NotNull Project project) {
+        return Math.max(0, PropertiesComponent.getInstance(project).getInt(CONFIRM_THRESHOLD, DEFAULT_CONFIRM_THRESHOLD));
+    }
+
+    public static void setConfirmFileThreshold(@NotNull Project project, int n) {
+        PropertiesComponent.getInstance(project).setValue(CONFIRM_THRESHOLD, Math.max(0, n), DEFAULT_CONFIRM_THRESHOLD);
+    }
+
+    public static int confirmTimeoutSeconds(@NotNull Project project) {
+        return Math.max(5, PropertiesComponent.getInstance(project).getInt(CONFIRM_TIMEOUT, DEFAULT_CONFIRM_TIMEOUT_SECONDS));
+    }
+
+    public static void setConfirmTimeoutSeconds(@NotNull Project project, int s) {
+        PropertiesComponent.getInstance(project).setValue(CONFIRM_TIMEOUT, Math.max(5, s), DEFAULT_CONFIRM_TIMEOUT_SECONDS);
+    }
+
+    public static @NotNull TimeoutAction confirmTimeoutAction(@NotNull Project project) {
+        String v = PropertiesComponent.getInstance(project).getValue(CONFIRM_ACTION, TimeoutAction.ABORT.name());
+        try {
+            return TimeoutAction.valueOf(v);
+        } catch (IllegalArgumentException e) {
+            return TimeoutAction.ABORT;
+        }
+    }
+
+    public static void setConfirmTimeoutAction(@NotNull Project project, @NotNull TimeoutAction a) {
+        PropertiesComponent.getInstance(project).setValue(CONFIRM_ACTION, a.name(), TimeoutAction.ABORT.name());
+    }
 
     /** Master switch. Off: no review button effect on pushes, no gate. Default on (needs a rule file anyway). */
     public static boolean isEnabled(@NotNull Project project) {

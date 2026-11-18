@@ -34,6 +34,7 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
@@ -395,11 +396,11 @@ public final class PrePushLocalServer implements Disposable {
         if (ApplicationManager.getApplication().isHeadlessEnvironment()) return runCompile(request, null);
         java.util.concurrent.CompletableFuture<PrePushValidationCoordinator.Outcome> result =
             new java.util.concurrent.CompletableFuture<>();
-        new com.intellij.openapi.progress.Task.Backgroundable(project, "Pre-push check", true) {
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Pre-push: compilation check", true) {
             @Override
             public void run(@org.jetbrains.annotations.NotNull com.intellij.openapi.progress.ProgressIndicator indicator) {
                 indicator.setIndeterminate(true);
-                indicator.setText("Checking pushed changes…");
+                indicator.setText("Preparing compilation check…");
                 PrePushValidationCoordinator.Outcome outcome = runCompile(request, indicator);
                 result.complete(indicator.isCanceled() ? USER_CANCELED : outcome);
             }
@@ -416,7 +417,10 @@ public final class PrePushLocalServer implements Disposable {
             }
         }.queue();
         try {
-            return result.get(COMPILE_TIMEOUT_SECONDS + 30, TimeUnit.SECONDS);
+            // Review runs in parallel and may wait for the large-push question, so allow for it.
+            long reviewWait = REVIEW_BUDGET_SECONDS
+                + com.github.prepushchecker.review.ReviewSettings.confirmTimeoutSeconds(project) + 30L;
+            return result.get(Math.max(COMPILE_TIMEOUT_SECONDS, reviewWait) + 30L, TimeUnit.SECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return PrePushValidationCoordinator.Outcome.canceled();
@@ -448,6 +452,8 @@ public final class PrePushLocalServer implements Disposable {
         SnapshotToken before = captureSnapshot(normalizedRequest);
         String requestKey = buildRequestKey(normalizedRequest, projectScope, before);
 
+        // The AI review runs next to the compile in its own progress task, not in front of it.
+        ReviewRun reviewRun = startReview(normalizedRequest, waiter, requestKey);
         AtomicBoolean cacheHit = new AtomicBoolean();
         PrePushValidationCoordinator.Outcome outcome = PrePushValidationCoordinator.getInstance(project).request(
             requestKey,
@@ -457,17 +463,10 @@ public final class PrePushLocalServer implements Disposable {
                         && !request.expectedHead().equals(before.actualHead())) {
                     return null;
                 }
-                // AI review gate: cheap when every pushed file was already reviewed.
-                List<String> reviewErrors = runReviewGate(normalizedRequest);
-                if (!reviewErrors.isEmpty()) {
-                    if (!snapshotMatches(normalizedRequest, before)) {
-                        CompilationErrorService.getInstance(project).clearErrors();
-                        throw new PrePushValidationCoordinator.StaleSnapshotException(
-                            "repository changed during validation; retry push");
-                    }
-                    return reviewErrors;
-                }
                 // A clean IDE build says nothing about Ant layer order, so this runs first.
+                if (PrePushCheckerSettings.isLayerCheckEnabled(project)) {
+                    PrePushValidationCoordinator.ownerIndicator().setText("Checking layer rules…");
+                }
                 List<String> layerErrors = runLayerCheck(normalizedRequest);
                 if (!layerErrors.isEmpty()) {
                     if (!snapshotMatches(normalizedRequest, before)) {
@@ -486,6 +485,9 @@ public final class PrePushLocalServer implements Disposable {
                     throw new PrePushValidationCoordinator.StaleSnapshotException(
                         "repository changed before validation started; retry push");
                 }
+                PrePushValidationCoordinator.ownerIndicator().setText(compilePaths.isEmpty()
+                    ? "Compiling the whole project…"
+                    : "Compiling " + compilePaths.size() + " changed file(s)…");
                 List<String> result = runCompileSingleFlight(compilePaths);
                 if (!snapshotMatches(normalizedRequest, before)) {
                     CompilationErrorService.getInstance(project).clearErrors();
@@ -497,8 +499,166 @@ public final class PrePushLocalServer implements Disposable {
             waiter,
             COMPILE_TIMEOUT_SECONDS,
             TimeUnit.SECONDS);
+        outcome = joinReview(reviewRun, outcome, normalizedRequest, before, waiter);
+        if (outcome == USER_CANCELED) return outcome;
         recordStats(normalizedRequest, requestKey, outcome, cacheHit.get());
         return outcome;
+    }
+
+    /** The AI review of one push, running in parallel with the compile. */
+    private static final class ReviewRun {
+        final java.util.concurrent.CompletableFuture<List<String>> future = new java.util.concurrent.CompletableFuture<>();
+        volatile ProgressIndicator indicator;
+        volatile boolean canceled;
+        /** Pushes waiting on this review; identical pushes share one run. */
+        final AtomicInteger waiters = new AtomicInteger(1);
+
+        /** One waiter leaves; the review stops only when the last one has gone. */
+        void release() {
+            if (waiters.decrementAndGet() <= 0 && !future.isDone()) cancel();
+        }
+
+        void cancel() {
+            ProgressIndicator i = indicator;
+            if (i != null && i.isRunning()) i.cancel();
+            canceled = true;
+            future.complete(Collections.emptyList());
+        }
+    }
+
+    /** Running reviews by request key, so identical pushes share one review (and one dialog, one AI call). */
+    private final Map<String, ReviewRun> activeReviews = new ConcurrentHashMap<>();
+
+    private ReviewRun startReview(
+        ValidationRequest request,
+        @org.jetbrains.annotations.Nullable ProgressIndicator compileWaiter,
+        String requestKey
+    ) {
+        if (request.repositoryRoot().isBlank() || request.requestedPaths().isEmpty()
+                || !com.github.prepushchecker.review.ReviewSettings.isEnabled(project)
+                || com.github.prepushchecker.review.ReviewService.getInstance(project)
+                    .rules(Path.of(request.repositoryRoot())) == null) {
+            ReviewRun none = new ReviewRun();
+            none.future.complete(Collections.emptyList()); // review off or no rule file: no progress row
+            return none;
+        }
+        ReviewRun run;
+        synchronized (activeReviews) {
+            ReviewRun existing = activeReviews.get(requestKey);
+            if (existing != null && !existing.future.isDone()) {
+                existing.waiters.incrementAndGet();
+                return existing;
+            }
+            run = new ReviewRun();
+            activeReviews.put(requestKey, run);
+        }
+        ReviewRun owned = run;
+        owned.future.whenComplete((lines, error) -> activeReviews.remove(requestKey, owned));
+        // Stopping the review from IntelliJ stops the whole push, compile included.
+        if (compileWaiter != null) {
+            run.future.thenRun(() -> {
+                if (owned.canceled && compileWaiter.isRunning()) compileWaiter.cancel();
+            });
+        }
+        if (ApplicationManager.getApplication().isHeadlessEnvironment()) {
+            ApplicationManager.getApplication().executeOnPooledThread(() -> {
+                com.intellij.openapi.progress.util.ProgressIndicatorBase indicator =
+                    new com.intellij.openapi.progress.util.ProgressIndicatorBase();
+                run.indicator = indicator;
+                try {
+                    run.future.complete(runReviewGate(request, indicator));
+                } catch (Throwable t) {
+                    run.future.complete(Collections.emptyList());
+                }
+            });
+            return run;
+        }
+        new com.intellij.openapi.progress.Task.Backgroundable(project, "Pre-push: AI review", true) {
+            @Override
+            public void run(@org.jetbrains.annotations.NotNull ProgressIndicator indicator) {
+                run.indicator = indicator;
+                indicator.setIndeterminate(true);
+                indicator.setText("Checking which files need an AI review…");
+                try {
+                    List<String> lines = runReviewGate(request, indicator);
+                    if (indicator.isCanceled()) run.canceled = true;
+                    run.future.complete(lines);
+                } catch (ProcessCanceledException e) {
+                    run.canceled = true;
+                    run.future.complete(Collections.emptyList());
+                    throw e;
+                }
+            }
+
+            @Override
+            public void onCancel() {
+                run.canceled = true;
+                run.future.complete(Collections.emptyList());
+            }
+
+            @Override
+            public void onThrowable(@org.jetbrains.annotations.NotNull Throwable error) {
+                LOG.warn("AI review task failed; continuing with the compile result", error);
+                run.future.complete(Collections.emptyList());
+            }
+        }.queue();
+        return run;
+    }
+
+    /**
+     * Waits for the review and merges its blocking lines into the compile outcome. Polls the compile
+     * waiter so Stop on the compile row ends the wait at once, and re-checks the snapshot even when
+     * the review found nothing (the checkout may have changed while both ran).
+     */
+    private PrePushValidationCoordinator.Outcome joinReview(
+        ReviewRun run,
+        PrePushValidationCoordinator.Outcome outcome,
+        ValidationRequest request,
+        SnapshotToken before,
+        @org.jetbrains.annotations.Nullable ProgressIndicator waiter
+    ) {
+        if (outcome.status() != PrePushValidationCoordinator.Status.COMPLETED) {
+            run.release(); // push is already decided
+            return outcome;
+        }
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(REVIEW_BUDGET_SECONDS
+            + com.github.prepushchecker.review.ReviewSettings.confirmTimeoutSeconds(project) + 30L);
+        List<String> reviewLines = Collections.emptyList();
+        try {
+            while (true) {
+                if (waiter != null && waiter.isCanceled()) {
+                    run.release();
+                    return USER_CANCELED;
+                }
+                if (run.canceled) return USER_CANCELED;
+                try {
+                    reviewLines = run.future.get(100L, TimeUnit.MILLISECONDS);
+                    break;
+                } catch (TimeoutException waiting) {
+                    if (System.nanoTime() >= deadline) {
+                        run.release();
+                        return PrePushValidationCoordinator.Outcome.timeout();
+                    }
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            run.release();
+            return PrePushValidationCoordinator.Outcome.canceled();
+        } catch (java.util.concurrent.ExecutionException e) {
+            LOG.warn("AI review gate failed; continuing with the compile result", e.getCause());
+        }
+        run.release();
+        if (run.canceled) return USER_CANCELED;
+        if (!snapshotMatches(request, before)) {
+            CompilationErrorService.getInstance(project).clearErrors();
+            return PrePushValidationCoordinator.Outcome.stale("repository changed during validation; retry push");
+        }
+        if (reviewLines.isEmpty()) return outcome;
+        List<String> combined = new ArrayList<>(reviewLines);
+        combined.addAll(outcome.errors());
+        publishErrors(combined);
+        return PrePushValidationCoordinator.Outcome.completed(combined);
     }
 
     /** Counts this verdict in {@link PushStats}. A failure here must never affect the push. */
@@ -537,7 +697,7 @@ public final class PrePushLocalServer implements Disposable {
      * AI review gate for the pushed files: blocking lines, or empty to go on. An on-push review
      * may run here; it gets {@link #REVIEW_BUDGET_SECONDS} so the compile still has time.
      */
-    private List<String> runReviewGate(ValidationRequest request) {
+    private List<String> runReviewGate(ValidationRequest request, ProgressIndicator indicator) {
         if (request.repositoryRoot().isBlank() || request.requestedPaths().isEmpty()) {
             return Collections.emptyList();
         }
@@ -548,11 +708,9 @@ public final class PrePushLocalServer implements Disposable {
                 Path.of(request.repositoryRoot()), paths,
                 request.rangeBase().isBlank() ? null : request.rangeBase(),
                 request.pushedHead().isBlank() ? null : request.pushedHead(),
-                // Runs on the coordinator thread: its owner indicator is canceled when the user
-                // stops the push's progress, and its text is mirrored to that progress.
-                PrePushValidationCoordinator.ownerIndicator(),
+                // The "Pre-push: AI review" task's own indicator: Stop cancels it, its text is the progress.
+                indicator,
                 java.time.Duration.ofSeconds(REVIEW_BUDGET_SECONDS));
-            if (!lines.isEmpty()) publishErrors(lines);
             return lines;
         } catch (ProcessCanceledException e) {
             throw e;
@@ -708,6 +866,9 @@ public final class PrePushLocalServer implements Disposable {
     private List<String> runCompileSingleFlight(List<String> requestedPaths) throws TimeoutException {
         long startNanos = System.nanoTime();
         ProgressIndicator owner = PrePushValidationCoordinator.ownerIndicator();
+        if (PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project)) {
+            owner.setText("Checking dependencies against a clean snapshot of HEAD…");
+        }
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
             PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, owner);
         if (strictSnapshot.wasChecked()) {
