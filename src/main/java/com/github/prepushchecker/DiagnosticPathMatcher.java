@@ -16,24 +16,21 @@ final class DiagnosticPathMatcher {
 
     static @Nullable String normalizeProjectPath(@NotNull Project project, @NotNull String input) {
         String value = input.trim().replace('\\', '/');
-        if (value.startsWith("file://")) value = value.substring("file://".length());
-        int snapshot = value.indexOf("/prepushchecker-snapshot.");
-        if (snapshot >= 0) {
-            int worktree = value.indexOf("/worktree/", snapshot);
-            if (worktree >= 0) value = value.substring(worktree + 10);
+        if (value.startsWith("file:")) {
+            try { value = Path.of(java.net.URI.create(value)).toString().replace('\\', '/'); }
+            catch (IllegalArgumentException invalid) { return null; }
         }
-        while (value.startsWith("./")) value = value.substring(2);
+        if (value.chars().anyMatch(Character::isISOControl)) return null;
         if (!isAbsolute(value)) return cleanRelative(value);
-
+        String base = project.getBasePath();
+        String relative = base == null ? null : relativeToRoot(value, base);
+        if (relative != null) return relative;
+        // An attached repository outside the project can have exactly the same relative
+        // layout. Keep its root in the identity and in the persisted selection.
         for (String root : roots(project)) {
-            String relative = relativeTo(value, root);
-            if (relative != null) return cleanRelative(relative);
-            if (root.startsWith("/private/")) {
-                relative = relativeTo(value, root.substring(8));
-            } else {
-                relative = relativeTo(value, "/private" + root);
-            }
-            if (relative != null) return cleanRelative(relative);
+            if (base != null && root.equals(base)) continue;
+            relative = relativeToRoot(value, root);
+            if (relative != null) return root + "/" + relative;
         }
         return null;
     }
@@ -65,15 +62,18 @@ final class DiagnosticPathMatcher {
     }
 
     static @Nullable String relativeToRoot(@NotNull String input, @NotNull String root) {
-        String value = cleanAbsolute(input);
-        String relative = relativeTo(value, root);
-        if (relative == null) {
-            String cleanRoot = cleanAbsolute(root);
-            relative = cleanRoot.startsWith("/private/")
-                ? relativeTo(value, cleanRoot.substring(8))
-                : relativeTo(value, "/private" + cleanRoot);
-        }
+        String value = macPublicPath(cleanAbsolute(input));
+        String relative = relativeTo(value, macPublicPath(cleanAbsolute(root)));
         return relative == null ? null : cleanRelative(relative);
+    }
+
+    private static String macPublicPath(String path) {
+        if (com.intellij.openapi.util.SystemInfoRt.isMac
+                && (path.startsWith("/private/var/") || path.startsWith("/private/tmp/")
+                    || path.equals("/private/var") || path.equals("/private/tmp"))) {
+            return path.substring("/private".length());
+        }
+        return path;
     }
 
     static boolean canIgnoreDiagnostic(@NotNull Project project, @Nullable String diagnostic) {
@@ -84,34 +84,21 @@ final class DiagnosticPathMatcher {
             && !isAlwaysBlocking(diagnostic);
     }
 
-    private static final java.util.regex.Pattern THROWN_TYPE_PREFIX = java.util.regex.Pattern.compile(
-        "^(java|javax|kotlin|org\\.jetbrains)\\..*(Exception|Error)\\b");
-
     /**
      * Infrastructure-level failures (compiler crashes, OOMs, aborted builds) can never be
      * suppressed by an ignore rule — only checks whether the message body names a real
      * compiler-infrastructure failure. Must NOT inspect the file path: source file names like
      * {@code PaymentException.java} legitimately contain words such as "exception".
      */
-    private static boolean isAlwaysBlocking(String diagnostic) {
+    static boolean isAlwaysBlocking(String diagnostic) {
         String path = CompilationEntryRenderer.extractPath(diagnostic);
-        if (path == null || "unknown".equals(path)) return true;
+        if (path == null || "unknown".equals(path) || !diagnostic.startsWith("[")
+                || CrossLayerImportCheck.isLayerDiagnostic(diagnostic)) return true;
 
         String message = CompilationEntryRenderer.extractMessage(diagnostic);
         String body = message != null ? message : diagnostic;
         String lower = body.toLowerCase(java.util.Locale.ROOT);
-        return lower.contains("internal compiler error")
-            || lower.contains("internal error")
-            || lower.contains("exception in thread")
-            || lower.contains("stackoverflowerror")
-            || lower.contains("stack overflow")
-            || lower.contains("outofmemoryerror")
-            || (lower.contains("annotation processor") && lower.contains("failed"))
-            || lower.contains("compiler plugin")
-            || lower.contains("timed out")
-            || lower.contains("was aborted")
-            || lower.contains("build script")
-            || THROWN_TYPE_PREFIX.matcher(body.trim()).find();
+        return CompilerOutputRules.INFRASTRUCTURE_PATTERN.matcher(lower.trim()).find();
     }
 
     static Set<String> roots(Project project) {
@@ -125,10 +112,9 @@ final class DiagnosticPathMatcher {
     }
 
     private static String relativeTo(String value, String root) {
-        String normalizedRoot = cleanAbsolute(root);
-        if (value.equals(normalizedRoot)) return "";
-        return value.startsWith(normalizedRoot + "/")
-            ? value.substring(normalizedRoot.length() + 1) : null;
+        if (value.equals(root)) return "";
+        String prefix = root.endsWith("/") ? root : root + "/";
+        return value.startsWith(prefix) ? value.substring(prefix.length()) : null;
     }
 
     private static String cleanAbsolute(String value) {
@@ -145,6 +131,7 @@ final class DiagnosticPathMatcher {
     }
 
     private static boolean isAbsolute(String value) {
-        return value.startsWith("/") || value.matches("^[A-Za-z]:/.*");
+        return value.startsWith("/") || (value.length() >= 3 && Character.isLetter(value.charAt(0))
+            && value.charAt(1) == ':' && value.charAt(2) == '/');
     }
 }

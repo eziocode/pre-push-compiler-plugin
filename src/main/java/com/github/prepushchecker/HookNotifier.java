@@ -30,6 +30,22 @@ final class HookNotifier {
     private HookNotifier() {
     }
 
+    static void offerSetup(Project project) {
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed() || GitHookInstaller.isRemovalStarted() || !HookSetup.get(project).claimPrompt()) return;
+            Notification prompt = NotificationGroupManager.getInstance().getNotificationGroup(NOTIFICATION_GROUP_ID)
+                .createNotification("Install pre-push hooks for this project?",
+                    "Enable checks for current and future Git roots in "
+                        + StringUtil.escapeXmlEntities(project.getName())
+                        + ". You can also install them later from Compilation Checker.",
+                    NotificationType.INFORMATION);
+            prompt.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring("Install Hooks",
+                () -> install(project)));
+            prompt.addAction(com.intellij.notification.NotificationAction.createSimpleExpiring("Skip", () -> {}));
+            prompt.notify(project);
+        });
+    }
+
     static void showNotInstalled(@NotNull Project project,
                                  @NotNull List<GitHookInstaller.HookRepairResult> failures) {
         if (failures.isEmpty()) return;

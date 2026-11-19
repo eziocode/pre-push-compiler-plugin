@@ -21,6 +21,16 @@ public class ReviewPromptTest extends TestCase {
              }
         """;
 
+    public void testFixDetectsNewCopiesOfAdjacentContext() {
+        String file = "List.of(\n    oldValue,\n    lastValue);\n";
+        assertTrue(ReviewPrompt.repeatsContext(file, new ReviewPrompt.Fix(2, 2, "List.of(\n    newValue,")));
+        assertTrue(ReviewPrompt.repeatsContext(file, new ReviewPrompt.Fix(2, 2, "    newValue,\n    lastValue);")));
+        assertFalse(ReviewPrompt.repeatsContext(file, new ReviewPrompt.Fix(2, 2, "    newValue,")));
+        assertTrue(ReviewPrompt.repeatsContext(file, new ReviewPrompt.Fix(1, 2, "List.of(\nList.of(\n    newValue,")));
+        assertFalse(ReviewPrompt.repeatsContext("tick();\ntick();\nold();\n",
+            new ReviewPrompt.Fix(2, 3, "tick();\nfixed();")));
+    }
+
     public void testNumberDiffUsesNewFileLines() {
         String numbered = ReviewPrompt.numberDiff(DIFF);
         assertTrue(numbered, numbered.contains("   10       if (FeatureChecks"));

@@ -7,7 +7,6 @@ import com.intellij.openapi.module.Module;
 import com.intellij.openapi.module.ModuleManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.roots.ProjectFileIndex;
-import com.intellij.openapi.util.io.FileUtil;
 import com.intellij.openapi.util.registry.Registry;
 import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
@@ -61,7 +60,8 @@ final class CompilationSupport {
 
     static @NotNull List<String> formatCompilerMessages(
         @NotNull Project project,
-        CompilerMessage[] messages
+        CompilerMessage[] messages,
+        int errorCount
     ) {
         if (messages == null || messages.length == 0) {
             return List.of("Compilation failed with an unknown compiler error.");
@@ -69,22 +69,26 @@ final class CompilationSupport {
 
         List<String> blocking = new ArrayList<>();
         List<String> ignored = new ArrayList<>();
-        int omittedBlocking = 0;
+        int omittedBlocking = Math.max(0, errorCount - messages.length);
         for (CompilerMessage message : messages) {
-            if (message == null) continue;
+            if (message == null) {
+                omittedBlocking++;
+                continue;
+            }
             VirtualFile file = message.getVirtualFile();
-            StringBuilder entry = new StringBuilder("[")
-                .append(file == null ? "unknown" : toDisplayPath(project, file));
+            String path = file == null ? "unknown" : toDisplayPath(project, file);
+            StringBuilder entry = new StringBuilder("[").append(path.contains("]") ? "unknown" : path);
             String prefix = message.getRenderTextPrefix();
             if (prefix != null && !prefix.isBlank()) {
                 entry.append(' ').append(prefix.trim());
             }
             entry.append("] ").append(message.getMessage() == null ? "" : message.getMessage());
+            String diagnostic = entry.toString();
             List<String> target = file != null
-                && DiagnosticPathMatcher.isIgnoredDiagnostic(project, entry.toString())
+                && DiagnosticPathMatcher.isIgnoredDiagnostic(project, diagnostic)
                 ? ignored : blocking;
             if (target.size() < CompilationErrorService.MAX_RETAINED_ERRORS) {
-                target.add(CompilationErrorService.compactError(entry.toString()));
+                target.add(CompilationErrorService.compactError(diagnostic));
             } else if (target == blocking) {
                 omittedBlocking++;
             }
@@ -108,7 +112,7 @@ final class CompilationSupport {
     ) {
         String basePath = project.getBasePath();
         if (basePath == null) return file.getPath();
-        String relative = FileUtil.getRelativePath(basePath, file.getPath(), '/');
+        String relative = DiagnosticPathMatcher.relativeToRoot(file.getPath(), basePath);
         return relative == null ? file.getPath() : relative;
     }
 }

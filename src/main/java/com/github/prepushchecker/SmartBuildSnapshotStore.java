@@ -43,6 +43,7 @@ public final class SmartBuildSnapshotStore implements PersistentStateComponent<S
         @XCollection(style = XCollection.Style.v2)
         public List<String> errors = new ArrayList<>();
         public int errorCount;
+        public boolean completeDiagnostics;
         public long finishedAt;
         public long lastUsedAt;
         public String source = Source.IDE_BUILD.name();
@@ -107,6 +108,8 @@ public final class SmartBuildSnapshotStore implements PersistentStateComponent<S
         entry.fingerprint = fingerprint;
         entry.errorCount = rawErrors.size();
         entry.errors = compact(rawErrors);
+        entry.completeDiagnostics = rawErrors.size() <= MAX_STORED_ERRORS
+            && rawErrors.stream().allMatch(error -> error != null && error.length() <= MAX_STORED_ERROR_CHARS);
         entry.finishedAt = now;
         entry.lastUsedAt = now;
         entry.source = source.name();
@@ -182,6 +185,7 @@ public final class SmartBuildSnapshotStore implements PersistentStateComponent<S
         copy.fingerprint = source.fingerprint;
         copy.errors = source.errorList();
         copy.errorCount = source.errorCount;
+        copy.completeDiagnostics = source.completeDiagnostics;
         copy.finishedAt = source.finishedAt;
         copy.lastUsedAt = source.lastUsedAt;
         copy.source = source.source;

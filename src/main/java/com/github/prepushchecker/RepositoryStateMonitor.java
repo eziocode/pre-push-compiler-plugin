@@ -44,6 +44,20 @@ public final class RepositoryStateMonitor {
                 SmartBuildService.getInstance(project).repositoryChanged();
                 scheduleRefresh(repository.getRoot().getPath());
             });
+        project.getMessageBus().connect(project).subscribe(
+            com.intellij.dvcs.repo.VcsRepositoryManager.VCS_REPOSITORY_MAPPING_UPDATED, () -> {
+                if (project.isDisposed()) return;
+                for (GitRepository repo : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+                    scheduleRefresh(repo.getRoot().getPath());
+                }
+            });
+        com.intellij.openapi.vcs.ProjectLevelVcsManager.getInstance(project).runAfterInitialization(() -> {
+            if (!project.isDisposed() && com.github.prepushchecker.review.ReviewStateStore.getInstance(project).hasOpenFindings()) {
+                for (GitRepository repository : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
+                    schedulePrune(repository.getRoot().getPath());
+                }
+            }
+        });
         // Uncommitted edits reverted or resolved: their review results may be stale now.
         project.getMessageBus().connect(project).subscribe(
             com.intellij.openapi.vcs.changes.ChangeListListener.TOPIC,
@@ -51,7 +65,7 @@ public final class RepositoryStateMonitor {
                 @Override
                 public void changeListUpdateDone() {
                     if (project.isDisposed()
-                            || com.github.prepushchecker.review.ReviewStateStore.getInstance(project).isEmpty()) {
+                            || !com.github.prepushchecker.review.ReviewStateStore.getInstance(project).hasOpenFindings()) {
                         return;
                     }
                     for (GitRepository repository
@@ -78,12 +92,14 @@ public final class RepositoryStateMonitor {
         try {
             if (project.isDisposed()) return;
             // A push being checked has not reached the remote yet; prune after it.
-            if (PrePushValidationCoordinator.getInstance(project).hasPendingWork()) {
+            if (PrePushValidationCoordinator.getInstance(project).hasPendingWork()
+                    || com.github.prepushchecker.review.ReviewService.getInstance(project).isRunning()) {
                 schedulePrune(root);
                 return;
             }
-            com.github.prepushchecker.review.ReviewService.getInstance(project)
-                .pruneStale(java.nio.file.Path.of(root));
+            if (!com.github.prepushchecker.review.ReviewService.getInstance(project).pruneStale(java.nio.file.Path.of(root))) {
+                schedulePrune(root);
+            }
         } catch (Throwable failure) {
             LOG.debug("Could not clear stale review results for " + root, failure);
         }
@@ -111,8 +127,8 @@ public final class RepositoryStateMonitor {
             Long last = lastRepairAt.get(root);
             if (last != null && now - last < REPAIR_INTERVAL_MILLIS) return;
             lastRepairAt.put(root, now);
-            GitHookInstaller.HookRepairResult result = GitHookInstaller.repair(root);
-            if (!result.isSuccess() && !GitHookInstaller.isRemovalStarted()) {
+            GitHookInstaller.HookRepairResult result = GitHookInstaller.checkRoot(project, root, true);
+            if (result != null && !result.isSuccess() && !GitHookInstaller.isRemovalStarted()) {
                 HookNotifier.showNotInstalled(project, List.of(result));
             }
         } catch (Throwable failure) {

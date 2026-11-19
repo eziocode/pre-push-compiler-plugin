@@ -59,14 +59,25 @@ public final class ProcessExecution {
         @NotNull Duration timeout,
         String stdin
     ) throws IOException, InterruptedException {
+        return run(processBuilder, timeout, stdin, false);
+    }
+
+    /** Machine-readable stdout. Preserve separators and reject results beyond the capture limit. */
+    public static Result runWithCompleteOutput(ProcessBuilder builder, Duration timeout)
+        throws IOException, InterruptedException {
+        return run(builder, timeout, null, true);
+    }
+
+    private static Result run(ProcessBuilder processBuilder, Duration timeout, String stdin, boolean exact)
+        throws IOException, InterruptedException {
         if (timeout.isNegative()) throw new IllegalArgumentException("Timeout must not be negative.");
         long timeoutNanos = timeout.toNanos();
         Process process = processBuilder.start();
         long started = System.nanoTime();
-        CompletableFuture<String> stdout = readAsync(process.getInputStream());
+        CompletableFuture<String> stdout = readAsync(process.getInputStream(), exact);
         CompletableFuture<String> stderr = processBuilder.redirectErrorStream()
             ? CompletableFuture.completedFuture("")
-            : readAsync(process.getErrorStream());
+            : readAsync(process.getErrorStream(), false);
         CompletableFuture<Void> input = stdin == null ? CompletableFuture.completedFuture(null)
             : CompletableFuture.runAsync(() -> {
                 try {
@@ -90,9 +101,10 @@ public final class ProcessExecution {
                 terminate(process);
                 process.waitFor(2, TimeUnit.SECONDS);
             }
+            String output = awaitDrain(stdout);
             return new Result(
                 finished ? process.exitValue() : -1,
-                awaitDrain(stdout).trim(),
+                exact ? output : output.trim(),
                 awaitDrain(stderr).trim(),
                 !finished
             );
@@ -129,17 +141,20 @@ public final class ProcessExecution {
         }
     }
 
-    private static CompletableFuture<String> readAsync(InputStream inputStream) {
+    private static CompletableFuture<String> readAsync(InputStream inputStream, boolean exact) {
         return CompletableFuture.supplyAsync(() -> {
             try (InputStream in = inputStream) {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
                 byte[] chunk = new byte[8192];
+                boolean truncated = false;
                 int read;
                 // Keep draining past the cap so the child never blocks on a full pipe.
                 while ((read = in.read(chunk)) != -1) {
                     int room = MAX_CAPTURED_BYTES - buffer.size();
+                    if (room < read) truncated = true;
                     if (room > 0) buffer.write(chunk, 0, Math.min(read, room));
                 }
+                if (exact && truncated) throw new IOException("Process output exceeded capture limit");
                 return buffer.toString(StandardCharsets.UTF_8);
             } catch (IOException e) {
                 throw new CompletionException(e);

@@ -8,11 +8,73 @@ import java.nio.file.Files;
 import java.util.List;
 
 public class PrePushSnapshotGuardTest extends BasePlatformTestCase {
+    public void testSnapshotVerdictRequiresCompleteIgnoredOnlyEvidence() {
+        var worktree = java.nio.file.Path.of("/tmp/prepushchecker-snapshot-active/worktree");
+        var roots = new ExternalPushErrorLoader.SnapshotRoots(worktree, java.nio.file.Path.of(getProject().getBasePath()));
+        var ignored = IgnoredCompilationFiles.getInstance(getProject());
+        ignored.add("src/App.java");
+        String error = "[ERROR] " + worktree + "/src/App.java:[1,2] cannot find symbol";
+        var pass = PrePushSnapshotGuard.snapshotFailure(getProject(), roots, List.of("src/App.java"),
+            List.of(error), 1, false, false);
+        assertTrue(pass.wasChecked());
+        assertEquals(1, pass.errors().size());
+        assertTrue(DiagnosticPathMatcher.filterIgnored(getProject(), pass.errors()).isEmpty());
+        for (String extra : List.of("[ERROR] dependency resolution failed",
+                "[ERROR] " + worktree + "/other/App.java:[2,3] incompatible types",
+                "2 errors")) {
+            var blocked = PrePushSnapshotGuard.snapshotFailure(getProject(), roots, List.of("src/App.java"),
+                List.of(error, extra), 1, false, false);
+            assertTrue(blocked.wasChecked());
+            assertFalse(DiagnosticPathMatcher.filterIgnored(getProject(), blocked.errors()).isEmpty());
+        }
+        for (boolean timedOut : List.of(false, true)) {
+            var blocked = PrePushSnapshotGuard.snapshotFailure(getProject(), roots, List.of("src/App.java"),
+                List.of(error), 1, timedOut, !timedOut);
+            assertFalse(DiagnosticPathMatcher.filterIgnored(getProject(), blocked.errors()).isEmpty());
+        }
+        ignored.remove("src/App.java");
+    }
+
+    public void testSnapshotBelowRepositoryRootUsesOriginalSourceIdentity() {
+        var projectRoot = java.nio.file.Path.of(getProject().getBasePath());
+        var checkout = java.nio.file.Path.of("/tmp/prepushchecker-snapshot/worktree");
+        var roots = new ExternalPushErrorLoader.SnapshotRoots(checkout, projectRoot.getParent());
+        var ignored = IgnoredCompilationFiles.getInstance(getProject());
+        ignored.add("src/Duplicate.java");
+        String suffix = "/src/Duplicate.java:2: error: missing symbol";
+        var out = ExternalPushErrorLoader.parseBuildOutput(getProject(), List.of(
+            checkout + suffix, checkout + "/" + projectRoot.getFileName() + suffix), roots);
+        assertEquals(1, DiagnosticPathMatcher.filterIgnored(getProject(), out.errors()).size());
+        ignored.remove("src/Duplicate.java");
+    }
+
+    public void testGradleAndMavenCompilationSummariesPreserveExactAttribution() {
+        var projectRoot = java.nio.file.Path.of(getProject().getBasePath());
+        var roots = new ExternalPushErrorLoader.SnapshotRoots(java.nio.file.Path.of("/tmp/tree"), projectRoot);
+        var ignored = IgnoredCompilationFiles.getInstance(getProject());
+        ignored.add("src/Only.java");
+        String error = "/tmp/tree/src/Only.java:5: error: cannot find symbol";
+        String goal = "[ERROR] Failed to execute goal org.apache.maven.plugins:maven-compiler-plugin:"
+            + "3.13.0:compile (default-compile) on project demo: Compilation failure: ";
+        for (var lines : List.of(List.of(error, "1 error", "FAILURE: Build failed with an exception.",
+                "* What went wrong:", "Execution failed for task ':compileJava'.",
+                "> Compilation failed; see the compiler output below.", "  " + error, "  1 error"),
+                List.of(goal + "/tmp/tree/src/Only.java:[5,2] cannot find symbol"),
+                List.of(error, "/tmp/tree/Other.java:8: warning: deprecated API", "  call();",
+                    "  ^", "1 warning", "1 error"))) {
+            var out = ExternalPushErrorLoader.parseBuildOutput(getProject(), lines, roots);
+            assertNull(out.unexplained());
+            assertFalse(out.errors().isEmpty());
+            assertEmpty(DiagnosticPathMatcher.filterIgnored(getProject(), out.errors()));
+        }
+        ignored.remove("src/Only.java");
+    }
+
     public void testDisabledGuardDoesNotBlock() {
         PrePushCheckerSettings.setStrictSnapshotGuardEnabled(getProject(), false);
 
         PrePushSnapshotGuard.SnapshotValidationResult result =
-            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(getProject(), List.of(), null);
+            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(getProject(), getProject().getBasePath(), List.of(), null);
 
         assertFalse(result.wasChecked());
         assertTrue(result.errors().isEmpty());

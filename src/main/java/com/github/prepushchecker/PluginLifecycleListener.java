@@ -105,7 +105,7 @@ public final class PluginLifecycleListener implements DynamicPluginListener, App
             try {
                 // Listen for repository changes first, then install the hook before anything else.
                 RepositoryStateMonitor.runStartup(project);
-                GitHookInstaller.installForProject(project, true);
+                GitHookInstaller.checkProjectHooks(project, true);
                 PrePushLocalServer.runStartup(project);
                 ExternalPushErrorLoader.runStartup(project);
                 SmartBuildService.runStartup(project);

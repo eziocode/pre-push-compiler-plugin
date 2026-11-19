@@ -550,6 +550,56 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         }
     }
 
+    public void testStartupLeavesMissingHookForUserChoice() throws Exception {
+        var properties = com.intellij.ide.util.PropertiesComponent.getInstance(getProject());
+        properties.unsetValue("prepushchecker.hookSetup");
+        Path root = Path.of(getProject().getBasePath());
+        Path hooks = Files.createDirectories(root.resolve(".git/hooks"));
+        Path main = hooks.resolve("pre-push");
+        Files.writeString(main, "#!/bin/sh\necho custom\n");
+        try {
+            GitHookInstaller.runStartup(getProject());
+            assertFalse(Files.exists(hooks.resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+            assertEquals("#!/bin/sh\necho custom\n", Files.readString(main));
+        } finally {
+            GitHookInstaller.uninstall(root.toString());
+            FileUtil.delete(root.resolve(".git").toFile());
+        }
+    }
+
+    public void testSetupDecisionSurvivesReopeningAndCoversFutureRoots() throws Exception {
+        var properties = com.intellij.ide.util.PropertiesComponent.getInstance(getProject());
+        properties.unsetValue("prepushchecker.hookSetup");
+        File repo = createTempDir("hook-choice");
+        runGit(repo, "init", "-q");
+        runGit(repo, "config", "core.hooksPath", ".githooks");
+        Path hook = repo.toPath().resolve(".githooks").resolve(GitHookInstaller.MANAGED_HOOK_NAME);
+        try {
+            HookSetup setup = HookSetup.get(getProject());
+            assertTrue(setup.claimPrompt());
+            assertFalse(new HookSetup(getProject()).claimPrompt());
+            Files.createDirectories(hook.getParent());
+            Path existing = hook.resolveSibling("pre-push");
+            Files.write(existing, new byte[]{(byte) 0xff});
+            assertNull(GitHookInstaller.checkRoot(getProject(), repo.getPath(), true));
+            assertFalse(Files.exists(hook));
+            assertEquals(-1, Files.readAllBytes(existing)[0]);
+            Files.writeString(existing, "#!/bin/sh\necho custom\n");
+            assertNull(GitHookInstaller.checkRoot(getProject(), repo.getPath(), true));
+            assertFalse(Files.exists(hook));
+            setup.enable();
+            assertTrue(new HookSetup(getProject()).enabled());
+            assertTrue(GitHookInstaller.checkRoot(getProject(), repo.getPath(), true).isSuccess());
+            assertTrue(Files.isExecutable(hook));
+            assertTrue(Files.isSameFile(hook,
+                GitHookInstaller.inspect(repo.getPath()).hooksDirectory().resolve(GitHookInstaller.MANAGED_HOOK_NAME)));
+        } finally {
+            properties.unsetValue("prepushchecker.hookSetup");
+            GitHookInstaller.uninstall(repo.getPath());
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+        }
+    }
+
     public void testInstallForProjectSkipsNonGitProjectSilently() {
         // Other tests in this class may leave a .git directory in the shared light project.
         FileUtil.delete(new File(getProject().getBasePath(), ".git"));
@@ -833,6 +883,64 @@ public class GitHookInstallerTest extends BasePlatformTestCase {
         assertEquals(repo.getCanonicalPath(), new File(values[1]).getCanonicalPath());
         assertEquals(normalizeMacPath(values[0]), normalizeMacPath(values[2]));
         assertTrue(Files.exists(staleOutput));
+    }
+
+    public void testFallbackAllowsOnlyFullyAttributedIgnoredCompilerFailures() throws Exception {
+        File repo = createFallbackRepository("prepush-ignored-source", true);
+        HookFixture fixture = installHookFixture(repo);
+        Path settings = repo.toPath().resolve(".idea/pre-push-checker/settings");
+        Files.createDirectories(settings.getParent());
+        Files.writeString(settings, "ignoredFile=src/with space/App.java\n");
+        Path mvn = fixture.fakeBin().resolve("mvn");
+        Files.writeString(mvn, """
+            #!/bin/sh
+            echo build >> "$PRE_PUSH_CHECKER_ORIGINAL_ROOT/build-count"
+            printf '%s\\n' "[ERROR] $PWD/src/with space/App.java:[2,4] cannot access Legacy"
+            printf '%s\\n' "$EXTRA_OUTPUT"
+            exit 1
+            """);
+        assertTrue(mvn.toFile().setExecutable(true));
+        HookRun allowed = runHook(fixture, Map.of("EXTRA_OUTPUT", ""));
+        assertEquals(allowed.output(), 0, allowed.exitCode());
+        assertEquals(1, Files.readAllLines(repo.toPath().resolve("build-count")).size());
+        for (String extra : List.of(
+                "[ERROR] other/App.java:[2,4] cannot find symbol",
+                "[ERROR] Failed to resolve dependency",
+                "error: invalid flag: -broken",
+                "unexpected build failure")) {
+            HookRun blocked = runHook(fixture, Map.of("EXTRA_OUTPUT", extra));
+            assertTrue(extra + blocked.output(), blocked.exitCode() != 0);
+        }
+        Files.writeString(settings, "");
+        assertTrue(runHook(fixture, Map.of("EXTRA_OUTPUT", "")).exitCode() != 0);
+    }
+
+    public void testGradleFallbackRecognizesKotlinUriAndRequiresAnError() throws Exception {
+        File repo = createFallbackRepository("prepush-ignored-kotlin", false);
+        Path wrapper = repo.toPath().resolve("gradlew");
+        Files.writeString(wrapper, """
+            #!/bin/sh
+            echo "$SEVERITY: file://$PWD/src/with%20space/App.kt:4:2 Unresolved reference"
+            echo "w: file://$PWD/other/File.kt:1:1 Deprecated API"
+            echo "1 warning"
+            echo "FAILURE: Build failed with an exception."
+            echo "* What went wrong:"
+            echo "Execution failed for task ':compileKotlin'."
+            echo "> Compilation error. See log for more details"
+            echo "BUILD FAILED in 1s"
+            exit 1
+            """);
+        assertTrue(wrapper.toFile().setExecutable(true));
+        runGit(repo, "add", "gradlew");
+        runGit(repo, "commit", "-m", "install build fixture");
+        HookFixture fixture = installHookFixture(repo);
+        Path settings = repo.toPath().resolve(".idea/pre-push-checker/settings");
+        Files.createDirectories(settings.getParent());
+        Files.writeString(settings, "ignoredFile=src/with space/App.kt\n");
+        HookRun error = runHook(fixture, Map.of("SEVERITY", "e"));
+        assertEquals(error.output(), 0, error.exitCode());
+        HookRun warning = runHook(fixture, Map.of("SEVERITY", "w"));
+        assertTrue(warning.output(), warning.exitCode() != 0);
     }
 
     public void testMavenFallbackRetriesParallelClasspathFailureSequentially() throws Exception {

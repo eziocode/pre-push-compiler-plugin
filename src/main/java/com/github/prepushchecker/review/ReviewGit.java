@@ -243,9 +243,16 @@ final class ReviewGit {
 
     /** Unpushed and uncommitted files of {@code root}: what can still need a review. */
     static @Nullable java.util.Set<String> pendingFiles(@NotNull Path root) {
-        if (headSha(root) == null) return new java.util.HashSet<>(changedFiles(root));
-        java.util.Set<String> out = new java.util.HashSet<>(changedFiles(root));
-        String first = git(root, List.of("rev-list", "--reverse", "HEAD", "--not", "--remotes"));
+        String status = git(root, List.of("status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"));
+        if (status == null) return null;
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (String entry : status.split("\0")) {
+            if (entry.length() > 3) out.add(entry.substring(3));
+        }
+        String head = git(root, List.of("rev-parse", "--revs-only", "HEAD"));
+        if (head == null) return null;
+        if (head.isBlank()) return out; // Valid repository before its first commit.
+        String first = git(root, List.of("rev-list", "--reverse", head.trim(), "--not", "--remotes"));
         if (first == null) return null;
         String oldest = first.lines().filter(l -> !l.isBlank()).findFirst().orElse(null);
         if (oldest == null) return out; // everything committed is on a remote
@@ -309,7 +316,8 @@ final class ReviewGit {
             pb.environment().put("GIT_TERMINAL_PROMPT", "0");
             pb.environment().put("GIT_ASKPASS", "");
             pb.environment().put("SSH_ASKPASS", "");
-            ProcessExecution.Result r = ProcessExecution.run(pb, TIMEOUT);
+            ProcessExecution.Result r = args.contains("-z") || args.contains("rev-list")
+                ? ProcessExecution.runWithCompleteOutput(pb, TIMEOUT) : ProcessExecution.run(pb, TIMEOUT);
             return r.isSuccess() ? r.stdout() : null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

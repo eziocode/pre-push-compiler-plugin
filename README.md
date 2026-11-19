@@ -178,7 +178,7 @@ closed and a mandatory review is blocked with a message to review from IntelliJ.
 
 ### Terminal / External Git Push (Sublime Merge, SourceTree, GitHub Desktop, …)
 
-On project open—or immediately when the plugin is installed/reinstalled into an already-open IDE—the plugin installs a managed `pre-push` hook in your repo's effective hooks directory. Repositories that set `core.hooksPath` are handled explicitly, so the hook is installed where terminal and external Git clients will actually execute it.
+When a project first needs a pre-push hook, choose **Install Hooks** or **Skip**. Installing covers all current and future Git roots in that IntelliJ project. Skipping or dismissing the prompt keeps setup manual. Each open project has its own choice. **Settings → Tools → Pre-Push Checker → Git Hooks** shows the full managed script path for each root, including custom `core.hooksPath` directories.
 
 When you push from a terminal or an external git client:
 

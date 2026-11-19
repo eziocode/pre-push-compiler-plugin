@@ -224,7 +224,7 @@ public final class GitHookInstaller {
         BypassController.getInstance(project).resetOnStartup();
         // Git repositories are usually not registered yet this early, so this pass is
         // best-effort and silent. The authoritative pass runs once VCS has initialised.
-        installForProject(project, false);
+        checkProjectHooks(project, false);
     }
 
     /**
@@ -235,26 +235,36 @@ public final class GitHookInstaller {
      *               "Install Pre-Push Hook" notification, and a healthy result clears it
      */
     static List<HookRepairResult> installForProject(@NotNull Project project, boolean notify) {
-        if (project.isDisposed() || removalStarted) return List.of();
-        PluginLifecycleListener.watchForUninstall();
-        touchGlobalMarker();
+        HookSetup.get(project).enable();
+        return checkProjectHooks(project, notify);
+    }
 
+    static List<String> projectRoots(@NotNull Project project) {
         LinkedHashSet<String> roots = new LinkedHashSet<>();
-        String basePath = project.getBasePath();
-        if (basePath != null && !basePath.isBlank() && resolveHooksDirectory(basePath) != null) {
-            roots.add(basePath);
+        String base = project.getBasePath();
+        if (base != null && !base.isBlank() && resolveDefaultHooksDirectory(base) != null) {
+            roots.add(resolveWorkTreeRoot(base).toString());
         }
         for (git4idea.repo.GitRepository repository
                 : git4idea.repo.GitRepositoryManager.getInstance(project).getRepositories()) {
-            roots.add(repository.getRoot().getPath());
+            roots.add(repository.getRoot().toNioPath().toAbsolutePath().normalize().toString());
         }
+        return List.copyOf(roots);
+    }
 
+    /** Automatic discovery may repair existing installations. New installations need project consent. */
+    static List<HookRepairResult> checkProjectHooks(@NotNull Project project, boolean notify) {
+        if (project.isDisposed() || removalStarted) return List.of();
+        PluginLifecycleListener.watchForUninstall();
+        touchGlobalMarker();
+        List<String> roots = projectRoots(project);
         List<HookRepairResult> results = new ArrayList<>();
         List<HookRepairResult> failures = new ArrayList<>();
         for (String root : roots) {
             if (project.isDisposed()) return results;
             PrePushCheckerSettings.syncSettingsFile(project, root);
-            HookRepairResult result = repair(root);
+            HookRepairResult result = checkRoot(project, root, notify);
+            if (result == null) continue;
             results.add(result);
             if (result.isSuccess()) {
                 LOG.info(root + ": " + result.statusText());
@@ -272,6 +282,20 @@ public final class GitHookInstaller {
             }
         }
         return results;
+    }
+
+    static @Nullable HookRepairResult checkRoot(Project project, String root, boolean notify) {
+        if (HookSetup.get(project).enabled()) return repair(root);
+        HookPaths paths = resolveHookPaths(root);
+        if (paths.hooksDirectory == null) return null;
+        if (containsManagedArtifacts(paths.hooksDirectory)
+                || paths.usesCoreHooksPath() && paths.legacyHooksDirectory != null
+                && !samePath(paths.hooksDirectory, paths.legacyHooksDirectory)
+                && containsManagedArtifacts(paths.legacyHooksDirectory)) {
+            return repair(root);
+        }
+        if (notify) HookNotifier.offerSetup(project);
+        return null;
     }
 
     static HookInspectionResult inspect(@NotNull Project project) {
@@ -650,7 +674,8 @@ public final class GitHookInstaller {
         try {
             return Files.readString(mainHook, StandardCharsets.UTF_8).contains(HOOK_MARKER);
         } catch (IOException e) {
-            return true;
+            // An unreadable or binary third-party hook is not evidence of a plugin installation.
+            return false;
         }
     }
 
@@ -861,7 +886,7 @@ public final class GitHookInstaller {
         return Path.of(path);
     }
 
-    private static Path resolveWorkTreeRoot(String basePath) {
+    static Path resolveWorkTreeRoot(String basePath) {
         Path workTreeRoot = queryGit(basePath, "rev-parse", "--show-toplevel");
         return workTreeRoot != null
             ? workTreeRoot.toAbsolutePath().normalize()
@@ -994,6 +1019,23 @@ public final class GitHookInstaller {
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }
+    }
+
+    private static String compilerDiagnosticFunctions() {
+        try (var stream = GitHookInstaller.class.getResourceAsStream("hooks/compiler-diagnostics.sh")) {
+            if (stream == null) throw new IllegalStateException("Missing hook diagnostic parser");
+            return new String(stream.readAllBytes(), StandardCharsets.UTF_8)
+                .replace("@MAVEN_GOAL@", awkRegex(CompilerOutputRules.MAVEN_GOAL))
+                .replace("@WRAPPER@", awkRegex(CompilerOutputRules.WRAPPER))
+                .replace("@INFRA@", awkRegex(CompilerOutputRules.INFRASTRUCTURE));
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    private static String awkRegex(String regex) {
+        // Embed an ERE in a slash-delimited awk pattern inside a shell single-quoted program.
+        return regex.replace("/", "\\/").replace("'", "'\\''");
     }
 
     static String buildManagedHookScript() {
@@ -1172,35 +1214,7 @@ public final class GitHookInstaller {
             "  done",
             "}",
             "",
-            "extract_error_records() {",
-            "  _out_file=\"$1\"",
-            "  _records_file=\"$2\"",
-            "  awk '",
-            "    function emit(path, line, kind, msg) {",
-            "      gsub(/\\t/, \" \", msg)",
-            "      print path \"\\t\" line \"\\t\" kind \"\\t\" msg",
-            "    }",
-            "    {",
-            "      raw=$0",
-            "      sub(/\\r$/, \"\", raw)",
-            "      line=raw",
-            "      sub(/^[[:space:]]+/, \"\", line)",
-            "      if (line ~ /^\\[ERROR\\][[:space:]]+/) line=substr(line, 9)",
-            "      if (match(line, /^(.+\\.(java|kt|kts|groovy|scala|xml|gradle|properties)):\\[([0-9]+),([0-9]+)\\][[:space:]]*(.+)$/, m)) {",
-            "        emit(m[1], m[3], \"maven\", m[5])",
-            "        next",
-            "      }",
-            "      if (match(line, /^(.+\\.(java|kt|kts|groovy|scala|xml|gradle|properties)):([0-9]+)(:[0-9]+)?:[[:space:]]*(error|warning):?[[:space:]]*(.+)$/, j)) {",
-            "        emit(j[1], j[3], j[5], j[6])",
-            "        next",
-            "      }",
-            "      if (match(line, /^e:[[:space:]]+(file:\\/\\/)?([^:]+\\.(kt|kts)):([0-9]+):([0-9]+)[[:space:]]+(.+)$/, k)) {",
-            "        emit(k[2], k[4], \"kotlin\", k[6])",
-            "      }",
-            "    }",
-            "  ' \"$_out_file\" > \"$_records_file\" 2>/dev/null || :",
-            "}",
-            "",
+            compilerDiagnosticFunctions(),
             "looks_like_stale_or_parallel_failure() {",
             "  _out_file=\"$1\"",
             "  _records_file=\"$2\"",
@@ -1216,32 +1230,6 @@ public final class GitHookInstaller {
             "}",
             "",
             "LAST_BUILD_TOOL=none",
-            "all_compiler_records_ignored() {",
-            "  _records_file=\"$1\"",
-            "  [ \"$LAST_BUILD_TOOL\" != custom ] || return 1",
-            "  [ -s \"$_records_file\" ] && [ -r \"$SETTINGS_FILE\" ] || return 1",
-            "  _seen=0",
-            "  while IFS='\t' read -r _path _line _kind _msg; do",
-            "    [ \"$_kind\" = warning ] && continue",
-            "    [ -n \"$_path\" ] || continue",
-            "    _seen=1",
-            "    _path=\"${_path#file://}\"",
-            "    case \"$_path\" in \"$SNAPSHOT_WORKTREE\"/*) _path=\"${_path#\"$SNAPSHOT_WORKTREE\"/}\" ;; esac",
-            "    case \"$_path\" in \"$REPO_ROOT\"/*) _path=\"${_path#\"$REPO_ROOT\"/}\" ;; esac",
-            "    case \"$_path\" in /private\"$REPO_ROOT\"/*) _path=\"${_path#/private\"$REPO_ROOT\"/}\" ;; esac",
-            // Keep this infra-failure set in sync with DiagnosticPathMatcher.isAlwaysBlocking().
-            "    _msg_lower=\"$(printf '%s' \"$_msg\" | tr 'A-Z' 'a-z')\"",
-            "    case \"$_msg_lower\" in",
-            "      *\"internal compiler error\"*|*\"internal error\"*|*\"exception in thread\"*| \\",
-            "      *\"stackoverflowerror\"*|*\"stack overflow\"*|*\"outofmemoryerror\"*| \\",
-            "      *\"compiler plugin\"*|*\"timed out\"*|*\"was aborted\"*|*\"build script\"*)",
-            "        return 1 ;;",
-            "    esac",
-            "    grep -Fqx \"ignoredFile=$_path\" \"$SETTINGS_FILE\" 2>/dev/null || return 1",
-            "  done < \"$_records_file\"",
-            "  [ \"$_seen\" -eq 1 ]",
-            "}",
-            "",
             "run_build_tool_command() {",
             "  _gradle_tasks=\"$1\"",
             "  _maven_goal=\"$2\"",
@@ -1290,6 +1278,15 @@ public final class GitHookInstaller {
             "  return 127",
             "}",
             "",
+            "assess_compiler_failure() {",
+            "  [ $rc -eq 1 ] && [ \"$LAST_BUILD_TOOL\" != custom ] || return 0",
+            "  extract_error_records \"$TMP_OUT\" \"$TMP_REC\" || return 0",
+            "  if all_compiler_records_ignored \"$TMP_REC\" && [ \"$FALLBACK_IGNORE_RULES\" = \"$(current_ignore_rules)\" ]; then",
+            "    log \"[pre-push] Compiler reported errors only in enabled ignored files. Proceeding.\"",
+            "    rc=0",
+            "  fi",
+            "}",
+            "",
             "run_compilation() {",
             "  setup_maven_java_home",
             "  TMP_OUT=\"$(mktemp 2>/dev/null || printf '%s/prepush-%s.out' \"${TMPDIR:-/tmp}\" $$)\"",
@@ -1312,17 +1309,17 @@ public final class GitHookInstaller {
             "",
             "  run_build_tool_command \"$GRADLE_TASKS\" \"$MAVEN_GOAL\" \"$TMP_OUT\" primary",
             "  rc=$?",
-            "  extract_error_records \"$TMP_OUT\" \"$TMP_REC\"",
+            "  assess_compiler_failure",
             "",
             "  if [ $rc -ne 0 ] && grep -Eiq 'Could not resolve|offline mode|No cached version|Cannot access .* in offline|Could not transfer artifact' \"$TMP_OUT\" 2>/dev/null; then",
             "    log \"[pre-push] Offline build could not resolve dependencies; retrying once online.\"",
             "    : > \"$TMP_OUT\" 2>/dev/null || true",
             "    run_build_tool_command \"$GRADLE_TASKS\" \"$MAVEN_GOAL\" \"$TMP_OUT\" online",
             "    rc=$?",
-            "    extract_error_records \"$TMP_OUT\" \"$TMP_REC\"",
+            "    assess_compiler_failure",
             "  fi",
             "",
-            "  if [ \"$rc\" -eq 127 ]; then",
+            "  if [ \"$rc\" -eq 127 ] && [ \"$LAST_BUILD_TOOL\" = none ]; then",
             "    log \"[pre-push] No supported build tool found. Skipping compilation check.\"",
             "    rm -f \"$TMP_OUT\" \"$TMP_REC\" 2>/dev/null",
             "    return 0",
@@ -1334,16 +1331,11 @@ public final class GitHookInstaller {
             "    : > \"$TMP_OUT\" 2>/dev/null || true",
             "    run_build_tool_command \"$GRADLE_TASKS\" \"$MAVEN_GOAL\" \"$TMP_OUT\" recovery",
             "    rc=$?",
-            "    extract_error_records \"$TMP_OUT\" \"$TMP_REC\"",
+            "    assess_compiler_failure",
             "  fi",
             "",
             "  # Full output -> log file (IntelliJ parses this).",
             "  cat \"$TMP_OUT\" >> \"$LOG_FILE\" 2>/dev/null || true",
-            "",
-            "  if [ $rc -ne 0 ] && all_compiler_records_ignored \"$TMP_REC\"; then",
-            "    log \"[pre-push] Compiler reported errors only in enabled ignored files. Proceeding.\"",
-            "    rc=0",
-            "  fi",
             "",
             "  # Only show a concise slice in the terminal when the check fails.",
             "  if [ $rc -ne 0 ]; then",
@@ -1422,7 +1414,7 @@ public final class GitHookInstaller {
             "",
             "# grep the temp file instead of piping: grep -q exits early and a pipe gives printf EPIPE.",
             "SOURCE_CHANGED=1",
-            "if ! grep -Eq '(^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|gradlew|mvnw|build\\.xml|\\.prepush-layers)$|(\\.java|\\.kt|\\.groovy|\\.scala|\\.jar)$' \"$CHANGED_SET_FILE\" 2>/dev/null; then",
+            "if ! grep -Eq '(^|/)(pom\\.xml|build\\.gradle(\\.kts)?|settings\\.gradle(\\.kts)?|gradle\\.properties|gradlew|mvnw|build\\.xml|\\.prepush-layers)$|(\\.java|\\.kts?|\\.groovy|\\.scala|\\.jar)$' \"$CHANGED_SET_FILE\" 2>/dev/null; then",
             "  SOURCE_CHANGED=0",
             "  if [ \"$REVIEW_IN_SCOPE\" -ne 1 ]; then",
             "    log \"[pre-push] No source or build changes detected. Skipping compilation check.\"",
@@ -1441,7 +1433,7 @@ public final class GitHookInstaller {
             "  case \"$f\" in",
             "    */src/test/*|*/src/testFixtures/*|*/src/integrationTest/*|*Test.java|*Test.kt|*Tests.java|*Tests.kt|*IT.java|*IT.kt)",
             "      TEST_CHANGED=1 ;;",
-            "    *.java|*.kt|*.groovy|*.scala|*.jar|*pom.xml|*build.gradle|*build.gradle.kts|*settings.gradle|*settings.gradle.kts|*gradle.properties)",
+            "    *.java|*.kt|*.kts|*.groovy|*.scala|*.jar|*pom.xml|*build.gradle|*build.gradle.kts|*settings.gradle|*settings.gradle.kts|*gradle.properties)",
             "      MAIN_CHANGED=1 ;;",
             "  esac",
             "done <<CHANGED_EOF",
@@ -1465,7 +1457,7 @@ public final class GitHookInstaller {
             "PORT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/server.port\"",
             "SETTINGS_FILE=\"$REPO_ROOT/.idea/pre-push-checker/settings\"",
             "HEAD_SHA=\"$(git rev-parse --verify HEAD 2>/dev/null || printf '')\"",
-            "FALLBACK_PROTOCOL_VERSION=2",
+            "FALLBACK_PROTOCOL_VERSION=3",
             "FALLBACK_RUN_RESULT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/last-fallback-run-v2\"",
             "LEGACY_FALLBACK_RESULT_FILE=\"$REPO_ROOT/.idea/pre-push-checker/last-fallback-result\"",
             "FALLBACK_LOCK_DIR=\"$REPO_ROOT/.idea/pre-push-checker/fallback.lock\"",
@@ -1630,11 +1622,15 @@ public final class GitHookInstaller {
             "fi",
             "FALLBACK_CHANGED_ID=\"$(printf '%s\\n' \"$CHANGED_FILES\" | cksum | awk '{print $1 \"-\" $2}')\"",
             "FALLBACK_JAVA_ID=\"${PRE_PUSH_CHECKER_JAVA_HOME:-${JAVA_HOME:-}}\"",
+            "current_ignore_rules() {",
+            "  sed -n '/^ignoredFile=/p' \"$SETTINGS_FILE\" 2>/dev/null || true",
+            "}",
+            "FALLBACK_IGNORE_RULES=\"$(current_ignore_rules)\"",
             "FALLBACK_IGNORED_ID=none",
             "if [ -r \"$SETTINGS_FILE\" ]; then",
             "  _settings_java_home=\"$(sed -n 's/^preferredJavaHome=//p' \"$SETTINGS_FILE\" | head -n1)\"",
             "  [ -n \"$_settings_java_home\" ] && FALLBACK_JAVA_ID=\"$_settings_java_home\"",
-            "  FALLBACK_IGNORED_ID=\"$(sed -n 's/^ignoredFile=//p' \"$SETTINGS_FILE\" | cksum | awk '{print $1 \"-\" $2}')\"",
+            "  FALLBACK_IGNORED_ID=\"$(printf '%s\\n' \"$FALLBACK_IGNORE_RULES\" | cksum | awk '{print $1 \"-\" $2}')\"",
             "fi",
             "FALLBACK_FINGERPRINT=\"$(printf '%s\\n' \"$FALLBACK_PROTOCOL_VERSION|$HEAD_SHA|$FALLBACK_MODE|$FALLBACK_CHANGED_ID|$FALLBACK_TOOL_ID|$FALLBACK_JAVA_ID|$FALLBACK_IGNORED_ID\" | cksum | awk '{print $1 \"-\" $2}')\"",
             "",
@@ -1645,6 +1641,7 @@ public final class GitHookInstaller {
             "  [ \"$_version\" = \"$FALLBACK_PROTOCOL_VERSION\" ] || return 1",
             "  [ \"$_owner\" = \"$_expected_owner\" ] || return 1",
             "  [ \"$_fingerprint\" = \"$FALLBACK_FINGERPRINT\" ] || return 1",
+            "  [ \"$FALLBACK_IGNORE_RULES\" = \"$(current_ignore_rules)\" ] || return 1",
             "  case \"$_result_rc\" in",
             "    0|1) CACHED_FALLBACK_RC=\"$_result_rc\"; return 0 ;;",
             "  esac",
@@ -1697,7 +1694,7 @@ public final class GitHookInstaller {
             "      FALLBACK_LOCK_OWNER=\"$$ $_now\"",
             "      printf '%s\\n' \"$FALLBACK_LOCK_OWNER\" > \"$FALLBACK_LOCK_DIR/owner\" 2>/dev/null || { rmdir \"$FALLBACK_LOCK_DIR\" 2>/dev/null || true; return 2; }",
             "      FALLBACK_LOCK_HELD=1",
-            "      if read_success_result; then release_fallback_lock; return 1; fi",
+            "      if [ -n \"$FALLBACK_WAIT_OWNER\" ] && read_run_result \"$FALLBACK_WAIT_OWNER\"; then release_fallback_lock; return 1; fi",
             "      return 0",
             "    fi",
             "    _now=\"$(date +%s 2>/dev/null || printf '0')\"",

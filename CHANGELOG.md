@@ -8,6 +8,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.2.4] - 2026-11-19
+
+### Added
+
+- **Git hook setup** asks once per IntelliJ project when a Git root needs the plugin hook. **Install Hooks** covers current and future roots in that project. **Settings → Tools → Pre-Push Checker → Git Hooks** shows each root’s full managed script path and installation status.
+
+### Fixed
+
+- When review findings block a push, IntelliJ opens **Code Review** in the affected project and selects the first blocking finding.
+- Clean files and files with all findings resolved disappear from Code Review. Pushed or reverted files clear once Git confirms they have no pending changes. Previously approved content stays approved.
+- **Resolve with AI** formats changed lines using the file’s code style and shows the result in the preview. If a suggestion repeats surrounding code, the plugin asks for a corrected edit before offering **Apply Fix**.
+- Compilation checks recognize failures confined to selected ignored files in both IntelliJ and terminal fallback builds. Errors in other files, including files with the same name in another module, still block the push.
+
 ## [3.2.3] - 2026-11-18
 
 ### Fixed

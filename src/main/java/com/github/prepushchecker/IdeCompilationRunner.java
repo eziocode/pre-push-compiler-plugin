@@ -172,7 +172,7 @@ final class IdeCompilationRunner {
                 } else if (errorCount > 0 && compileContext != null) {
                     errors = CompilationSupport.formatCompilerMessages(
                         project,
-                        compileContext.getMessages(CompilerMessageCategory.ERROR));
+                        compileContext.getMessages(CompilerMessageCategory.ERROR), errorCount);
                 } else if (errorCount > 0) {
                     errors = Collections.singletonList(
                         "Compilation failed with an unknown compiler error.");

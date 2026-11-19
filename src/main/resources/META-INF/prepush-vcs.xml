@@ -1,4 +1,0 @@
-<idea-plugin>
-    <!-- The dependency exposes the VCS classes used by our existing registrations.
-         Older IDEs provide them directly through com.intellij.modules.vcs. -->
-</idea-plugin>

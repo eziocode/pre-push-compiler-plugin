@@ -30,7 +30,7 @@ class PrePushProjectActivities {
             // pass that tells the user (with an install button) if the hook is still missing.
             ProjectLevelVcsManager.getInstance(project).runAfterInitialization {
                 ApplicationManager.getApplication().executeOnPooledThread {
-                    GitHookInstaller.installForProject(project, true)
+                    GitHookInstaller.checkProjectHooks(project, true)
                 }
             }
         }

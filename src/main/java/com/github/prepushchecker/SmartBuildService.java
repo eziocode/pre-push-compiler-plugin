@@ -403,7 +403,7 @@ public final class SmartBuildService implements Disposable {
 
         List<String> errors = errorCount > 0
             ? CompilationSupport.formatCompilerMessages(
-                project, context.getMessages(CompilerMessageCategory.ERROR))
+                project, context.getMessages(CompilerMessageCategory.ERROR), errorCount)
             : Collections.emptyList();
         SmartBuildSnapshotStore.Source source = building.get()
             ? SmartBuildSnapshotStore.Source.SMART
@@ -462,7 +462,7 @@ public final class SmartBuildService implements Disposable {
             Registry.intValue("prepushchecker.smartBuild.snapshotMaxAgeHours", 24));
         if (now - entry.finishedAt > maxAge) return null;
         if (!entry.isClean()) {
-            if (entry.errorCount > SmartBuildSnapshotStore.MAX_STORED_ERRORS) return null;
+            if (!entry.completeDiagnostics || entry.errorCount != entry.errorList().size()) return null;
             if (!DiagnosticPathMatcher.filterIgnored(project, entry.errorList()).isEmpty()) return null;
         }
         LOG.info("Pre-push check reused a clean build snapshot for " + fp.branchLabel()

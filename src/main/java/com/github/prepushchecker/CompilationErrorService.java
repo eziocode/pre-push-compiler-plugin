@@ -70,7 +70,9 @@ public final class CompilationErrorService {
         if (value.length() <= MAX_RETAINED_ERROR_CHARS) {
             return value;
         }
-        return value.substring(0, MAX_RETAINED_ERROR_CHARS)
+        // Keep infrastructure evidence when its identifying text falls beyond the UI limit.
+        String prefix = DiagnosticPathMatcher.isAlwaysBlocking(value) ? "[compiler] " : "";
+        return prefix + value.substring(0, MAX_RETAINED_ERROR_CHARS)
             + "... [truncated to limit memory usage]";
     }
 

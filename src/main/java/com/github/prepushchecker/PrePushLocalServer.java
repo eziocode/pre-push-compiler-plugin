@@ -1,5 +1,6 @@
 package com.github.prepushchecker;
 
+import com.github.prepushchecker.review.ReviewService.PushReview;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
@@ -489,7 +490,7 @@ public final class PrePushLocalServer implements Disposable {
                 PrePushValidationCoordinator.ownerIndicator().setText(compilePaths.isEmpty()
                     ? "Compiling the whole project…"
                     : "Compiling " + compilePaths.size() + " changed file(s)…");
-                List<String> result = runCompileSingleFlight(compilePaths);
+                List<String> result = runCompileSingleFlight(normalizedRequest.repositoryRoot(), compilePaths);
                 if (!snapshotMatches(normalizedRequest, before)) {
                     CompilationErrorService.getInstance(project).clearErrors();
                     throw new PrePushValidationCoordinator.StaleSnapshotException(
@@ -508,9 +509,10 @@ public final class PrePushLocalServer implements Disposable {
 
     /** The AI review of one push, running in parallel with the compile. */
     private static final class ReviewRun {
-        final java.util.concurrent.CompletableFuture<List<String>> future = new java.util.concurrent.CompletableFuture<>();
+        final java.util.concurrent.CompletableFuture<PushReview> future = new java.util.concurrent.CompletableFuture<>();
         volatile ProgressIndicator indicator;
         volatile boolean canceled;
+        final AtomicBoolean findingsShown = new AtomicBoolean();
         /** Pushes waiting on this review; identical pushes share one run. */
         final AtomicInteger waiters = new AtomicInteger(1);
 
@@ -523,7 +525,7 @@ public final class PrePushLocalServer implements Disposable {
             ProgressIndicator i = indicator;
             if (i != null && i.isRunning()) i.cancel();
             canceled = true;
-            future.complete(Collections.emptyList());
+            future.complete(PushReview.CLEAR);
         }
     }
 
@@ -540,7 +542,7 @@ public final class PrePushLocalServer implements Disposable {
                 || com.github.prepushchecker.review.ReviewService.getInstance(project)
                     .rules(Path.of(request.repositoryRoot())) == null) {
             ReviewRun none = new ReviewRun();
-            none.future.complete(Collections.emptyList()); // review off or no rule file: no progress row
+            none.future.complete(PushReview.CLEAR); // review off or no rule file: no progress row
             return none;
         }
         ReviewRun run;
@@ -569,7 +571,7 @@ public final class PrePushLocalServer implements Disposable {
                 try {
                     run.future.complete(runReviewGate(request, indicator));
                 } catch (Throwable t) {
-                    run.future.complete(Collections.emptyList());
+                    run.future.complete(PushReview.CLEAR);
                 }
             });
             return run;
@@ -581,12 +583,12 @@ public final class PrePushLocalServer implements Disposable {
                 indicator.setIndeterminate(true);
                 indicator.setText("Checking which files need an AI review…");
                 try {
-                    List<String> lines = runReviewGate(request, indicator);
+                    PushReview lines = runReviewGate(request, indicator);
                     if (indicator.isCanceled()) run.canceled = true;
                     run.future.complete(lines);
                 } catch (ProcessCanceledException e) {
                     run.canceled = true;
-                    run.future.complete(Collections.emptyList());
+                    run.future.complete(PushReview.CLEAR);
                     throw e;
                 }
             }
@@ -594,13 +596,13 @@ public final class PrePushLocalServer implements Disposable {
             @Override
             public void onCancel() {
                 run.canceled = true;
-                run.future.complete(Collections.emptyList());
+                run.future.complete(PushReview.CLEAR);
             }
 
             @Override
             public void onThrowable(@org.jetbrains.annotations.NotNull Throwable error) {
                 LOG.warn("AI review task failed; continuing with the compile result", error);
-                run.future.complete(Collections.emptyList());
+                run.future.complete(PushReview.CLEAR);
             }
         }.queue();
         return run;
@@ -624,7 +626,7 @@ public final class PrePushLocalServer implements Disposable {
         }
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(REVIEW_BUDGET_SECONDS
             + com.github.prepushchecker.review.ReviewSettings.confirmTimeoutSeconds(project) + 30L);
-        List<String> reviewLines = Collections.emptyList();
+        PushReview review = PushReview.CLEAR;
         try {
             while (true) {
                 if (waiter != null && waiter.isCanceled()) {
@@ -633,7 +635,7 @@ public final class PrePushLocalServer implements Disposable {
                 }
                 if (run.canceled) return USER_CANCELED;
                 try {
-                    reviewLines = run.future.get(100L, TimeUnit.MILLISECONDS);
+                    review = run.future.get(100L, TimeUnit.MILLISECONDS);
                     break;
                 } catch (TimeoutException waiting) {
                     if (System.nanoTime() >= deadline) {
@@ -655,10 +657,13 @@ public final class PrePushLocalServer implements Disposable {
             CompilationErrorService.getInstance(project).clearErrors();
             return PrePushValidationCoordinator.Outcome.stale("repository changed during validation; retry push");
         }
-        if (reviewLines.isEmpty()) return outcome;
-        List<String> combined = new ArrayList<>(reviewLines);
+        if (review.lines().isEmpty()) return outcome;
+        List<String> combined = new ArrayList<>(review.lines());
         combined.addAll(outcome.errors());
         publishErrors(combined);
+        if (review.firstBlockingFindingId() != null && run.findingsShown.compareAndSet(false, true)) {
+            com.github.prepushchecker.review.ReviewService.getInstance(project).showTab(review.firstBlockingFindingId());
+        }
         return PrePushValidationCoordinator.Outcome.completed(combined);
     }
 
@@ -698,26 +703,25 @@ public final class PrePushLocalServer implements Disposable {
      * AI review gate for the pushed files: blocking lines, or empty to go on. An on-push review
      * may run here; it gets {@link #REVIEW_BUDGET_SECONDS} so the compile still has time.
      */
-    private List<String> runReviewGate(ValidationRequest request, ProgressIndicator indicator) {
+    private PushReview runReviewGate(ValidationRequest request, ProgressIndicator indicator) {
         if (request.repositoryRoot().isBlank() || request.requestedPaths().isEmpty()) {
-            return Collections.emptyList();
+            return PushReview.CLEAR;
         }
         try {
             List<Path> paths = new ArrayList<>(request.requestedPaths().size());
             for (String p : request.requestedPaths()) paths.add(Path.of(p));
-            List<String> lines = com.github.prepushchecker.review.ReviewService.getInstance(project).checkPush(
+            return com.github.prepushchecker.review.ReviewService.getInstance(project).checkPush(
                 Path.of(request.repositoryRoot()), paths,
                 request.rangeBase().isBlank() ? null : request.rangeBase(),
                 request.pushedHead().isBlank() ? null : request.pushedHead(),
                 // The "Pre-push: AI review" task's own indicator: Stop cancels it, its text is the progress.
                 indicator,
                 java.time.Duration.ofSeconds(REVIEW_BUDGET_SECONDS));
-            return lines;
         } catch (ProcessCanceledException e) {
             throw e;
         } catch (RuntimeException e) {
             LOG.warn("AI review gate failed; continuing with the compile check", e);
-            return Collections.emptyList();
+            return PushReview.CLEAR;
         }
     }
 
@@ -769,9 +773,6 @@ public final class PrePushLocalServer implements Disposable {
         key.append("root=").append(request.repositoryRoot()).append('\n');
         key.append("head=").append(request.expectedHead()).append('\n');
         key.append("updates=").append(request.updatesFingerprint()).append('\n');
-        key.append("ignored=")
-            .append(new TreeSet<>(IgnoredCompilationFiles.getInstance(project).enabledPaths()))
-            .append('\n');
         key.append("layers=").append(layerRulesStamp(request.repositoryRoot())).append('\n');
         key.append("review=").append(reviewStamp(request.repositoryRoot())).append('\n');
         key.append(snapshot.fingerprint());
@@ -813,11 +814,12 @@ public final class PrePushLocalServer implements Disposable {
         }
     }
 
-    private static SnapshotToken captureSnapshot(ValidationRequest request) {
+    private SnapshotToken captureSnapshot(ValidationRequest request) {
         String actualHead = request.repositoryRoot().isBlank()
             ? ""
             : valueOrEmpty(GitOperations.headSha(request.repositoryRoot()));
         StringBuilder fingerprint = new StringBuilder()
+            .append("ignoreRevision=").append(IgnoredCompilationFiles.getInstance(project).revision()).append('\n')
             .append("actualHead=").append(actualHead).append('\n');
         for (String path : request.requestedPaths()) {
             fingerprint.append("path=").append(path);
@@ -835,7 +837,7 @@ public final class PrePushLocalServer implements Disposable {
         return new SnapshotToken(actualHead, fingerprint.toString());
     }
 
-    private static boolean snapshotMatches(
+    private boolean snapshotMatches(
         ValidationRequest request,
         SnapshotToken before
     ) {
@@ -864,14 +866,14 @@ public final class PrePushLocalServer implements Disposable {
         return List.copyOf(normalized);
     }
 
-    private List<String> runCompileSingleFlight(List<String> requestedPaths) throws TimeoutException {
+    private List<String> runCompileSingleFlight(String repositoryRoot, List<String> requestedPaths) throws TimeoutException {
         long startNanos = System.nanoTime();
         ProgressIndicator owner = PrePushValidationCoordinator.ownerIndicator();
         if (PrePushCheckerSettings.isStrictSnapshotGuardEnabled(project)) {
             owner.setText("Checking dependencies against a clean snapshot of HEAD…");
         }
         PrePushSnapshotGuard.SnapshotValidationResult strictSnapshot =
-            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, requestedPaths, owner);
+            PrePushSnapshotGuard.validateHeadSnapshotIfNeeded(project, repositoryRoot, requestedPaths, owner);
         if (strictSnapshot.wasChecked()) {
             List<String> rawSnapshotErrors = strictSnapshot.errors();
             List<String> snapshotErrors = DiagnosticPathMatcher.filterIgnored(project, rawSnapshotErrors);

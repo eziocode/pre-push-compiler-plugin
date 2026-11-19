@@ -17,6 +17,7 @@ final class IgnoredCompilationFiles {
     record Entry(@NotNull String path, boolean enabled) {}
 
     private final Project project;
+    private volatile long revision;
     private volatile List<Entry> entries;
     private volatile Set<String> enabledPaths;
 
@@ -43,6 +44,8 @@ final class IgnoredCompilationFiles {
         private static final com.intellij.openapi.util.Key<IgnoredCompilationFiles> KEY =
             com.intellij.openapi.util.Key.create("prepushchecker.ignoredCompilationFiles");
     }
+
+    long revision() { return revision; }
 
     @NotNull List<Entry> list() { return entries; }
     @NotNull Set<String> enabledPaths() { return enabledPaths; }
@@ -99,6 +102,7 @@ final class IgnoredCompilationFiles {
             .append(path).append('\n'));
         PropertiesComponent.getInstance(project).setValue(KEY, raw.toString(), "");
         updateCache(values);
+        revision++;
         PrePushCheckerSettings.syncSettingsFile(project);
         CompilationErrorService.getInstance(project).ignoredFilesChanged();
     }

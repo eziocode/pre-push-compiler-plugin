@@ -36,14 +36,16 @@ public class IgnoredCompilationFilesTest extends BasePlatformTestCase {
         assertFalse(IgnoredCompilationFiles.getInstance(getProject()).add("build.gradle.kts"));
     }
 
-    public void testSnapshotAndPrivateMacPathsNormalizeToSameExactFile() {
+    public void testUnrelatedSnapshotPathRejectedAndPrivateMacAliasAccepted() {
         String base = getProject().getBasePath();
         assertNotNull(base);
-        assertEquals("src/App.kt", DiagnosticPathMatcher.normalizeProjectPath(getProject(),
+        assertNull(DiagnosticPathMatcher.normalizeProjectPath(getProject(),
             "/tmp/prepushchecker-snapshot.ABC/worktree/src/App.kt"));
-        String privateAlias = base.startsWith("/private/") ? base : "/private" + base;
-        assertEquals("src/App.kt", DiagnosticPathMatcher.normalizeProjectPath(getProject(),
-            privateAlias + "/src/App.kt"));
+        assertNull(DiagnosticPathMatcher.relativeToRoot("/private/Users/demo/src/App.kt", "/Users/demo"));
+        if (com.intellij.openapi.util.SystemInfoRt.isMac) {
+            assertEquals("src/App.kt", DiagnosticPathMatcher.relativeToRoot(
+                "/private/var/work/src/App.kt", "/var/work"));
+        }
     }
 
     public void testMixedErrorsFilterAndCheckboxRefreshRestoresRawError() {
@@ -93,6 +95,31 @@ public class IgnoredCompilationFilesTest extends BasePlatformTestCase {
     public void testCanIgnoreDiagnosticForExceptionNamedFile() {
         assertTrue(DiagnosticPathMatcher.canIgnoreDiagnostic(getProject(),
             "[src/main/java/com/foo/PaymentException.java 12:5] cannot find symbol"));
+    }
+
+    public void testCompilerCallbackAccountsForEveryErrorBeforeApplyingDisplayLimit() throws Exception {
+        var path = Path.of(getProject().getBasePath(), "src", "Ignored (legacy).java");
+        java.nio.file.Files.createDirectories(path.getParent());
+        java.nio.file.Files.writeString(path, "class Ignored {}");
+        var file = com.intellij.openapi.vfs.LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path);
+        assertNotNull(file);
+        var state = IgnoredCompilationFiles.getInstance(getProject());
+        assertTrue(state.add(file.getPath()));
+        var message = new com.intellij.compiler.CompilerMessageImpl(getProject(),
+            com.intellij.openapi.compiler.CompilerMessageCategory.ERROR, "cannot find symbol", file, 5, 2, null);
+        var messages = new com.intellij.openapi.compiler.CompilerMessage[CompilationErrorService.MAX_RETAINED_ERRORS + 2];
+        java.util.Arrays.fill(messages, message);
+        var raw = CompilationSupport.formatCompilerMessages(getProject(), messages, messages.length);
+        assertEmpty(DiagnosticPathMatcher.filterIgnored(getProject(), raw));
+        state.setEnabled("src/Ignored (legacy).java", false);
+        assertFalse(DiagnosticPathMatcher.filterIgnored(getProject(), raw).isEmpty());
+        state.setEnabled("src/Ignored (legacy).java", true);
+        assertFalse(DiagnosticPathMatcher.filterIgnored(getProject(),
+            CompilationSupport.formatCompilerMessages(getProject(), messages, messages.length + 1)).isEmpty());
+        messages[messages.length - 1] = new com.intellij.compiler.CompilerMessageImpl(getProject(),
+            com.intellij.openapi.compiler.CompilerMessageCategory.ERROR, "compiler crashed");
+        assertFalse(DiagnosticPathMatcher.filterIgnored(getProject(),
+            CompilationSupport.formatCompilerMessages(getProject(), messages, messages.length)).isEmpty());
     }
 
     public void testIgnoredOnlyIdeResultSkipsRecoveryRebuild() throws Exception {

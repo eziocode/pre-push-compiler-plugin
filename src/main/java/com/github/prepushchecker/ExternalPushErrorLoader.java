@@ -61,11 +61,11 @@ public final class ExternalPushErrorLoader {
     // Kotlin compile:       "e: file:///.../Path.kt:123:45 message"
     // Maven compiler plugin: "[ERROR] /abs/.../Path.java:[123,45] cannot find symbol".
     private static final Pattern JAVAC_PATTERN =
-        Pattern.compile("^(?<path>[^\\s:][^:]*\\.(?:java|kt|groovy|scala)):(?<line>\\d+)(?::(?<col>\\d+))?:\\s*error:?\\s*(?<msg>.+)$");
+        Pattern.compile("^(?<path>[^\\s].*?\\.(?:java|kt|kts|groovy|scala)):(?<line>\\d+)(?::(?<col>\\d+))?:\\s*error:\\s*(?<msg>.+)$");
     private static final Pattern MAVEN_COMPILER_PATTERN =
-        Pattern.compile("^(?:\\[ERROR]\\s*)?(?<path>[^\\s].*?\\.(?:java|kt|groovy|scala)):\\[(?<line>\\d+),(?<col>\\d+)]\\s*(?<msg>.*)$");
+        Pattern.compile("^(?:\\[ERROR]\\s*)?(?<path>[^\\s].*?\\.(?:java|kt|kts|groovy|scala)):\\[(?<line>\\d+),(?<col>\\d+)]\\s*(?<msg>.*)$");
     private static final Pattern KOTLIN_PATTERN =
-        Pattern.compile("^e:\\s+(?:file://)?(?<path>[^:]+\\.(?:kt|kts)):(?<line>\\d+):(?<col>\\d+)\\s+(?<msg>.+)$");
+        Pattern.compile("^e:\\s+(?<path>.+?\\.(?:kt|kts)):(?<line>\\d+):(?<col>\\d+):?\\s+(?<msg>.+)$");
     private static final Pattern IDE_FORMATTED_PATTERN =
         Pattern.compile("^\\[.+\\.(?:java|kt|kts|groovy|scala)(?:\\s+(?:\\([^]]+\\)|\\d+(?::\\d+)?))?]\\s+.+$");
 
@@ -270,16 +270,39 @@ public final class ExternalPushErrorLoader {
     }
 
     static List<String> parseErrors(@NotNull Project project, @NotNull List<String> lines) {
+        return parseBuildOutput(project, lines, null).errors();
+    }
+
+    record SnapshotRoots(Path worktree, Path repository) {}
+
+    record BuildOutput(List<String> errors, boolean hasIgnored, String unexplained) {}
+
+    /** A log viewer can skip unrecognised text. A push verdict also needs evidence that
+     * no independent failure was discarded alongside the located compiler diagnostics. */
+    static BuildOutput parseBuildOutput(Project project, List<String> lines, @Nullable SnapshotRoots roots) {
         String basePath = project.getBasePath();
         ErrorCollector collector = new ErrorCollector(project);
         String pending = null;
-        for (String raw : lines) {
-            String line = raw == null ? "" : raw.trim();
+        String unexplained = null;
+        int reportedErrors = 0;
+        int reportedWarnings = 0;
+        boolean warningContext = false;
+        for (int index = 0; index < lines.size(); index++) {
+            String line = stripColor(lines.get(index)).trim();
             if (line.isEmpty()) continue;
-            String parsed = parseErrorLine(project, basePath, line);
+            if (roots != null && LOCATED_WARNING.matcher(line).matches()) {
+                collector.add(pending);
+                pending = null;
+                warningContext = true;
+                reportedWarnings++;
+                continue;
+            }
+            String parsed = parseErrorLine(project, basePath, line, roots);
             if (parsed != null) {
                 collector.add(pending);
                 pending = parsed;
+                warningContext = false;
+                reportedErrors++;
                 continue;
             }
 
@@ -289,19 +312,53 @@ public final class ExternalPushErrorLoader {
                 continue;
             }
 
+            if (roots != null && unexplained == null) {
+                String body = line.startsWith("[ERROR]") ? line.substring(7).trim() : line;
+                if ((pending != null || warningContext) && !line.startsWith("[ERROR]") && index + 1 < lines.size()
+                        && lines.get(index + 1).trim().matches("\\^~*")) {
+                    warningContext = false;
+                    index++; // javac source excerpt and its caret
+                    continue;
+                }
+                if (!body.isEmpty() && !CompilerOutputRules.WRAPPER_PATTERN.matcher(body).matches()
+                        && !isAccountedCount(body, reportedErrors, reportedWarnings)) {
+                    unexplained = line;
+                }
+            }
+            warningContext = false;
             collector.add(pending);
             pending = null;
         }
         collector.add(pending);
-        return collector.toList();
+        return new BuildOutput(collector.toList(), collector.hasIgnored, unexplained);
+    }
+
+    private static final Pattern ANSI_COLOR = Pattern.compile("\\x1B\\[[0-9;]*m");
+    private static final Pattern LOCATED_WARNING = Pattern.compile(
+        "^(?:w: .+?\\.kts?:\\d+:\\d+:? .+|.+?\\.(?:java|kt|kts|groovy|scala):\\d+(?::\\d+)?:\\s*warning: .+)$");
+    private static final Pattern DIAGNOSTIC_COUNT = Pattern.compile("(\\d+) (error|warning)s?");
+
+    private static boolean isAccountedCount(String line, int errors, int warnings) {
+        Matcher count = DIAGNOSTIC_COUNT.matcher(line);
+        if (!count.matches()) return false;
+        try { return Integer.parseInt(count.group(1)) <= (count.group(2).equals("error") ? errors : warnings); }
+        catch (NumberFormatException invalid) { return false; }
+    }
+
+    private static String stripColor(String line) {
+        if (line == null) return "";
+        return line.indexOf(27) < 0 ? line : ANSI_COLOR.matcher(line).replaceAll("");
     }
 
     @Nullable
     private static String parseErrorLine(
-        @NotNull Project project, @Nullable String basePath, @NotNull String line
+        @NotNull Project project, @Nullable String basePath, @NotNull String line, @Nullable SnapshotRoots roots
     ) {
-        if (IDE_FORMATTED_PATTERN.matcher(line).matches()) {
+        if (roots == null && IDE_FORMATTED_PATTERN.matcher(line).matches()) {
             return line;
+        }
+        if (line.contains("Failed to execute goal ")) {
+            line = CompilerOutputRules.INLINE_GOAL.matcher(line).replaceFirst("");
         }
         Matcher m = KOTLIN_PATTERN.matcher(line);
         if (!m.matches()) {
@@ -317,8 +374,22 @@ public final class ExternalPushErrorLoader {
         String col = safeGroup(m, "col");
         String msg = m.group("msg").trim();
 
-        String normalized = DiagnosticPathMatcher.normalizeProjectPath(project, path);
-        String relativePath = normalized != null ? normalized : toProjectRelative(basePath, path);
+        String relativePath;
+        if (roots != null) {
+            try {
+                Path file = path.startsWith("file:") ? Path.of(java.net.URI.create(path)) : Path.of(path);
+                String withinTree = DiagnosticPathMatcher.relativeToRoot(
+                    roots.worktree().resolve(file).normalize().toString(), roots.worktree().toString());
+                relativePath = withinTree == null ? null : DiagnosticPathMatcher.normalizeProjectPath(
+                    project, roots.repository().resolve(withinTree).toString());
+            } catch (IllegalArgumentException invalidPath) {
+                relativePath = null;
+            }
+            if (relativePath == null || relativePath.contains("]") || msg.isBlank()) return "[snapshot] " + line;
+        } else {
+            String normalized = DiagnosticPathMatcher.normalizeProjectPath(project, path);
+            relativePath = normalized != null ? normalized : toProjectRelative(basePath, path);
+        }
         String position = col != null && !col.isEmpty() ? lineNo + ":" + col : lineNo;
         return "[" + relativePath + " (" + position.replace(":", ", ") + ")] " + msg;
     }
@@ -338,6 +409,7 @@ public final class ExternalPushErrorLoader {
         private final List<String> blocking = new ArrayList<>();
         private final List<String> ignored = new ArrayList<>();
         private int omittedBlocking;
+        private boolean hasIgnored;
 
         private ErrorCollector(Project project) { this.project = project; }
 
@@ -345,6 +417,7 @@ public final class ExternalPushErrorLoader {
             if (entry == null) return;
             if (seen.add(entry)) {
                 boolean isIgnored = DiagnosticPathMatcher.isIgnoredDiagnostic(project, entry);
+                hasIgnored |= isIgnored;
                 List<String> target = isIgnored ? ignored : blocking;
                 if (target.size() < CompilationErrorService.MAX_RETAINED_ERRORS) {
                     target.add(CompilationErrorService.compactError(entry));

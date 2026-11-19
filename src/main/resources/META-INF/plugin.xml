@@ -81,6 +81,14 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>3.2.4 — Code Review and Git hook setup</h3>
+        <ul>
+            <li>When findings block a push, Code Review opens in the affected project and selects the first blocking finding.</li>
+            <li>Clean, resolved and pushed files clear from the review panel. Previously approved content stays approved.</li>
+            <li>Resolve with AI formats changed lines before showing the diff and asks for a corrected edit when a suggestion duplicates surrounding code.</li>
+            <li>Install missing Git hooks once per project. Settings → Tools → Pre-Push Checker → Git Hooks shows the full managed script path for each Git root.</li>
+            <li>IntelliJ and terminal checks allow compilation failures confined to selected ignored files. Unrelated errors still block the push.</li>
+        </ul>
         <h3>3.1.0 — Faster, cheaper AI review on pushes</h3>
         <ul>
             <li>New "Ignore changes brought in by merges" review setting (on by default): after
@@ -421,14 +429,12 @@
     <depends>com.intellij.modules.vcs</depends>
     <depends>com.intellij.java</depends>
     <depends>Git4Idea</depends>
-    <!-- Newer IDEs package the VCS APIs in a separate bundled plugin. -->
-    <depends optional="true" config-file="prepush-vcs.xml">com.intellij.platform.vcs</depends>
 
     <!-- Optional soft dependency: JetBrains AI Assistant plugin -->
     <depends optional="true" config-file="commitgen-intellij-ai.xml">com.intellij.ml.llm</depends>
 
     <extensions defaultExtensionNs="com.intellij">
-        <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$GitHookInstallerActivity"/>
+        <postStartupActivity implementation="com.github.prepushchecker.PrePushProjectActivities$GitHookInstallerActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$ExternalPushErrorLoaderActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$PrePushLocalServerActivity"/>
         <projectActivity implementation="com.github.prepushchecker.PrePushProjectActivities$RepositoryStateMonitorActivity"/>

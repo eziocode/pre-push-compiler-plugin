@@ -92,7 +92,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
         tree.setCellRenderer(new Renderer());
-        tree.getEmptyText().setText("No reviews yet");
+        tree.getEmptyText().setText("No open review findings");
         tree.getEmptyText().appendSecondaryText("Review changes from the commit panel",
             SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES, e -> new ReviewLocalChangesAction().run());
         tree.addTreeSelectionListener(e -> showDetails());
@@ -151,6 +151,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
         int resolved = 0;
         int files = 0;
         for (ReviewStateStore.FileReview review : store.reviews()) {
+            if (!review.hasOpenFindings()) continue;
             files++;
             DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(review);
             for (ReviewFinding f : review.findings) {
@@ -162,7 +163,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
         model.reload();
         TreeUtil.expandAll(tree);
         if (selectedId != null) restoreSelection(selectedId, wasOpen, oldOrder);
-        status.setText(files == 0 ? "Review runs on the files checked in the commit panel."
+        status.setText(files == 0 ? ""
             : open + " open · " + resolved + " resolved · " + files + " file(s) reviewed");
         status.setForeground(open > 0 ? JBColor.namedColor("Label.errorForeground", JBColor.RED)
             : UIUtil.getContextHelpForeground());
@@ -184,8 +185,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
      */
     private void restoreSelection(String id, boolean wasOpen, List<String> oldOrder) {
         ReviewFinding current = findFinding(id);
-        if (current == null) return;
-        if (!wasOpen || current.isOpen()) {
+        if (current != null && (!wasOpen || current.isOpen())) {
             select(id);
             return;
         }
@@ -208,7 +208,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
         return null;
     }
 
-    private void select(String findingId) {
+    void select(String findingId) {
         TreeUtil.treeNodeTraverser(rootNode).traverse().forEach(n -> {
             if (n instanceof DefaultMutableTreeNode d && d.getUserObject() instanceof ReviewFinding f && f.id.equals(findingId)) {
                 tree.setSelectionPath(new TreePath(d.getPath()));
@@ -337,7 +337,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
 
         @Override
         public void update(@NotNull AnActionEvent e) {
-            e.getPresentation().setEnabled(!store.reviews().isEmpty());
+            e.getPresentation().setEnabled(!store.isEmpty());
         }
 
         @Override

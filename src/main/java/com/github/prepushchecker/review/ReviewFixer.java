@@ -81,6 +81,7 @@ public final class ReviewFixer {
                 ReviewPrompt.Fix fix;
                 List<String> dropped = List.of();
                 List<String> errors = List.of();
+                String proposed = original;
                 try {
                     fix = askForFix(system, user, original, lines);
                     // An unparseable or no-op answer is usually a one-off: ask again with what was wrong.
@@ -112,17 +113,19 @@ public final class ReviewFixer {
                         // A fix that breaks the file's syntax is asked for once more, with the errors.
                         indicator.checkCanceled();
                         int baseline = syntaxErrors(project, vf, original).size();
-                        errors = newErrors(syntaxErrors(project, vf, ReviewPrompt.apply(original, fix)), baseline);
+                        proposed = ReviewFixFormatter.format(project, vf, original, ReviewPrompt.apply(original, fix));
+                        errors = newErrors(syntaxErrors(project, vf, proposed), baseline);
                         if (!errors.isEmpty()) {
                             indicator.setText("AI fix does not parse, asking again…");
                             ReviewPrompt.Fix retry = askForFix(system,
                                 ReviewPrompt.fixSyntaxRetryUserPrompt(user, fix, errors), original, lines);
                             if (changes(original, retry)) {
-                                List<String> retryErrors = newErrors(
-                                    syntaxErrors(project, vf, ReviewPrompt.apply(original, retry)), baseline);
+                                String formatted = ReviewFixFormatter.format(project, vf, original, ReviewPrompt.apply(original, retry));
+                                List<String> retryErrors = newErrors(syntaxErrors(project, vf, formatted), baseline);
                                 List<String> retryDropped = ReviewPrompt.droppedLines(original, retry);
                                 if (retryErrors.size() < errors.size() && retryDropped.size() <= dropped.size()) {
                                     fix = retry;
+                                    proposed = formatted;
                                     errors = retryErrors;
                                     dropped = retryDropped;
                                 }
@@ -142,7 +145,7 @@ public final class ReviewFixer {
                         NotificationType.WARNING, null);
                     return;
                 }
-                String proposed = ReviewPrompt.apply(original, fix);
+                String preview = proposed;
                 if (proposed.equals(original)) {
                     ReviewService.getInstance(project).notify(
                         "The AI fix does not change the file. Fix it by hand, then click Resolve.",
@@ -152,13 +155,27 @@ public final class ReviewFixer {
                 List<String> removed = dropped;
                 List<String> broken = errors;
                 ApplicationManager.getApplication().invokeLater(
-                    () -> showAndApply(project, vf, snapshot, proposed, removed, broken, finding), ModalityState.nonModal());
+                    () -> showAndApply(project, vf, snapshot, preview, removed, broken, finding), ModalityState.nonModal());
             }
         });
     }
 
     private static @Nullable ReviewPrompt.Fix askForFix(@NotNull String system, @NotNull String user,
                                                        @NotNull String original, int lines) throws Exception {
+        ReviewPrompt.Fix fix = requestEdit(system, user, original, lines);
+        if (fix == null || !ReviewPrompt.repeatsContext(original, fix)) return fix;
+        String retry = user + "\nYour previous replacement for lines " + fix.startLine() + "-" + fix.endLine()
+            + " repeats adjacent code outside the edit range:\n" + fix.replacement()
+            + "\nCorrect the range or remove the copied context. Return only the corrected JSON.";
+        fix = requestEdit(system, retry, original, lines);
+        if (fix == null || ReviewPrompt.repeatsContext(original, fix)) {
+            throw new IllegalArgumentException("The suggested fix repeats surrounding code. Review the finding manually.");
+        }
+        return fix;
+    }
+
+    private static @Nullable ReviewPrompt.Fix requestEdit(String system, String user, String original, int lines)
+        throws Exception {
         String raw = CommitMessageGeneratorService.resolveProvider().generate(AiRequest.fix(system, user));
         ReviewPrompt.Fix fix = ReviewPrompt.parseFix(AiOutputSanitizer.cleanStructured(raw, "replacement"), lines);
         return fix == null ? null : ReviewPrompt.normalize(original, fix);
@@ -216,6 +233,15 @@ public final class ReviewFixer {
         FixDialog dialog = new FixDialog(project, vf, original, proposed, removed, errors, finding);
         if (!dialog.showAndGet()) return;
 
+        if (!applyPreview(project, document, original, proposed)) {
+            notifyChanged(project);
+            return;
+        }
+        FileDocumentManager.getInstance().saveDocument(document);
+        ReviewPanel.resolveInBackground(project, finding.id, "ai");
+    }
+
+    static boolean applyPreview(Project project, Document document, String original, String proposed) {
         boolean[] applied = {false};
         WriteCommandAction.runWriteCommandAction(project, "Apply AI Review Fix", null, () -> {
             if (!document.getText().equals(original)) return;
@@ -224,12 +250,7 @@ public final class ReviewFixer {
                 proposed.substring(range[0], proposed.length() - range[1]));
             applied[0] = true;
         });
-        if (!applied[0]) {
-            notifyChanged(project);
-            return;
-        }
-        FileDocumentManager.getInstance().saveDocument(document);
-        ReviewPanel.resolveInBackground(project, finding.id, "ai");
+        return applied[0];
     }
 
     private static void notifyChanged(@NotNull Project project) {

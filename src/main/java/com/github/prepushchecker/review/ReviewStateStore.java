@@ -94,8 +94,9 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
                 state.files.sort(Comparator.comparingLong(f -> f.reviewedAt));
                 state.files.subList(0, state.files.size() - MAX_FILES).clear();
             }
+            modCount.incrementAndGet();
         }
-        fireChanged();
+        notifyListeners();
     }
 
     /** {@code true} when {@code contentId} of {@code path} was reviewed and has no open finding. */
@@ -140,8 +141,9 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
                     }
                 }
             }
+            if (changed) modCount.incrementAndGet();
         }
-        if (changed) fireChanged();
+        if (changed) notifyListeners();
         return changed;
     }
 
@@ -155,23 +157,40 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
     public void clear() {
         synchronized (this) {
             state.files.clear();
+            modCount.incrementAndGet();
         }
-        fireChanged();
+        notifyListeners();
     }
 
     /**
-     * Drops the reviews of files under {@code rootPrefix} (a {@code /}-terminated store key
+     * Retires open findings on settled files under {@code rootPrefix} (a {@code /}-terminated store key
      * prefix) whose relative path is not in {@code keep}. Returns how many were dropped.
      */
     public int retainOnly(@NotNull String rootPrefix, @NotNull java.util.Set<String> keep) {
         int removed;
         synchronized (this) {
-            int before = state.files.size();
-            state.files.removeIf(f -> f.path.startsWith(rootPrefix) && !keep.contains(f.path.substring(rootPrefix.length())));
-            removed = before - state.files.size();
+            removed = 0;
+            for (var it = state.files.iterator(); it.hasNext();) {
+                FileReview file = it.next();
+                if (!file.hasOpenFindings() || !file.path.startsWith(rootPrefix)
+                        || keep.contains(file.path.substring(rootPrefix.length()))) continue;
+                if (file.approvedIds.isEmpty()) {
+                    it.remove();
+                } else {
+                    // Retire this unapproved version, keeping the user's prior approvals.
+                    file.contentId = file.approvedIds.remove(file.approvedIds.size() - 1);
+                    file.findings.clear();
+                }
+                removed++;
+            }
+            if (removed > 0) modCount.incrementAndGet();
         }
-        if (removed > 0) fireChanged();
+        if (removed > 0) notifyListeners();
         return removed;
+    }
+
+    public synchronized boolean hasOpenFindings() {
+        return state.files.stream().anyMatch(FileReview::hasOpenFindings);
     }
 
     public synchronized boolean isEmpty() {
@@ -216,11 +235,6 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
 
     /** Re-notifies listeners without a data change, e.g. when a run ends having recorded nothing. */
     public void refresh() {
-        notifyListeners();
-    }
-
-    private void fireChanged() {
-        modCount.incrementAndGet();
         notifyListeners();
     }
 

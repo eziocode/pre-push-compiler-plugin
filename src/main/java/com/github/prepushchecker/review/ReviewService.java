@@ -393,6 +393,10 @@ public final class ReviewService {
 
     // ── Push gate ────────────────────────────────────────────────────────────
 
+    public record PushReview(List<String> lines, @Nullable String firstBlockingFindingId) {
+        public static final PushReview CLEAR = new PushReview(List.of(), null);
+    }
+
     /**
      * Push check for one repository. Returns blocking error lines (empty: allow).
      *
@@ -401,12 +405,12 @@ public final class ReviewService {
      * @param pushedHead the pushed commit, when the hook sent it; may differ from HEAD
      * @param budget     time the push may spend on an on-push review
      */
-    public @NotNull List<String> checkPush(@NotNull Path root, @NotNull Collection<Path> pushed,
+    public @NotNull PushReview checkPush(@NotNull Path root, @NotNull Collection<Path> pushed,
                                            @Nullable String rangeBase, @Nullable String pushedHead,
                                            @Nullable ProgressIndicator indicator, @NotNull Duration budget) {
-        if (!ReviewSettings.isEnabled(project)) return List.of();
+        if (!ReviewSettings.isEnabled(project)) return PushReview.CLEAR;
         ReviewRules rules = rules(root);
-        if (rules == null) return List.of();
+        if (rules == null) return PushReview.CLEAR;
         boolean mandatory = ReviewSettings.isMandatory(project, rules);
         ReviewSettings.Mode mode = ReviewSettings.mode(project);
 
@@ -422,7 +426,7 @@ public final class ReviewService {
             if (com.github.prepushchecker.commitgen.SensitivePaths.isExcluded(rel)) continue;
             if (rules.inScope(rel)) rels.add(rel);
         }
-        if (rels.isEmpty()) return List.of();
+        if (rels.isEmpty()) return PushReview.CLEAR;
         // Gate what is pushed, not the checkout: "git push origin other-branch" pushes another commit.
         String rev = pushedHead == null ? null : ReviewGit.resolveCommit(root, pushedHead);
         if (rev == null) rev = "HEAD";
@@ -450,7 +454,7 @@ public final class ReviewService {
             String to = rev;
             rels.removeIf(r -> isWhitespaceInsensitive(r) && ReviewGit.whitespaceOnly(repo, from, to, r));
         }
-        if (rels.isEmpty()) return List.of();
+        if (rels.isEmpty()) return PushReview.CLEAR;
 
         Classified c = classify(root, rels, blobs);
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
@@ -470,12 +474,12 @@ public final class ReviewService {
                 }
                 if (answer == LargePushPrompt.Answer.SKIP) {
                     notifySkipped(root, decision.toReview(), merge);
-                    return List.of();
+                    return PushReview.CLEAR;
                 }
                 if (answer != LargePushPrompt.Answer.REVIEW) {
-                    return List.of("Push aborted: the AI review of " + decision.toReview().size()
+                    return new PushReview(List.of("Push aborted: the AI review of " + decision.toReview().size()
                         + " file(s) was not confirmed. Push again and choose Review Now or Skip AI Review in IntelliJ "
-                        + "(Settings > Tools > Pre-Push Checker > Code Review sets the question and its timeout).");
+                        + "(Settings > Tools > Pre-Push Checker > Code Review sets the question and its timeout)."), null);
                 }
             }
             RunResult r = review(pushTargets(root, decision.toReview(), base, rev), indicator, budget);
@@ -486,7 +490,7 @@ public final class ReviewService {
                     + "mandatory, so the push went ahead.", NotificationType.WARNING, "Show Findings");
             }
             if (!r.errors().isEmpty() && decision.action() == ReviewGate.Action.BLOCK) {
-                return withErrors(blockLines(root, decision), r.errors());
+                return blockedReview(root, decision, r.errors());
             }
             if (!r.errors().isEmpty()) {
                 // Not mandatory, so the push goes on, but it must not look like a passed review.
@@ -494,9 +498,9 @@ public final class ReviewService {
                     + AiOutputSanitizer.truncate(String.join("\n", r.errors()), 600), NotificationType.WARNING, null);
             }
         }
-        if (decision.action() != ReviewGate.Action.BLOCK) return List.of();
+        if (decision.action() != ReviewGate.Action.BLOCK) return PushReview.CLEAR;
         notifyBlocked(root, decision);
-        return blockLines(root, decision);
+        return blockedReview(root, decision, List.of());
     }
 
     static final int MAX_REMOTE_LOOKUPS = 200;
@@ -567,23 +571,25 @@ public final class ReviewService {
         return new Classified(unreviewed, open);
     }
 
-    private @NotNull List<String> blockLines(@NotNull Path root, @NotNull ReviewGate.Decision d) {
+    private @NotNull PushReview blockedReview(@NotNull Path root, @NotNull ReviewGate.Decision d, List<String> errors) {
         List<String> out = new ArrayList<>();
         ReviewStateStore store = ReviewStateStore.getInstance(project);
         for (String rel : d.unreviewed()) {
             out.add("[" + display(root, rel) + "] AI review required before push: run Review in the Commit "
                 + "tool window (or Code Review tab), then push again.");
         }
+        String firstId = null;
         for (String rel : d.open()) {
             ReviewStateStore.FileReview review = store.review(key(ReviewGit.canonical(root).resolve(rel)));
             if (review == null) continue;
             for (ReviewFinding f : review.findings) {
                 if (!f.isOpen()) continue;
+                if (firstId == null) firstId = f.id;
                 String where = f.line > 0 ? display(root, rel) + " (" + f.line + ", 1)" : display(root, rel);
                 out.add("[" + where + "] AI review: " + f.message);
             }
         }
-        return out;
+        return new PushReview(withErrors(out, errors), firstId);
     }
 
     private static List<String> withErrors(List<String> lines, List<String> errors) {
@@ -631,14 +637,28 @@ public final class ReviewService {
      * uncommitted: pushed (with or without the gate), reverted, or reset. The Code Review tab
      * then only lists what can still matter. Skipped while a review or push check runs.
      */
-    public void pruneStale(@NotNull Path root) {
+    public boolean pruneStale(@NotNull Path root) {
         ReviewStateStore store = ReviewStateStore.getInstance(project);
-        if (store.isEmpty() || running.get()) return;
+        if (!store.hasOpenFindings()) return true;
+        if (running.get()) return false;
+        long generation = store.modificationCount();
         Path canonical = ReviewGit.canonical(root);
         Set<String> pending = ReviewGit.pendingFiles(canonical);
-        if (pending == null || running.get()) return; // git failed: keep everything
-        int removed = store.retainOnly(key(canonical) + "/", pending);
+        if (pending == null) return true; // Keep findings until Git can confirm what is pending.
+        String prefix = key(canonical) + "/";
+        for (ReviewStateStore.FileReview file : store.reviews()) {
+            if (file.hasOpenFindings() && file.path.startsWith(prefix)
+                    && !canonical.equals(ReviewGit.repoRoot(Path.of(file.path)))) {
+                pending.add(file.path.substring(prefix.length()));
+            }
+        }
+        int removed;
+        synchronized (store) {
+            if (running.get() || store.modificationCount() != generation) return false;
+            removed = store.retainOnly(prefix, pending);
+        }
         if (removed > 0) LOG.info("Cleared " + removed + " review result(s) with nothing left to push in " + canonical);
+        return true;
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -715,13 +735,19 @@ public final class ReviewService {
 
     /** Opens the Code Review tab of the tool window. */
     public void showTab() {
+        showTab(null);
+    }
+
+    public void showTab(@Nullable String findingId) {
         ApplicationManager.getApplication().invokeLater(() -> {
             if (project.isDisposed()) return;
             ToolWindow tw = ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID);
             if (tw == null) return;
             tw.activate(() -> {
                 Content content = tw.getContentManager().findContent(TAB_NAME);
-                if (content != null) tw.getContentManager().setSelectedContent(content);
+                if (content == null) return;
+                tw.getContentManager().setSelectedContent(content);
+                if (findingId != null && content.getComponent() instanceof ReviewPanel panel) panel.select(findingId);
             });
         });
     }

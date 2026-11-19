@@ -73,6 +73,7 @@ public class SmartBuildSnapshotStoreTest extends BasePlatformTestCase {
         }
         store.record(key("main"), "fp", errors, SmartBuildSnapshotStore.Source.SMART, 1L);
         SmartBuildSnapshotStore.Entry entry = store.find("fp", 2L);
+        assertFalse(entry.completeDiagnostics);
         assertEquals(errors.size(), entry.errorCount);
         assertEquals(SmartBuildSnapshotStore.MAX_STORED_ERRORS + 1, entry.errorList().size());
         assertTrue(entry.errorList().get(0).length() < SmartBuildSnapshotStore.MAX_STORED_ERROR_CHARS + 50);

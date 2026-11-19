@@ -245,6 +245,7 @@ public final class ReviewPrompt {
             - The replacement replaces EVERY line from startLine to endLine. Copy each of those \
             lines into the replacement unchanged unless the fix itself must change it. Never drop \
             a declaration, call, brace or statement that the fix does not need to remove.
+            - Lines outside startLine..endLine already stay in the file. Never repeat them as context.
             - Follow the pattern the surrounding code already uses for the same thing, and put new \
             code at the matching step. Examples: if descriptions are collected with \
             desc.add("..."), add another desc.add("...") line next to the others; if they are \
@@ -433,6 +434,37 @@ public final class ReviewPrompt {
             }
         }
         return new Fix(fix.startLine(), fix.endLine(), String.join("\n", out), fix.imports());
+    }
+
+    /** True when a replacement adds another copy of code immediately outside its edit range. */
+    static boolean repeatsContext(String content, Fix fix) {
+        List<String> file = content.lines().map(String::strip).toList();
+        List<String> edit = fix.replacement().lines().map(String::strip).toList();
+        int start = fix.startLine() - 1;
+        int end = fix.endLine();
+        List<String> old = file.subList(start, end);
+        for (int i = 1; i < edit.size(); i++) {
+            String line = edit.get(i);
+            if (line.equals(edit.get(i - 1)) && line.chars().anyMatch(Character::isLetterOrDigit)
+                    && old.contains(line) && java.util.Collections.indexOfSubList(old, List.of(line, line)) < 0) {
+                return true;
+            }
+        }
+        for (int n = 1; n <= edit.size(); n++) {
+            if (start >= n && copiedContext(file.subList(start - n, start), edit.subList(0, n),
+                    old.subList(0, Math.min(n, old.size())))) return true;
+            if (end + n <= file.size() && copiedContext(file.subList(end, end + n),
+                    edit.subList(edit.size() - n, edit.size()), old.subList(Math.max(0, old.size() - n), old.size()))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean copiedContext(List<String> neighbor, List<String> replacement, List<String> previous) {
+        // Braces, blank lines and other delimiters legitimately repeat in nested blocks.
+        return neighbor.equals(replacement) && !neighbor.equals(previous)
+            && neighbor.stream().anyMatch(line -> line.chars().anyMatch(Character::isLetterOrDigit));
     }
 
     private static @Nullable String takeSameLine(@NotNull List<String> pool, @NotNull String line) {

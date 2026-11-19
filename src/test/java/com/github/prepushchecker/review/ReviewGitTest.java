@@ -35,6 +35,10 @@ public class ReviewGitTest extends TestCase {
         super.tearDown();
     }
 
+    public void testIncompleteGitQueryKeepsPendingFilesUnknown() {
+        assertNull(ReviewGit.pendingFiles(repo.resolve("missing")));
+    }
+
     public void testWorkingHashEqualsCommittedBlob() throws Exception {
         Files.writeString(repo.resolve("src/A.java"), "class A {\n    void a() {\n        int x = 2;\n    }\n}\n");
         String working = ReviewGit.hashObjects(repo, List.of("src/A.java")).get("src/A.java");

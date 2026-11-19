@@ -23,6 +23,29 @@ class PrePushGeneralConfigurable(private val project: Project) :
 
     private var ignoredFiles: IgnoredFilesEditor? = null
 
+    private var hookPaths: com.intellij.ui.components.JBTextArea? = null
+
+    private fun refreshHookPaths() {
+        val field = hookPaths ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            if (project.isDisposed) return@executeOnPooledThread
+            val text = GitHookInstaller.projectRoots(project).joinToString("\n\n") { root ->
+                val inspection = GitHookInstaller.inspect(root)
+                val path = inspection.hooksDirectory()?.resolve(GitHookInstaller.MANAGED_HOOK_NAME)
+                val label = when {
+                    path == null -> "Hook location unavailable"
+                    inspection.issues().contains(GitHookInstaller.HookIssue.MANAGED_HOOK_MISSING) -> "Install destination"
+                    inspection.isHealthy -> "Installed"
+                    else -> "Needs repair"
+                }
+                "$root\n$label" + (path?.let { " · " + it.toAbsolutePath().normalize() } ?: "")
+            }.ifEmpty { "No Git roots found." }
+            ApplicationManager.getApplication().invokeLater({
+                if (!project.isDisposed && field === hookPaths) field.text = text
+            }, com.intellij.openapi.application.ModalityState.any())
+        }
+    }
+
     override fun createPanel() = panel {
         group("Push Check") {
             row {
@@ -52,6 +75,17 @@ class PrePushGeneralConfigurable(private val project: Project) :
                         { PrePushCheckerSettings.isLayerCheckEnabled(project) },
                         { PrePushCheckerSettings.setLayerCheckEnabled(project, it) })
                     .comment("Uses ${LayerRules.FILE_NAME} at the repository root. Edit layers from the Layers menu in the Compilation Checker tool window.")
+            }
+        }
+
+        group("Git Hooks") {
+            row {
+                val paths = com.intellij.ui.components.JBTextArea("Checking Git roots…")
+                paths.isEditable = false
+                paths.lineWrap = true
+                paths.isOpaque = false
+                hookPaths = paths
+                cell(paths).align(Align.FILL)
             }
         }
 
@@ -108,6 +142,7 @@ class PrePushGeneralConfigurable(private val project: Project) :
     override fun reset() {
         super.reset()
         ignoredFiles?.refresh()
+        refreshHookPaths()
     }
 
     override fun apply() {
@@ -119,6 +154,7 @@ class PrePushGeneralConfigurable(private val project: Project) :
     }
 
     override fun disposeUIResources() {
+        hookPaths = null
         ignoredFiles = null
         super.disposeUIResources()
     }

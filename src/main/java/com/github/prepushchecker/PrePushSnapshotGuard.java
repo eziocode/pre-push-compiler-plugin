@@ -50,6 +50,7 @@ final class PrePushSnapshotGuard {
 
     static @NotNull SnapshotValidationResult validateHeadSnapshotIfNeeded(
         @NotNull Project project,
+        @NotNull String repositoryRoot,
         @NotNull Collection<String> pushedPaths,
         @Nullable ProgressIndicator indicator
     ) {
@@ -78,10 +79,10 @@ final class PrePushSnapshotGuard {
         }
         SnapshotValidationResult unavailable = symbolicMatches.isEmpty()
             ? SnapshotValidationResult.notChecked()
-            : SnapshotValidationResult.checked(symbolicMatches);
+            : SnapshotValidationResult.checked(symbolicMatches.stream().map(line -> "[snapshot] " + line).toList());
 
-        String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank()) {
+        String basePath = repositoryRoot;
+        if (basePath.isBlank()) {
             return SnapshotValidationResult.checked(List.of(
                 "[snapshot] Strict A/B dependency check could not resolve the project base path."));
         }
@@ -89,7 +90,7 @@ final class PrePushSnapshotGuard {
         Path tempRoot = null;
         Path worktree = null;
         try {
-            Path projectRoot = Path.of(basePath);
+            Path projectRoot = GitHookInstaller.resolveWorkTreeRoot(basePath);
             tempRoot = Files.createTempDirectory("prepushchecker-snapshot-");
             worktree = tempRoot.resolve("worktree");
 
@@ -106,7 +107,8 @@ final class PrePushSnapshotGuard {
                 return unavailable;
             }
 
-            CommandResult build = runSnapshotBuild(project, worktree, risk.pushedPaths(), indicator, tempRoot);
+            var roots = new ExternalPushErrorLoader.SnapshotRoots(worktree, projectRoot);
+            CommandResult build = runSnapshotBuild(project, roots, risk.pushedPaths(), indicator, tempRoot);
             if (build.skipped()) {
                 LOG.info("Strict A/B dependency check skipped because no runnable snapshot build command was found.");
                 return unavailable;
@@ -116,18 +118,8 @@ final class PrePushSnapshotGuard {
                 return SnapshotValidationResult.checked(List.of());
             }
 
-            List<String> failureMessages = snapshotBuildFailureMessages(
-                "Strict A/B dependency check failed when compiling HEAD without local changes.",
-                build,
-                project,
-                worktree,
-                risk.pushedPaths()
-            );
-            if (failureMessages.isEmpty()) {
-                LOG.info("Strict A/B snapshot compile failed, but no parsed errors matched pushed files.");
-                return SnapshotValidationResult.notChecked();
-            }
-            return SnapshotValidationResult.checked(failureMessages);
+            return snapshotFailure(project, roots, risk.pushedPaths(), build.outputLines(),
+                build.exitCode(), build.timedOut(), hasCustomCommand());
         } catch (IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -343,11 +335,12 @@ final class PrePushSnapshotGuard {
 
     private static @NotNull CommandResult runSnapshotBuild(
         @NotNull Project project,
-        @NotNull Path worktree,
+        @NotNull ExternalPushErrorLoader.SnapshotRoots roots,
         @NotNull Collection<String> pushedPaths,
         @Nullable ProgressIndicator indicator,
         @NotNull Path outputRoot
     ) throws IOException, InterruptedException {
+        Path worktree = roots.worktree();
         String override = System.getenv("PRE_PUSH_CHECKER_COMMAND");
         BuildCommandPlan commandPlan;
         if (override != null && !override.isBlank()) {
@@ -387,6 +380,15 @@ final class PrePushSnapshotGuard {
             return result;
         }
 
+        if (!IgnoredCompilationFiles.getInstance(project).enabledPaths().isEmpty()
+                && result.exitCode() == 1) {
+            var output = ExternalPushErrorLoader.parseBuildOutput(project, result.outputLines(), roots);
+            if (output.unexplained() == null && !output.errors().isEmpty()
+                    && DiagnosticPathMatcher.filterIgnored(project, output.errors()).isEmpty()) {
+                return result;
+            }
+        }
+
         List<String> recovery = resolveBuildCommand(worktree, commandPlan.recovery());
         if (recovery.isEmpty()) {
             return result;
@@ -400,6 +402,11 @@ final class PrePushSnapshotGuard {
             indicator,
             outputRoot.resolve("snapshot-build-recovery.log")
         );
+    }
+
+    private static boolean hasCustomCommand() {
+        String command = System.getenv("PRE_PUSH_CHECKER_COMMAND");
+        return command != null && !command.isBlank();
     }
 
     static @NotNull List<String> resolveBuildCommand(
@@ -644,60 +651,36 @@ final class PrePushSnapshotGuard {
         return lines;
     }
 
-    private static @NotNull List<String> commandFailure(
-        @NotNull String summary,
-        @NotNull CommandResult result,
-        @NotNull Project project,
-        @NotNull Path worktree
-    ) {
-        List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
-        List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
-        if (!parsedErrors.isEmpty()) {
-            return DiagnosticPathMatcher.filterIgnored(project, parsedErrors);
+    static SnapshotValidationResult snapshotFailure(Project project, ExternalPushErrorLoader.SnapshotRoots roots,
+            Collection<String> pushedPaths, List<String> lines, int exitCode,
+            boolean timedOut, boolean customCommand) {
+        var output = ExternalPushErrorLoader.parseBuildOutput(project, lines, roots);
+        List<String> errors = output.errors();
+        String reason = null;
+        if (timedOut) reason = "Compilation timed out.";
+        else if (customCommand || exitCode != 1 || errors.isEmpty()) {
+            reason = "Build failed with exit code " + exitCode + ".";
+        } else if (output.unexplained() != null) {
+            reason = "Unattributed build output: " + output.unexplained();
         }
-
-        List<String> messages = new ArrayList<>();
-        String suffix = result.timedOut()
-            ? " timed out."
-            : " failed with exit code " + result.exitCode() + ".";
-        messages.add("[snapshot] " + summary + suffix);
-
-        int emitted = 0;
-        for (String line : normalizedOutput) {
-            String trimmed = line == null ? "" : line.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            messages.add(CompilationErrorService.compactError("[snapshot] " + trimmed));
-            emitted++;
-            if (emitted >= MAX_SNAPSHOT_OUTPUT_LINES) {
-                break;
-            }
+        if (reason != null) {
+            List<String> blocking = new ArrayList<>();
+            blocking.add(CompilationErrorService.compactError("[snapshot] " + reason));
+            if (!errors.isEmpty()) blocking.addAll(errors);
+            else lines.stream().filter(line -> !line.isBlank()).limit(MAX_SNAPSHOT_OUTPUT_LINES)
+                .map(line -> CompilationErrorService.compactError("[snapshot] " + line)).forEach(blocking::add);
+            return SnapshotValidationResult.checked(blocking);
         }
-        if (normalizedOutput.size() > emitted) {
-            messages.add(CompilationErrorService.omittedErrorsMessage(normalizedOutput.size() - emitted));
+        // Keep the complete verdict when an exclusion participates. The caller applies current
+        // settings after publishing raw diagnostics, including errors outside the pushed paths.
+        if (output.hasIgnored()) {
+            return SnapshotValidationResult.checked(errors);
         }
-        return List.copyOf(messages);
-    }
-
-    private static @NotNull List<String> snapshotBuildFailureMessages(
-        @NotNull String summary,
-        @NotNull CommandResult result,
-        @NotNull Project project,
-        @NotNull Path worktree,
-        @NotNull Collection<String> relevantPaths
-    ) {
-        List<String> normalizedOutput = normalizeSnapshotOutput(project, worktree, result.outputLines());
-        List<String> parsedErrors = ExternalPushErrorLoader.parseErrors(project, normalizedOutput);
-        if (!parsedErrors.isEmpty()) {
-            List<String> filtered = filterSnapshotErrors(parsedErrors, relevantPaths);
-            if (!filtered.isEmpty() && projectUsesLombok(worktree) && allLombokGeneratedSymbolErrors(filtered)) {
-                LOG.info("Snapshot build reported only Lombok-generated symbol errors; suppressing false positives.");
-                return List.of();
-            }
-            return DiagnosticPathMatcher.filterIgnored(project, filtered);
+        List<String> filtered = filterSnapshotErrors(errors, pushedPaths);
+        if (filtered.isEmpty() || (allLombokGeneratedSymbolErrors(filtered) && projectUsesLombok(roots.worktree()))) {
+            return SnapshotValidationResult.notChecked();
         }
-        return commandFailure(summary, result, project, worktree);
+        return SnapshotValidationResult.checked(filtered);
     }
 
     static @NotNull List<String> filterSnapshotErrors(
@@ -781,31 +764,6 @@ final class PrePushSnapshotGuard {
         } catch (IOException e) {
             return false;
         }
-    }
-
-    private static @NotNull List<String> normalizeSnapshotOutput(
-        @NotNull Project project,
-        @NotNull Path worktree,
-        @NotNull List<String> lines
-    ) {
-        String basePath = project.getBasePath();
-        if (basePath == null || basePath.isBlank() || lines.isEmpty()) {
-            return lines;
-        }
-
-        String snapshotPath = PushValidationPaths.normalizePath(worktree.toString());
-        String projectPath = PushValidationPaths.normalizePath(basePath);
-        // macOS canonicalizes /var/folders/... → /private/var/folders/...; javac/maven may print either form.
-        String privateSnapshotPath = snapshotPath.startsWith("/private") ? null : "/private" + snapshotPath;
-        List<String> normalized = new ArrayList<>(lines.size());
-        for (String line : lines) {
-            String value = line == null ? "" : PushValidationPaths.normalizePath(line);
-            if (privateSnapshotPath != null) {
-                value = value.replace(privateSnapshotPath, projectPath);
-            }
-            normalized.add(value.replace(snapshotPath, projectPath));
-        }
-        return normalized;
     }
 
     private static void cleanupWorktree(
