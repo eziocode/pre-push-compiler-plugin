@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ## [Unreleased]
 
+## [3.2.5] - 2026-11-19
+
+### Fixed
+
+- Fixed a loop where pushing after **Resolve** or **Resolve with AI** reopened the same findings. Code Review now remembers which findings you resolved for each file version. Edits to other files preserve approval, and new changes to the reviewed file trigger review again.
+- If the commit being pushed still contains the earlier version and the approved fix is on disk, a mandatory review now asks you to commit the fix.
+
 ## [3.2.4] - 2026-11-19
 
 ### Added

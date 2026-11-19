@@ -81,6 +81,11 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <h3>3.2.5 — Resolved findings stay resolved</h3>
+        <ul>
+            <li>Push retries remember findings resolved manually or with AI. New changes to the same file trigger review again.</li>
+            <li>If a mandatory review finds that the fix is still uncommitted, the push message asks you to commit it.</li>
+        </ul>
         <h3>3.2.4 — Code Review and Git hook setup</h3>
         <ul>
             <li>When findings block a push, Code Review opens in the affected project and selects the first blocking finding.</li>

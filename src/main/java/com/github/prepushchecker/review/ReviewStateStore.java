@@ -35,10 +35,23 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
     public static final class FileReview {
         public String path = "";
         public String contentId = "";
+        /** Other blob IDs seen during resolution, including partial fixes and the original reviewed version. */
+        public List<String> resolutionIds = new ArrayList<>();
         public long reviewedAt;
         public List<ReviewFinding> findings = new ArrayList<>();
         /** Earlier content ids of this file that were approved, oldest first. */
         public List<String> approvedIds = new ArrayList<>();
+
+        private void recordResolution(@Nullable String blob) {
+            if (blob == null || blob.isEmpty() || contentId.equals(blob)) return;
+            if (hasOpenFindings()) {
+                if (!resolutionIds.contains(blob)) resolutionIds.add(blob);
+            } else {
+                resolutionIds.add(contentId);
+                resolutionIds.remove(blob);
+                contentId = blob;
+            }
+        }
 
         public boolean hasOpenFindings() {
             for (ReviewFinding f : findings) if (f.isOpen()) return true;
@@ -108,6 +121,19 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         return review.approvedIds.contains(contentId);
     }
 
+    synchronized boolean hasOpenReview(@NotNull String path, @NotNull String blob) {
+        FileReview review = find(path);
+        return review != null && (review.contentId.equals(blob) || review.resolutionIds.contains(blob)) && review.hasOpenFindings();
+    }
+
+    /** The approved fix for a previously flagged version, if both belong to the same review. */
+    synchronized @Nullable String fixedVersionOf(@NotNull String path, @NotNull String blob) {
+        FileReview review = find(path);
+        if (review == null || !review.resolutionIds.contains(blob) || review.hasOpenFindings()
+                || review.approvedIds.contains(blob)) return null;
+        return review.contentId;
+    }
+
     public synchronized @Nullable FileReview review(@NotNull String path) {
         FileReview r = find(path);
         return r == null ? null : copy(r);
@@ -136,9 +162,7 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
                     f.resolved = true;
                     f.resolvedBy = by;
                     changed = true;
-                    if (!review.hasOpenFindings() && currentContentId != null && !currentContentId.isEmpty()) {
-                        review.contentId = currentContentId;
-                    }
+                    review.recordResolution(currentContentId);
                 }
             }
             if (changed) modCount.incrementAndGet();
@@ -180,6 +204,7 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
                     // Retire this unapproved version, keeping the user's prior approvals.
                     file.contentId = file.approvedIds.remove(file.approvedIds.size() - 1);
                     file.findings.clear();
+                    file.resolutionIds.clear();
                 }
                 removed++;
             }
@@ -221,6 +246,7 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         FileReview c = new FileReview();
         c.path = r.path;
         c.contentId = r.contentId;
+        c.resolutionIds = new ArrayList<>(r.resolutionIds);
         c.reviewedAt = r.reviewedAt;
         c.approvedIds = new ArrayList<>(r.approvedIds);
         for (ReviewFinding f : r.findings) {

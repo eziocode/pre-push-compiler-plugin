@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -61,7 +62,11 @@ public final class ReviewService {
 
     /** What a review run did. */
     public record RunResult(int reviewed, int outOfScope, int findings, boolean noRules,
-                            @NotNull List<String> errors) {
+                            @NotNull List<String> errors, int unchanged) {
+        public RunResult(int reviewed, int outOfScope, int findings, boolean noRules, @NotNull List<String> errors) {
+            this(reviewed, outOfScope, findings, noRules, errors, 0);
+        }
+
         static RunResult empty(boolean noRules) {
             return new RunResult(0, 0, 0, noRules, List.of());
         }
@@ -210,7 +215,11 @@ public final class ReviewService {
         long deadline = budget == null ? Long.MAX_VALUE : System.nanoTime() + budget.toNanos();
         ReviewStateStore store = ReviewStateStore.getInstance(project);
         Map<Path, List<Target>> byRoot = new LinkedHashMap<>();
-        for (Target t : targets) byRoot.computeIfAbsent(t.root(), r -> new ArrayList<>()).add(t);
+        int unchanged = 0;
+        for (Target t : targets) {
+            if (alreadyReviewed(t)) unchanged++;
+            else byRoot.computeIfAbsent(t.root(), r -> new ArrayList<>()).add(t);
+        }
 
         int reviewed = 0;
         int findings = 0;
@@ -219,9 +228,16 @@ public final class ReviewService {
             ReviewRules rules = rules(e.getKey());
             if (rules == null) continue;
             Map<String, Target> byDisplay = new LinkedHashMap<>();
-            for (Target t : e.getValue()) byDisplay.put(t.relPath(), t);
+            Map<String, String> blobs = new LinkedHashMap<>();
+            for (Target t : e.getValue()) blobs.put(t.relPath(), t.contentId());
+            Map<String, String> fixedVersions = fixedVersions(e.getKey(), blobs.keySet(), blobs);
+            Set<String> awaitingCommit = fixesAwaitingCommit(e.getKey(), fixedVersions);
+            for (Target t : e.getValue()) {
+                if (awaitingCommit.contains(t.relPath())) errors.add(commitFixMessage(e.getKey(), t.relPath()));
+                else byDisplay.put(t.relPath(), t);
+            }
             List<ReviewPrompt.FileDiff> diffs = new ArrayList<>();
-            for (Target t : e.getValue()) diffs.add(new ReviewPrompt.FileDiff(t.relPath(), t.numberedDiff()));
+            for (Target t : byDisplay.values()) diffs.add(new ReviewPrompt.FileDiff(t.relPath(), t.numberedDiff()));
 
             List<List<ReviewPrompt.FileDiff>> batches = ReviewPrompt.batches(diffs);
             for (int i = 0; i < batches.size(); i++) {
@@ -264,13 +280,21 @@ public final class ReviewService {
                     Target t = byDisplay.get(f.displayPath());
                     List<ReviewFinding> mine = verdict.toRecord().get(t.absolutePath());
                     if (mine == null) continue;
-                    store.record(t.absolutePath(), t.contentId(), mine);
+                    synchronized (store) {
+                        // A concurrent review may have finished and the user may already have resolved it.
+                        if (alreadyReviewed(t) || !Objects.equals(fixedVersions.get(t.relPath()),
+                                store.fixedVersionOf(t.absolutePath(), t.contentId()))) {
+                            unchanged++;
+                            continue;
+                        }
+                        store.record(t.absolutePath(), t.contentId(), mine);
+                    }
                     reviewed++;
                     findings += mine.size();
                 }
             }
         }
-        return new RunResult(reviewed, 0, findings, false, errors);
+        return new RunResult(reviewed, 0, findings, false, errors, unchanged);
     }
 
     /** Reviews working-tree {@code files} in a cancellable background task and reports the result. */
@@ -301,24 +325,16 @@ public final class ReviewService {
                 List<Path> copy = addGitChanges ? withGitChanges(given) : given;
                 boolean anyRules = hasAnyRules(copy);
                 if (!anyRules) {
-                    report(RunResult.empty(true), copy.size(), 0);
+                    report(RunResult.empty(true), copy.size());
                     return;
                 }
                 List<String> collectErrors = new ArrayList<>();
                 List<Target> targets = workingTargets(copy, collectErrors);
-                int unchanged = 0;
-                if (addGitChanges) {
-                    // "Review Local Changes" again: content reviewed before keeps its results, no AI call.
-                    int before = targets.size();
-                    targets = new ArrayList<>(targets);
-                    targets.removeIf(t -> alreadyReviewed(t));
-                    unchanged = before - targets.size();
-                }
                 RunResult r = review(targets, indicator, null);
                 List<String> errors = new ArrayList<>(collectErrors);
                 errors.addAll(r.errors());
-                int outOfScope = Math.max(0, copy.size() - targets.size() - unchanged - collectErrors.size());
-                report(new RunResult(r.reviewed(), outOfScope, r.findings(), false, errors), copy.size(), unchanged);
+                int outOfScope = Math.max(0, copy.size() - targets.size() - collectErrors.size());
+                report(new RunResult(r.reviewed(), outOfScope, r.findings(), false, errors, r.unchanged()), copy.size());
             }
 
             @Override
@@ -338,7 +354,7 @@ public final class ReviewService {
             public void run(@NotNull ProgressIndicator indicator) {
                 indicator.setIndeterminate(true);
                 RunResult r = review(pushTargets(root, rels, null), indicator, null);
-                report(r, rels.size(), 0);
+                report(r, rels.size());
             }
 
             @Override
@@ -353,11 +369,11 @@ public final class ReviewService {
     private boolean alreadyReviewed(@NotNull Target t) {
         ReviewStateStore store = ReviewStateStore.getInstance(project);
         if (store.isApproved(t.absolutePath(), t.contentId())) return true;
-        ReviewStateStore.FileReview review = store.review(t.absolutePath());
-        return review != null && review.contentId.equals(t.contentId());
+        return store.hasOpenReview(t.absolutePath(), t.contentId());
     }
 
-    private void report(@NotNull RunResult r, int requested, int unchanged) {
+    private void report(@NotNull RunResult r, int requested) {
+        int unchanged = r.unchanged();
         if (r.noRules()) {
             notify("No review rule file found (" + ReviewRules.DEFAULT_FILE_NAME + "). Create one in "
                 + "Settings → Tools → Pre-Push Checker → Code Review.", NotificationType.WARNING, null);
@@ -455,6 +471,12 @@ public final class ReviewService {
             rels.removeIf(r -> isWhitespaceInsensitive(r) && ReviewGit.whitespaceOnly(repo, from, to, r));
         }
         if (rels.isEmpty()) return PushReview.CLEAR;
+
+        Set<String> awaitingCommit = fixesAwaitingCommit(repo, fixedVersions(repo, rels, blobs));
+        if (mandatory && !awaitingCommit.isEmpty()) {
+            return new PushReview(awaitingCommit.stream().map(rel -> commitFixMessage(repo, rel)).toList(), null);
+        }
+        rels.removeAll(awaitingCommit);
 
         Classified c = classify(root, rels, blobs);
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
@@ -554,6 +576,32 @@ public final class ReviewService {
             + rules.body().hashCode() + "/" + ReviewSettings.isIgnoreMergeChanges(project) + "/" + ReviewSettings.confirmFileThreshold(project) + "/" + ReviewStateStore.getInstance(project).modificationCount();
     }
 
+    private Map<String, String> fixedVersions(Path root, Collection<String> rels, Map<String, String> blobs) {
+        ReviewStateStore store = ReviewStateStore.getInstance(project);
+        Map<String, String> fixed = new LinkedHashMap<>();
+        Path canonicalRoot = ReviewGit.canonical(root);
+        for (String rel : rels) {
+            String id = store.fixedVersionOf(key(canonicalRoot.resolve(rel)), blobs.get(rel));
+            if (id != null) fixed.put(rel, id);
+        }
+        return fixed;
+    }
+
+    /** Only suggest committing a fix when the approved version is still on disk. */
+    private static Set<String> fixesAwaitingCommit(Path root, Map<String, String> fixed) {
+        Map<String, String> working = ReviewGit.hashObjects(root, new ArrayList<>(fixed.keySet()));
+        Set<String> pending = new LinkedHashSet<>();
+        fixed.forEach((rel, id) -> {
+            if (id.equals(working.get(rel))) pending.add(rel);
+        });
+        return pending;
+    }
+
+    private String commitFixMessage(Path root, String rel) {
+        return "[" + display(root, rel) + "] Commit the resolved fix before pushing. "
+            + "The commit being pushed still contains the earlier version.";
+    }
+
     private record Classified(List<String> unreviewed, List<String> open) {}
 
     private Classified classify(Path root, List<String> rels, Map<String, String> blobs) {
@@ -564,8 +612,7 @@ public final class ReviewService {
             String abs = key(ReviewGit.canonical(root).resolve(rel));
             String blob = blobs.get(rel);
             if (store.isApproved(abs, blob)) continue;
-            ReviewStateStore.FileReview review = store.review(abs);
-            if (review != null && review.contentId.equals(blob)) open.add(rel);
+            if (store.hasOpenReview(abs, blob)) open.add(rel);
             else unreviewed.add(rel);
         }
         return new Classified(unreviewed, open);
