@@ -23,7 +23,7 @@ final class StatsUploader {
     }
 
     static void uploadPending(@NotNull SharedStats stats) {
-        if (stats.getConsent() != SharedStats.Consent.YES || !StatsEndpoint.isConfigured()) return;
+        if (!stats.isSharing() || !StatsEndpoint.isConfigured()) return;
         SharedStats.Delta delta = stats.pendingDelta();
         if (delta.isEmpty()) return;
         try {

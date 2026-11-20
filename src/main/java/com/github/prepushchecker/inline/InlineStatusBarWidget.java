@@ -160,7 +160,7 @@ public final class InlineStatusBarWidget implements StatusBarWidget, StatusBarWi
         }
         Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
         if (s.enabled && editor != null) {
-            group.add(action("Suggest Now (Alt+\\)", () -> InlineSuggestService.getInstance().requestNow(editor)));
+            group.add(action("Suggest Now (" + InlineShortcuts.suggest() + ")", () -> InlineSuggestService.getInstance().requestNow(editor)));
         }
         VirtualFile file = editor == null ? null : editor.getVirtualFile();
         String ext = file == null ? null : file.getExtension();

@@ -32,6 +32,8 @@ class CodeReviewConfigurable(private val project: Project) :
 
     override fun createPanel() = panel {
         lateinit var enabled: com.intellij.ui.dsl.builder.Cell<com.intellij.ui.components.JBCheckBox>
+        lateinit var onPush: com.intellij.ui.dsl.builder.Cell<com.intellij.ui.components.JBRadioButton>
+        lateinit var block: com.intellij.ui.dsl.builder.Cell<com.intellij.ui.components.JBCheckBox>
         row {
             enabled = checkBox("Review changes with AI against the repository's rule file")
                 .bindSelected({ ReviewSettings.isEnabled(project) }, { ReviewSettings.setEnabled(project, it) })
@@ -66,7 +68,7 @@ class CodeReviewConfigurable(private val project: Project) :
                         .comment("You run Review from the commit panel (next to the commit message button) or the Code Review tab. The push only checks that it was done.")
                 }
                 row {
-                    radioButton("On push", ReviewSettings.Mode.ON_PUSH)
+                    onPush = radioButton("On push", ReviewSettings.Mode.ON_PUSH)
                         .comment("The push reviews any covered file that was not reviewed yet. Pushes wait for the AI.")
                 }
             }.bind({ ReviewSettings.mode(project) }, { ReviewSettings.setMode(project, it) })
@@ -115,13 +117,23 @@ class CodeReviewConfigurable(private val project: Project) :
 
         group("Mandate") {
             row {
-                checkBox("Block pushes until covered files are reviewed and every finding is resolved")
+                block = checkBox("Block pushes until covered files are reviewed and every finding is resolved")
                     .bindSelected(
                         { ReviewSettings.isMandatoryFallback(project) },
                         { ReviewSettings.setMandatoryFallback(project, it) })
                     .comment("Applies to your pushes. 'mandatory: true' in the rule file turns it on for everyone, whatever this box says. Terminal pushes are blocked too when IntelliJ is closed.")
             }
         }.enabledIf(enabled.selected)
+
+        // Turning review on picks the push-time defaults: review on push and block the push.
+        // Only a user click fires this (not reset), and nothing is saved until Apply, so the
+        // user can still untick either one first.
+        enabled.component.addActionListener {
+            if (enabled.component.isSelected) {
+                onPush.component.isSelected = true
+                block.component.isSelected = true
+            }
+        }
 
         updateStatus()
     }

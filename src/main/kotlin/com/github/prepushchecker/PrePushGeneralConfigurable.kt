@@ -132,8 +132,8 @@ class PrePushGeneralConfigurable(private val project: Project) :
             row {
                 checkBox("Share anonymous counts")
                     .bindSelected(
-                        { SharedStats.getInstance().consent == SharedStats.Consent.YES },
-                        { SharedStats.getInstance().setConsent(it) })
+                        { SharedStats.getInstance().isSharing },
+                        { SharedStats.getInstance().setSharingFromSettings(it) })
                     .comment("Adds this IDE's Push Stats counts to the public total: checks passed, pushes blocked, plugin and IDE version. No code, file names or paths.")
             }
         }

@@ -5,6 +5,10 @@ import com.intellij.openapi.project.Project;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.function.BooleanSupplier;
+
 /**
  * Per-project review settings, stored in the workspace like the other Pre-Push Checker
  * settings. A rule file with {@code mandatory: true} forces the mandate for everyone; otherwise
@@ -21,6 +25,8 @@ public final class ReviewSettings {
     }
 
     private static final String ENABLED = "prepushchecker.review.enabled";
+    /** Set once the enabled default was decided for this project (see {@link #migrateEnabledDefault}). */
+    private static final String ENABLED_MIGRATED = "prepushchecker.review.enabledDefaultMigrated";
     private static final String MODE = "prepushchecker.review.mode";
     private static final String MANDATORY = "prepushchecker.review.mandatory";
     private static final String RULE_FILE = "prepushchecker.review.ruleFile";
@@ -68,13 +74,47 @@ public final class ReviewSettings {
         PropertiesComponent.getInstance(project).setValue(CONFIRM_ACTION, a.name(), TimeoutAction.ABORT.name());
     }
 
-    /** Master switch. Off: no review button effect on pushes, no gate. Default on (needs a rule file anyway). */
+    /**
+     * Master switch. Off: no review button effect on pushes, no gate. Default off; projects that
+     * already used review before the default changed keep it on (see {@link #migrateEnabledDefault}).
+     */
     public static boolean isEnabled(@NotNull Project project) {
-        return PropertiesComponent.getInstance(project).getBoolean(ENABLED, true);
+        PropertiesComponent props = PropertiesComponent.getInstance(project);
+        if (!props.isValueSet(ENABLED_MIGRATED)) {
+            migrateEnabledDefault(project, () -> usedReviewBefore(project));
+        }
+        return props.getBoolean(ENABLED, false);
     }
 
     public static void setEnabled(@NotNull Project project, boolean enabled) {
-        PropertiesComponent.getInstance(project).setValue(ENABLED, enabled, true);
+        PropertiesComponent props = PropertiesComponent.getInstance(project);
+        props.setValue(ENABLED_MIGRATED, true);
+        props.setValue(ENABLED, enabled, false);
+    }
+
+    /**
+     * Runs once per project. Review used to default on; when it was never set explicitly and the
+     * project already has review state or a rule file, keep it on by persisting {@code true}.
+     * Everyone else gets the new default (off). Later rule files do not switch it on again.
+     */
+    static synchronized void migrateEnabledDefault(@NotNull Project project, @NotNull BooleanSupplier usedBefore) {
+        PropertiesComponent props = PropertiesComponent.getInstance(project);
+        if (props.isValueSet(ENABLED_MIGRATED)) return;
+        if (!props.isValueSet(ENABLED) && usedBefore.getAsBoolean()) {
+            props.setValue(ENABLED, true, false);
+        }
+        props.setValue(ENABLED_MIGRATED, true);
+    }
+
+    private static boolean usedReviewBefore(@NotNull Project project) {
+        try {
+            ReviewStateStore store = ReviewStateStore.getInstance(project);
+            if (store != null && !store.isEmpty()) return true;
+            String base = project.getBasePath();
+            return base != null && Files.isRegularFile(ReviewRules.ruleFile(Path.of(base), ruleFilePath(project)));
+        } catch (RuntimeException e) {
+            return false;
+        }
     }
 
     public static @NotNull Mode mode(@NotNull Project project) {

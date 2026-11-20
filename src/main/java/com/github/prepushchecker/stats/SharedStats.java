@@ -20,10 +20,13 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Opt-in sharing of anonymous Push Stats counts with the public total on the project's GitHub
+ * Sharing of anonymous Push Stats counts with the public total on the project's GitHub
  * page. Counting itself is done by {@code PushStats} (local, with its dedupe rules); every push it
  * counts is passed to {@link #counted}. Only the counts gathered since the last upload are kept
  * here, and only while sharing is not declined. Never paths, code, names or messages.
+ * <p>
+ * On by default: a user who never answered ({@link Consent#UNSET}) shares, and is told once
+ * with a notification that offers to turn it off. An explicit "no" is never overridden.
  */
 @State(name = "PrePushSharedStats", storages = @Storage("prePushSharedStats.xml"))
 public final class SharedStats implements PersistentStateComponent<SharedStats.SharedState>, Disposable {
@@ -81,8 +84,7 @@ public final class SharedStats implements PersistentStateComponent<SharedStats.S
     }
 
     synchronized void add(@NotNull Verdict verdict, int errorCount) {
-        if (getConsent() == Consent.NO) return;
-        // Kept while the question is unanswered; sent only after the user agrees.
+        if (!isSharing()) return;
         switch (verdict) {
             case ALLOWED -> state.pendingOk++;
             case BLOCKED -> {
@@ -135,7 +137,32 @@ public final class SharedStats implements PersistentStateComponent<SharedStats.S
         ensureUploads();
     }
 
-    /** Asks once, after the first checked push, whether to share the anonymous counts. */
+    /** Consent as it applies: never answered counts as {@link Consent#YES}. */
+    public synchronized @NotNull Consent effectiveConsent() {
+        return effective(getConsent());
+    }
+
+    public boolean isSharing() {
+        return effectiveConsent() == Consent.YES;
+    }
+
+    static @NotNull Consent effective(@NotNull Consent stored) {
+        return stored == Consent.NO ? Consent.NO : Consent.YES;
+    }
+
+    /**
+     * Settings checkbox: records an answer only when it differs from the effective consent, so
+     * applying the page without touching the box never turns sharing off or pins a default.
+     */
+    public synchronized void setSharingFromSettings(boolean share) {
+        if (share == isSharing()) return;
+        setConsent(share);
+    }
+
+    /**
+     * Tells once, after the first checked push, that anonymous counts are shared by default, with
+     * a Turn off action. Nothing is shown to a user who already answered.
+     */
     public void maybeAskConsent(@NotNull Project project) {
         synchronized (this) {
             if (state.consentAsked || getConsent() != Consent.UNSET) return;
@@ -146,21 +173,14 @@ public final class SharedStats implements PersistentStateComponent<SharedStats.S
             Notification notification = NotificationGroupManager.getInstance()
                 .getNotificationGroup(NOTIFICATION_GROUP_ID)
                 .createNotification(
-                    "Share anonymous pre-push counts?",
-                    "Add this IDE's Push Stats counts to the public total on the project's GitHub "
-                        + "page. Only counts are sent (checks passed, pushes blocked, errors caught, "
-                        + "timeouts, plugin and IDE version) with a random install ID. No code, file "
-                        + "names, paths, messages or project names. Change it any time under Usage "
-                        + "Statistics in the Compilation Checker settings.",
+                    "Anonymous usage counts are shared",
+                    "This IDE's Push Stats counts are added to the public total on the project's "
+                        + "GitHub page. Only counts are sent (checks passed, pushes blocked, errors "
+                        + "caught, timeouts, plugin and IDE version) with a random install ID. No "
+                        + "code, file names, paths, messages or project names. Change it any time "
+                        + "under Settings | Tools | Pre-Push Checker | Usage Statistics.",
                     NotificationType.INFORMATION);
-            notification.addAction(new NotificationAction("Share") {
-                @Override
-                public void actionPerformed(@NotNull AnActionEvent e, @NotNull Notification n) {
-                    setConsent(true);
-                    n.expire();
-                }
-            });
-            notification.addAction(new NotificationAction("Don't share") {
+            notification.addAction(new NotificationAction("Turn off") {
                 @Override
                 public void actionPerformed(@NotNull AnActionEvent e, @NotNull Notification n) {
                     setConsent(false);
@@ -174,7 +194,7 @@ public final class SharedStats implements PersistentStateComponent<SharedStats.S
     // ── Upload scheduling ──────────────────────────────────────────────────
 
     private void ensureUploads() {
-        if (uploads != null || getConsent() != Consent.YES || !StatsEndpoint.isConfigured()) return;
+        if (uploads != null || !isSharing() || !StatsEndpoint.isConfigured()) return;
         synchronized (this) {
             if (uploads != null) return;
             uploads = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(

@@ -31,7 +31,7 @@
 
         <h3>Features</h3>
         <ul>
-            <li>Inline AI suggestions — optional ghost text with Tab to accept, Esc to dismiss, independent provider/model and project context</li>
+            <li>Inline AI suggestions — optional ghost text with Tab to accept, Esc to dismiss, Alt+\ (Option+\ on macOS) to ask on demand, independent provider/model and project context</li>
             <li>Smart compile scope — changed modules plus dependent modules by default, project-level when necessary</li>
             <li>Smart background build — compiles changes while the IDE is idle, results kept per branch and reused on push</li>
             <li>IDE problem check — revalidates stale classpath/output diagnostics with at most one clean rebuild</li>
@@ -125,7 +125,7 @@
         <ul>
             <li>Optional ghost-text code suggestions with Tab to accept and Esc to dismiss.</li>
             <li>Choose a separate provider and model in Settings → Tools → Pre-Push Checker → Inline Suggestions.</li>
-            <li>Automatic suggestions for OpenAI, Anthropic, Gemini and Ollama; Alt+\ for every provider.</li>
+            <li>Automatic suggestions for OpenAI, Anthropic, Gemini and Ollama; Alt+\ (Option+\ on macOS) for every provider.</li>
             <li>Project signatures and open-file context, configurable limits, off by default.</li>
         </ul>
         <h3>2.10.0 — AI code review, new settings, CLI fixes</h3>

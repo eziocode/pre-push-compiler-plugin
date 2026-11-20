@@ -92,7 +92,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         val p = panel {
             lateinit var enabled: Cell<JBCheckBox>
             row {
-                enabled = checkBox("Suggest code inline while typing (ghost text, Tab to accept)")
+                enabled = checkBox("Suggest code inline while typing (ghost text, ${InlineShortcuts.accept()} to accept)")
                     .bindSelected({ state.enabled }, { state.enabled = it })
                     .comment("Sends code around the caret to the provider below. Off by default. " +
                         "If another inline completion plugin is active, both may show suggestions.")
@@ -144,7 +144,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
                         intTextField(100..2000).columns(5).bindIntText({ state.debounceMs }, { state.debounceMs = it })
                         label("ms")
                     }
-                    row { radioButton("Only on shortcut (Alt+\\)", InlineSuggestSettings.Trigger.MANUAL) }
+                    row { radioButton("Only on shortcut (${InlineShortcuts.suggest()})", InlineSuggestSettings.Trigger.MANUAL) }
                 }.bind({ InlineSuggestSettings.Trigger.valueOf(state.trigger) }, { state.trigger = it.name })
             }.enabledIf(enabled.selected)
 
