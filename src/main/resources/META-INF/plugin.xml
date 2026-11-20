@@ -81,8 +81,19 @@
     ]]></description>
 
     <change-notes><![CDATA[
-        <h3>3.2.6 — Smart Build threading fix</h3>
-        <p>Smart Build now checks affected modules on a background thread, fixing an exception after regular builds and auto-make.</p>
+        <h3>3.3.0 — Local AI tools, faster AI, smarter review</h3>
+        <ul>
+            <li>AI settings find the AI command-line tools installed on your machine. Click Detect Local CLIs, or Add custom CLI for any other tool. Only installed tools are listed.</li>
+            <li>Commit messages from Claude stream into the box as they are written, and an unchanged diff is answered from a cache. Claude and Codex calls are leaner, and commit messages use a fast model unless you set one.</li>
+            <li>Code Review: tick findings or whole files and click Resolve Checked with AI. Every file's diff is shown before anything is applied.</li>
+            <li>Fixes for the first findings are prepared in the background, so Resolve with AI opens at once. You can turn this off under Code Review → AI Fixes.</li>
+            <li>On-push review starts right after an IDE commit, so the push usually finds the review already done.</li>
+            <li>Pushing again after resolving a finding no longer re-reviews code that was already fixed, even after an edit or a reformat on commit.</li>
+            <li>AI fixes keep the right line and indentation, no longer delete code on an empty answer, and need at most two AI calls.</li>
+            <li>Defaults: "Review changes with AI" starts off; turning it on also turns on review on push and blocking. Anonymous usage counts start on, with a one-time notice.</li>
+            <li>Inline suggestion shortcut labels show your real shortcut, Option+\ on macOS.</li>
+            <li>Smart Build checks affected modules on a background thread, fixing an exception after regular builds and auto-make.</li>
+        </ul>
 
         <h3>3.2.5 — Resolved findings stay resolved</h3>
         <ul>
