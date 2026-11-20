@@ -125,6 +125,16 @@ class CodeReviewConfigurable(private val project: Project) :
             }
         }.enabledIf(enabled.selected)
 
+        group("AI Fixes") {
+            row {
+                checkBox("Prepare AI fixes in the background after a review")
+                    .bindSelected(
+                        { FixPrefetchService.isEnabled(project) },
+                        { FixPrefetchService.setEnabled(project, it) })
+                    .comment("Up to ${FixPrefetchService.MAX_PREFETCH} findings per review, one AI call at a time, so Resolve with AI opens at once. Dropped when the file is edited or the finding resolved.")
+            }
+        }.enabledIf(enabled.selected)
+
         // Turning review on picks the push-time defaults: review on push and block the push.
         // Only a user click fires this (not reset), and nothing is saved until Apply, so the
         // user can still untick either one first.

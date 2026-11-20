@@ -46,12 +46,20 @@ final class ReviewGit {
 
     /** Blob ids git would store for the working-tree files (filters applied, like {@code git add}). */
     static @NotNull Map<String, String> hashObjects(@NotNull Path root, @NotNull List<String> relPaths) {
+        return hashObjects(root, relPaths, false);
+    }
+
+    /**
+     * Like {@link #hashObjects(Path, List)}; with {@code write} the blobs are also stored in the
+     * object database (as {@code git add} would), so a later {@link #diffBlobs} can read them.
+     */
+    static @NotNull Map<String, String> hashObjects(@NotNull Path root, @NotNull List<String> relPaths, boolean write) {
         Map<String, String> out = new LinkedHashMap<>();
         List<String> existing = new ArrayList<>();
         for (String p : relPaths) if (Files.isRegularFile(root.resolve(p))) existing.add(p);
         for (int i = 0; i < existing.size(); i += BATCH) {
             List<String> batch = existing.subList(i, Math.min(existing.size(), i + BATCH));
-            List<String> cmd = new ArrayList<>(List.of("hash-object", "--"));
+            List<String> cmd = new ArrayList<>(write ? List.of("hash-object", "-w", "--") : List.of("hash-object", "--"));
             cmd.addAll(batch);
             String stdout = git(root, cmd);
             if (stdout == null) continue;
@@ -167,6 +175,24 @@ final class ReviewGit {
                                      @NotNull String relPath) {
         String out = git(root, withFunctionContext(List.of("diff", "--no-color", "--no-ext-diff", "-U5", "-W", base, head, "--", relPath)));
         return out == null ? "" : out;
+    }
+
+    /**
+     * Unified diff between two blobs, or {@code null} when either is not in the object database.
+     * With {@code ignoreWhitespace} whitespace-only changes are left out.
+     */
+    static @Nullable String diffBlobs(@NotNull Path root, @NotNull String from, @NotNull String to,
+                                      boolean ignoreWhitespace) {
+        List<String> cmd = new ArrayList<>(List.of("diff", "--no-color", "--no-ext-diff", "-U5"));
+        if (ignoreWhitespace) cmd.add("-w");
+        cmd.add(from);
+        cmd.add(to);
+        return git(root, cmd);
+    }
+
+    /** Content of a blob, or {@code null} when it is not in the object database. */
+    static @Nullable String catBlob(@NotNull Path root, @NotNull String blob) {
+        return git(root, List.of("cat-file", "blob", blob));
     }
 
     static final int MAX_MERGES = 20;

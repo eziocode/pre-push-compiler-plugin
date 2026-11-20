@@ -31,6 +31,8 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
 
     static final int MAX_FILES = 2000;
     static final int MAX_APPROVED_HISTORY = 10;
+    static final int MAX_RESOLUTION_HISTORY = 20;
+    static final int MAX_RESOLVED_NOTES = 20;
 
     public static final class FileReview {
         public String path = "";
@@ -41,6 +43,11 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         public List<ReviewFinding> findings = new ArrayList<>();
         /** Earlier content ids of this file that were approved, oldest first. */
         public List<String> approvedIds = new ArrayList<>();
+        /**
+         * Findings resolved in earlier reviews of this file ("rule: message"), newest last. Told to
+         * the AI on a re-review so it does not raise a fixed problem again.
+         */
+        public List<String> resolvedNotes = new ArrayList<>();
 
         private void recordResolution(@Nullable String blob) {
             if (blob == null || blob.isEmpty() || contentId.equals(blob)) return;
@@ -91,13 +98,28 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         synchronized (this) {
             FileReview previous = find(path);
             List<String> history = new ArrayList<>();
+            List<String> resolutions = new ArrayList<>();
+            List<String> notes = new ArrayList<>();
             if (previous != null) {
                 history.addAll(previous.approvedIds);
-                if (!previous.hasOpenFindings()) remember(history, previous.contentId);
+                notes.addAll(previous.resolvedNotes);
+                for (ReviewFinding f : previous.findings) {
+                    if (f.resolved) note(notes, f);
+                }
+                if (!previous.hasOpenFindings()) {
+                    remember(history, previous.contentId);
+                    // Versions fixed earlier stay known: pushing one again is not new, unreviewed code.
+                    resolutions.addAll(previous.resolutionIds);
+                }
             }
+            resolutions.remove(contentId);
+            resolutions.removeAll(history);
+            while (resolutions.size() > MAX_RESOLUTION_HISTORY) resolutions.remove(0);
             state.files.removeIf(f -> f.path.equals(path));
             FileReview review = new FileReview();
             review.approvedIds = history;
+            review.resolutionIds = resolutions;
+            review.resolvedNotes = notes;
             review.path = path;
             review.contentId = contentId;
             review.reviewedAt = System.currentTimeMillis();
@@ -119,6 +141,26 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         if (review == null) return false;
         if (review.contentId.equals(contentId) && !review.hasOpenFindings()) return true;
         return review.approvedIds.contains(contentId);
+    }
+
+    /**
+     * The newest approved content id of {@code path} (the current review when it has no open
+     * finding, else the last approved earlier version), or {@code null}.
+     */
+    synchronized @Nullable String lastApprovedId(@NotNull String path) {
+        FileReview review = find(path);
+        if (review == null) return null;
+        if (!review.contentId.isEmpty() && !review.hasOpenFindings()) return review.contentId;
+        return review.approvedIds.isEmpty() ? null : review.approvedIds.get(review.approvedIds.size() - 1);
+    }
+
+    /** Findings fixed in this file's earlier reviews, plus the resolved ones of the current review. */
+    synchronized @NotNull List<String> resolvedNotes(@NotNull String path) {
+        FileReview review = find(path);
+        if (review == null) return List.of();
+        List<String> out = new ArrayList<>(review.resolvedNotes);
+        for (ReviewFinding f : review.findings) if (f.resolved) note(out, f);
+        return out;
     }
 
     synchronized boolean hasOpenReview(@NotNull String path, @NotNull String blob) {
@@ -169,6 +211,49 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         }
         if (changed) notifyListeners();
         return changed;
+    }
+
+    /**
+     * After an edit turned {@code before} into {@code after}, moves the line of each open finding
+     * of {@code path} (except {@code exceptId}) to where its line is now. A finding whose line was
+     * itself rewritten keeps the nearest surviving line.
+     */
+    public void remapLines(@NotNull String path, @NotNull String before, @NotNull String after,
+                           @Nullable String exceptId) {
+        com.intellij.util.diff.Diff.Change change;
+        try {
+            change = com.intellij.util.diff.Diff.buildChanges(before.replace("\r\n", "\n").split("\n", -1),
+                after.replace("\r\n", "\n").split("\n", -1));
+        } catch (com.intellij.util.diff.FilesTooBigForDiffException e) {
+            return;
+        }
+        if (change == null) return;
+        boolean changed = false;
+        synchronized (this) {
+            FileReview review = find(path);
+            if (review == null) return;
+            for (ReviewFinding f : review.findings) {
+                if (!f.isOpen() || f.line <= 0 || f.id.equals(exceptId)) continue;
+                int moved = translate(change, f.line - 1);
+                if (moved >= 0 && moved + 1 != f.line) {
+                    f.line = moved + 1;
+                    changed = true;
+                }
+            }
+            if (changed) modCount.incrementAndGet();
+        }
+        if (changed) notifyListeners();
+    }
+
+    /** 0-based line in the new text for {@code line} of the old text; a rewritten line maps to the edit's start. */
+    static int translate(@NotNull com.intellij.util.diff.Diff.Change change, int line) {
+        int shift = 0;
+        for (var c = change; c != null; c = c.link) {
+            if (line < c.line0) break;
+            if (line < c.line0 + c.deleted) return c.line1;
+            shift += c.inserted - c.deleted;
+        }
+        return line + shift;
     }
 
     public synchronized @Nullable ReviewFinding finding(@NotNull String findingId) {
@@ -230,6 +315,14 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         listeners.remove(listener);
     }
 
+    private static void note(List<String> notes, ReviewFinding f) {
+        String text = (f.rule == null || f.rule.isBlank() ? "" : f.rule.strip() + ": ") + f.message.strip();
+        if (text.isBlank()) return;
+        notes.remove(text);
+        notes.add(text);
+        while (notes.size() > MAX_RESOLVED_NOTES) notes.remove(0);
+    }
+
     private static void remember(List<String> history, String contentId) {
         if (contentId == null || contentId.isEmpty()) return;
         history.remove(contentId);
@@ -249,6 +342,7 @@ public final class ReviewStateStore implements PersistentStateComponent<ReviewSt
         c.resolutionIds = new ArrayList<>(r.resolutionIds);
         c.reviewedAt = r.reviewedAt;
         c.approvedIds = new ArrayList<>(r.approvedIds);
+        c.resolvedNotes = new ArrayList<>(r.resolvedNotes);
         for (ReviewFinding f : r.findings) {
             ReviewFinding fc = new ReviewFinding(f.path, f.line, f.rule, f.message, f.suggestion);
             fc.id = f.id;

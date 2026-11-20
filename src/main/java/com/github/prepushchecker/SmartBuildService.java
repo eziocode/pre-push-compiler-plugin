@@ -9,6 +9,7 @@ import com.intellij.openapi.compiler.CompilationStatusListener;
 import com.intellij.openapi.compiler.CompileContext;
 import com.intellij.openapi.compiler.CompileScope;
 import com.intellij.openapi.compiler.CompilerManager;
+import com.intellij.openapi.compiler.CompilerMessage;
 import com.intellij.openapi.compiler.CompilerMessageCategory;
 import com.intellij.openapi.compiler.CompilerTopics;
 import com.intellij.openapi.components.Service;
@@ -399,18 +400,21 @@ public final class SmartBuildService implements Disposable {
         long startGeneration = generationAtBuildStart;
         generationAtBuildStart = -1L;
         if (aborted || context == null || startGeneration < 0 || project.isDisposed()) return;
-        if (!isProjectWide(context)) return;
-
-        List<String> errors = errorCount > 0
-            ? CompilationSupport.formatCompilerMessages(
-                project, context.getMessages(CompilerMessageCategory.ERROR), errorCount)
-            : Collections.emptyList();
+        // Completion can arrive on the EDT. Capture callback data here and inspect modules on the pool.
+        boolean rebuild = context.isRebuild();
+        CompileScope scope = rebuild ? null : context.getCompileScope();
+        CompilerMessage[] messages = errorCount > 0
+            ? context.getMessages(CompilerMessageCategory.ERROR) : CompilerMessage.EMPTY_ARRAY;
         SmartBuildSnapshotStore.Source source = building.get()
             ? SmartBuildSnapshotStore.Source.SMART
             : automake ? SmartBuildSnapshotStore.Source.AUTOMAKE : SmartBuildSnapshotStore.Source.IDE_BUILD;
 
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             if (project.isDisposed() || generation.get() != startGeneration) return;
+            if (!rebuild && !isProjectWide(scope)) return;
+            List<String> errors = errorCount > 0
+                ? CompilationSupport.formatCompilerMessages(project, messages, errorCount)
+                : Collections.emptyList();
             BuildFingerprint.Result fp = BuildFingerprint.compute(project);
             // Sources edited while the build ran: the verdict belongs to no exact state.
             if (fp == null || generation.get() != startGeneration) return;
@@ -422,9 +426,7 @@ public final class SmartBuildService implements Disposable {
         });
     }
 
-    private boolean isProjectWide(@NotNull CompileContext context) {
-        if (context.isRebuild()) return true;
-        CompileScope scope = context.getCompileScope();
+    private boolean isProjectWide(@Nullable CompileScope scope) {
         if (scope == null) return false;
         return ReadActions.compute(() -> {
             int all = ModuleManager.getInstance(project).getModules().length;

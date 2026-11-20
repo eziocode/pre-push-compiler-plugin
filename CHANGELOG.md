@@ -6,7 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) 
 
 ---
 
-## [Unreleased]
+## [3.3.0] - 2026-11-20
+
+### Added
+
+- Settings → AI Provider: **Detect Local CLIs** finds the AI command-line tools installed on this machine (Claude, Codex, GitHub Copilot, `llm`, Gemini, Cursor, opencode, aider, qwen, amp, goose, crush). Only installed tools are offered. **Add custom CLI…** registers any other binary with its own argument template; several custom CLIs can be kept.
+- Claude commit messages stream into the commit message box as they are written. Requests for an unchanged diff are answered from a cache.
+- Optional pre-generation of the commit message for staged changes, once you have generated one before.
+- Code Review tab: tick findings or whole files and click **Resolve Checked with AI** to fix them in one go. Findings in a file are fixed in turn, up to two files at once, and every file's diff is shown before anything is applied.
+- AI fixes for the first findings of a review are prepared in the background (at most 3, one AI call at a time, dropped when the file is edited or the finding resolved), so Resolve with AI opens at once. Can be turned off under Code Review → AI Fixes.
+- In on-push review mode, committed files are reviewed in the background right after an IDE commit, so the push usually finds the review done.
+
+### Changed
+
+- AI CLI calls skip your MCP servers, tools and plugins where the installed CLI supports it, Claude uses a short system prompt, commit messages use a fast model unless you set one, and the CLI path is looked up once and cached.
+- "Review changes with AI" is off by default. Ticking it turns on review on push and blocking pushes until files are reviewed; you can untick either before Apply.
+- "Share anonymous usage counts" is on by default for users who have not answered; a one-time notice says so and how to turn it off. An explicit "No" is kept.
+- AI review sends large pushes to the AI two batches at a time instead of one after another.
+- A file changed since its last approved version is reviewed only for what changed since then, and the AI is told which findings were already fixed so it does not raise them again.
+- An AI fix now takes at most two AI calls: all problems with the first answer (unusable, no change, copied context, deleted lines, syntax errors) are sent back in one retry.
+
+### Fixed
+
+- Inline suggestion shortcut labels show the shortcut you actually have (Option+\ on macOS), not a fixed Alt+\.
+- Smart Build now checks affected modules on a background thread, fixing an exception after regular builds and auto-make.
+- Pushing again after resolving findings with AI no longer re-runs the review on the already-fixed code when the file was edited after the fix, or reformatted / import-optimized on commit.
+- AI fixes anchor on the quoted original lines, so a miscounted line number cannot replace the wrong code; an empty answer no longer deletes the range; code inserted before a closing brace and re-indented blocks keep the right indentation; other findings in the file follow the new line numbers after a fix.
 
 ## [3.2.5] - 2026-11-19
 

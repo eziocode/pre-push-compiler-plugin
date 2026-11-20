@@ -19,6 +19,9 @@ import com.intellij.openapi.vcs.FilePath;
 import com.intellij.openapi.vcs.changes.ChangeListManager;
 import com.intellij.openapi.vfs.LocalFileSystem;
 import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.ui.CheckboxTree;
+import com.intellij.ui.CheckboxTreeListener;
+import com.intellij.ui.CheckedTreeNode;
 import com.intellij.ui.ColoredTreeCellRenderer;
 import com.intellij.ui.JBColor;
 import com.intellij.ui.OnePixelSplitter;
@@ -27,7 +30,6 @@ import com.intellij.ui.SimpleTextAttributes;
 import com.intellij.ui.components.ActionLink;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBTextArea;
-import com.intellij.ui.treeStructure.Tree;
 import com.intellij.util.ui.JBUI;
 import com.intellij.util.ui.UIUtil;
 import com.intellij.util.ui.tree.TreeUtil;
@@ -48,17 +50,27 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
-/** "Code Review" tab: findings grouped by file, with Go to code / Resolve / Resolve with AI. */
+/**
+ * "Code Review" tab: findings grouped by file, with Go to code / Resolve / Resolve with AI. Each
+ * open finding and file has a checkbox; "Resolve Checked with AI" fixes all checked ones in one go.
+ */
 public final class ReviewPanel extends JPanel implements Disposable {
 
     private final Project project;
     private final ReviewStateStore store;
-    private final DefaultMutableTreeNode rootNode = new DefaultMutableTreeNode();
-    private final DefaultTreeModel model = new DefaultTreeModel(rootNode);
-    private final Tree tree = new Tree(model);
+    private final CheckedTreeNode rootNode = new CheckedTreeNode();
+    // Explicit policy: the 2-argument constructor is deprecated (its default policy is defective).
+    // A file's box ticks all its findings; ticking every finding ticks the file.
+    private final CheckboxTree tree = new CheckboxTree(new Renderer(), rootNode,
+        new com.intellij.ui.CheckboxTreeBase.CheckPolicy(true, true, true, true));
+    private final DefaultTreeModel model = (DefaultTreeModel) tree.getModel();
+    /** Checked finding ids; survive {@link #reload()}, which rebuilds every node. */
+    private final Set<String> checked = new LinkedHashSet<>();
     private final JBLabel status = new JBLabel();
     private final JBLabel detailTitle = new JBLabel();
     private final JBTextArea detailText = new JBTextArea();
@@ -73,6 +85,8 @@ public final class ReviewPanel extends JPanel implements Disposable {
 
         DefaultActionGroup group = new DefaultActionGroup();
         group.add(new ReviewLocalChangesAction());
+        group.add(new FixCheckedAction());
+        group.add(new CheckAllAction());
         group.add(new ClearAction());
         group.addSeparator();
         group.add(new OpenSettingsAction());
@@ -91,7 +105,12 @@ public final class ReviewPanel extends JPanel implements Disposable {
 
         tree.setRootVisible(false);
         tree.setShowsRootHandles(true);
-        tree.setCellRenderer(new Renderer());
+        tree.addCheckboxTreeListener(new CheckboxTreeListener() {
+            @Override
+            public void nodeStateChanged(@NotNull CheckedTreeNode node) {
+                syncChecked();
+            }
+        });
         tree.getEmptyText().setText("No open review findings");
         tree.getEmptyText().appendSecondaryText("Review changes from the commit panel",
             SimpleTextAttributes.LINK_PLAIN_ATTRIBUTES, e -> new ReviewLocalChangesAction().run());
@@ -153,13 +172,24 @@ public final class ReviewPanel extends JPanel implements Disposable {
         for (ReviewStateStore.FileReview review : store.reviews()) {
             if (!review.hasOpenFindings()) continue;
             files++;
-            DefaultMutableTreeNode fileNode = new DefaultMutableTreeNode(review);
+            CheckedTreeNode fileNode = new CheckedTreeNode(review);
+            boolean allChecked = true;
             for (ReviewFinding f : review.findings) {
-                fileNode.add(new DefaultMutableTreeNode(f));
+                CheckedTreeNode node = new CheckedTreeNode(f);
+                node.setChecked(f.isOpen() && checked.contains(f.id));
+                node.setEnabled(f.isOpen());
+                if (f.isOpen() && !node.isChecked()) allChecked = false;
+                fileNode.add(node);
                 if (f.isOpen()) open++; else resolved++;
             }
+            fileNode.setChecked(allChecked);
             rootNode.add(fileNode);
         }
+        rootNode.setChecked(false);
+        // Forget checks of findings that are gone or resolved.
+        Set<String> live = new LinkedHashSet<>();
+        for (ReviewFinding f : checkedFindings()) live.add(f.id);
+        checked.retainAll(live);
         model.reload();
         TreeUtil.expandAll(tree);
         if (selectedId != null) restoreSelection(selectedId, wasOpen, oldOrder);
@@ -168,6 +198,34 @@ public final class ReviewPanel extends JPanel implements Disposable {
         status.setForeground(open > 0 ? JBColor.namedColor("Label.errorForeground", JBColor.RED)
             : UIUtil.getContextHelpForeground());
         showDetails();
+    }
+
+    private void syncChecked() {
+        checked.clear();
+        for (ReviewFinding f : checkedFindings()) checked.add(f.id);
+    }
+
+    /** Open findings whose box is ticked, in tree order. */
+    @NotNull List<ReviewFinding> checkedFindings() {
+        List<ReviewFinding> out = new ArrayList<>();
+        TreeUtil.treeNodeTraverser(rootNode).traverse().forEach(n -> {
+            if (n instanceof CheckedTreeNode c && c.isChecked() && c.getUserObject() instanceof ReviewFinding f && f.isOpen()) {
+                out.add(f);
+            }
+        });
+        return out;
+    }
+
+    /** Ticks or clears every open finding. */
+    void setAllChecked(boolean value) {
+        TreeUtil.treeNodeTraverser(rootNode).traverse().forEach(n -> {
+            if (n instanceof CheckedTreeNode c) {
+                boolean open = !(c.getUserObject() instanceof ReviewFinding f) || f.isOpen();
+                c.setChecked(value && open);
+            }
+        });
+        syncChecked();
+        tree.repaint();
     }
 
     private List<String> findingIds() {
@@ -278,7 +336,7 @@ public final class ReviewPanel extends JPanel implements Disposable {
             if (root != null) root = ReviewGit.canonical(root);
             String id = null;
             if (root != null) {
-                Map<String, String> ids = ReviewGit.hashObjects(root, List.of(ReviewGit.relative(root, file)));
+                Map<String, String> ids = ReviewGit.hashObjects(root, List.of(ReviewGit.relative(root, file)), true);
                 id = ids.values().stream().findFirst().orElse(null);
             }
             store.resolve(findingId, by, id);
@@ -324,6 +382,53 @@ public final class ReviewPanel extends JPanel implements Disposable {
         }
     }
 
+    private final class FixCheckedAction extends AnAction {
+        FixCheckedAction() {
+            super("Resolve Checked with AI", "Ask the AI to fix every checked finding; review all fixes before applying",
+                AllIcons.Actions.IntentionBulb);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.EDT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            int n = checked.size();
+            e.getPresentation().setText(n == 0 ? "Resolve Checked with AI" : "Resolve " + n + " Checked with AI");
+            e.getPresentation().setEnabled(n > 0 && !ReviewFixer.isBatchRunning(project));
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            List<ReviewFinding> picked = checkedFindings();
+            if (picked.isEmpty()) return;
+            ReviewFixer.fixManyWithAi(project, picked);
+        }
+    }
+
+    private final class CheckAllAction extends AnAction {
+        CheckAllAction() {
+            super("Check All / None", "Tick or clear every open finding", AllIcons.Actions.Selectall);
+        }
+
+        @Override
+        public @NotNull ActionUpdateThread getActionUpdateThread() {
+            return ActionUpdateThread.EDT;
+        }
+
+        @Override
+        public void update(@NotNull AnActionEvent e) {
+            e.getPresentation().setEnabled(store.hasOpenFindings());
+        }
+
+        @Override
+        public void actionPerformed(@NotNull AnActionEvent e) {
+            setAllChecked(checked.isEmpty());
+        }
+    }
+
     private final class ClearAction extends AnAction {
         ClearAction() {
             super("Clear Reviews", "Forget every review; files must be reviewed again before a mandatory push",
@@ -366,31 +471,32 @@ public final class ReviewPanel extends JPanel implements Disposable {
         }
     }
 
-    private final class Renderer extends ColoredTreeCellRenderer {
+    private final class Renderer extends CheckboxTree.CheckboxTreeCellRenderer {
         @Override
-        public void customizeCellRenderer(@NotNull JTree tree, Object value, boolean selected, boolean expanded,
-                                          boolean leaf, int row, boolean hasFocus) {
+        public void customizeRenderer(JTree tree, Object value, boolean selected, boolean expanded,
+                                      boolean leaf, int row, boolean hasFocus) {
+            ColoredTreeCellRenderer r0 = getTextRenderer();
             Object o = value instanceof DefaultMutableTreeNode n ? n.getUserObject() : null;
             if (o instanceof ReviewStateStore.FileReview r) {
                 Path p = Path.of(r.path);
-                append(p.getFileName().toString(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
+                r0.append(p.getFileName().toString(), SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES);
                 String base = project.getBasePath();
                 String dir = p.getParent() == null ? "" : p.getParent().toString().replace('\\', '/');
                 if (base != null && dir.startsWith(base)) dir = dir.substring(base.length()).replaceFirst("^/", "");
-                if (!dir.isEmpty()) append("  " + dir, SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                if (!dir.isEmpty()) r0.append("  " + dir, SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 long open = r.findings.stream().filter(ReviewFinding::isOpen).count();
                 if (open > 0) {
-                    setIcon(AllIcons.General.Warning);
-                    append("  " + open + " open", SimpleTextAttributes.ERROR_ATTRIBUTES);
+                    r0.setIcon(AllIcons.General.Warning);
+                    r0.append("  " + open + " open", SimpleTextAttributes.ERROR_ATTRIBUTES);
                 } else {
-                    setIcon(AllIcons.RunConfigurations.TestPassed);
-                    append(r.findings.isEmpty() ? "  no issues" : "  all resolved", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                    r0.setIcon(AllIcons.RunConfigurations.TestPassed);
+                    r0.append(r.findings.isEmpty() ? "  no issues" : "  all resolved", SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 }
             } else if (o instanceof ReviewFinding f) {
-                setIcon(f.resolved ? AllIcons.Actions.Checked : AllIcons.General.BalloonWarning);
-                if (f.line > 0) append(f.line + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
+                r0.setIcon(f.resolved ? AllIcons.Actions.Checked : AllIcons.General.BalloonWarning);
+                if (f.line > 0) r0.append(f.line + "  ", SimpleTextAttributes.GRAYED_ATTRIBUTES);
                 String msg = f.message.length() > 160 ? f.message.substring(0, 160) + "…" : f.message;
-                append(msg, f.resolved
+                r0.append(msg, f.resolved
                     ? new SimpleTextAttributes(SimpleTextAttributes.STYLE_STRIKEOUT, UIUtil.getInactiveTextColor())
                     : SimpleTextAttributes.REGULAR_ATTRIBUTES);
             }

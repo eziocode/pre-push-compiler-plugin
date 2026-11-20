@@ -14,7 +14,11 @@ import java.util.regex.Pattern;
 public final class ReviewPrompt {
 
     /** One file to review: the path shown to the AI and its numbered diff. */
-    public record FileDiff(@NotNull String displayPath, @NotNull String numberedDiff) {}
+    public record FileDiff(@NotNull String displayPath, @NotNull String numberedDiff, @NotNull List<String> resolved) {
+        public FileDiff(@NotNull String displayPath, @NotNull String numberedDiff) {
+            this(displayPath, numberedDiff, List.of());
+        }
+    }
 
     /**
      * A fix proposed by the AI: replace lines {@code startLine..endLine} (1-based, inclusive), and
@@ -73,8 +77,13 @@ public final class ReviewPrompt {
     public static @NotNull String reviewUserPrompt(@NotNull List<FileDiff> files) {
         StringBuilder sb = new StringBuilder();
         for (FileDiff f : files) {
-            sb.append("### File: ").append(f.displayPath()).append("\n```diff\n")
-                .append(f.numberedDiff().strip()).append("\n```\n\n");
+            sb.append("### File: ").append(f.displayPath()).append("\n");
+            if (!f.resolved().isEmpty()) {
+                sb.append("Already fixed in an earlier review of this file. Do not report these again "
+                    + "unless the diff below still shows the problem:\n");
+                for (String r : f.resolved()) sb.append("- ").append(r.replace('\n', ' ')).append('\n');
+            }
+            sb.append("```diff\n").append(f.numberedDiff().strip()).append("\n```\n\n");
         }
         return sb.toString();
     }
@@ -265,9 +274,12 @@ public final class ReviewPrompt {
             The file is shown with a line number in front of every line. Answer with one JSON object \
             and nothing else:
             {"startLine":<first line to replace>,"endLine":<last line to replace, inclusive>,\
+            "original":"<the current text of lines startLine..endLine, copied exactly, without line numbers>",\
             "replacement":"<new text for those lines, without line numbers>",\
             "imports":["<import line to add, e.g. import java.util.Objects;>"]}
-            To insert without removing, set endLine to startLine - 1 (the text goes before startLine).
+            To insert without removing, set endLine to startLine - 1 (the text goes before startLine) \
+            and leave "original" empty.
+            To delete lines without replacing them, set "replacement" to "" and add "delete":true.
             Leave "imports" empty when no new import is needed.
             """.formatted(rules.strip());
     }
@@ -312,6 +324,46 @@ public final class ReviewPrompt {
         return sb.toString();
     }
 
+    /**
+     * One follow-up prompt that lists every problem of the previous answer at once (unusable,
+     * cut off, no-op, copied context, deleted lines, syntax errors), so a fix needs at most one retry.
+     */
+    public static @NotNull String fixCorrectionUserPrompt(@NotNull String firstUserPrompt, @Nullable Fix previous,
+                                                          int lineCount, boolean truncated, boolean repeats,
+                                                          @NotNull List<String> dropped, @NotNull List<String> errors,
+                                                          boolean noChange) {
+        StringBuilder sb = new StringBuilder(firstUserPrompt);
+        if (previous == null) {
+            sb.append(truncated
+                ? "\nYour previous answer was cut off before the JSON ended. Choose a smaller line range so the "
+                    + "answer is short, and answer with only the JSON object.\n"
+                : "\nYour previous answer could not be used: it was not a single JSON object with "
+                    + "\"startLine\", \"endLine\" and \"replacement\", its lines were outside 1-" + lineCount
+                    + ", or it had an empty replacement without \"delete\":true.\n");
+        } else {
+            sb.append("\nYour previous answer replaced lines ").append(previous.startLine()).append('-')
+                .append(previous.endLine()).append(" with:\n```\n").append(previous.replacement().strip())
+                .append("\n```\nProblems with it:\n");
+            if (noChange) sb.append("- It is identical to what is already there, so the file does not change. "
+                + "Make the change the finding asks for (whitespace-only edits do not count).\n");
+            if (repeats) sb.append("- It repeats code that is right outside the range. Correct the range or "
+                + "remove the copied lines.\n");
+            if (!dropped.isEmpty()) {
+                sb.append("- It deletes these existing lines, which it no longer contains. Keep them unless the "
+                    + "finding requires removing them:\n");
+                for (String line : dropped) sb.append("    ").append(line.strip()).append('\n');
+            }
+            if (!errors.isEmpty()) {
+                sb.append("- With it the file no longer parses. Cover every line the change touches and keep "
+                    + "braces, parentheses and quotes balanced:\n");
+                for (String e : errors) sb.append("    ").append(e).append('\n');
+            }
+        }
+        sb.append("Answer again with the same JSON shape, including \"original\" copied exactly from the lines "
+            + "you replace.\n");
+        return sb.toString();
+    }
+
     /** Follow-up prompt when a fix leaves the file with parse errors. */
     public static @NotNull String fixSyntaxRetryUserPrompt(@NotNull String firstUserPrompt, @NotNull Fix previous,
                                                            @NotNull List<String> errors) {
@@ -351,10 +403,33 @@ public final class ReviewPrompt {
     }
 
     public static @Nullable Fix parseFix(@Nullable Map<?, ?> answer, int lineCount) {
+        return parseFix(answer, lineCount, null);
+    }
+
+    /**
+     * Like {@link #parseFix(Map, int)}; with the file's {@code content}, a fix whose quoted
+     * {@code "original"} text does not sit at its line numbers is moved to where that text is
+     * (nearest match), so a miscounted line number cannot replace the wrong code.
+     */
+    public static @Nullable Fix parseFix(@Nullable Map<?, ?> answer, @NotNull String content) {
+        return parseFix(answer, lineCount(content), content);
+    }
+
+    private static @Nullable Fix parseFix(@Nullable Map<?, ?> answer, int lineCount, @Nullable String content) {
         if (answer == null || !(answer.get("replacement") instanceof String replacement)) return null;
         int start = toInt(answer.get("startLine"));
         int end = toInt(answer.get("endLine"));
+        if (content != null && answer.get("original") instanceof String quoted && !quoted.isBlank()) {
+            int[] anchored = anchor(content, quoted, start);
+            if (anchored != null) {
+                start = anchored[0];
+                end = anchored[1];
+            }
+        }
         if (start < 1 || start > lineCount + 1 || end < start - 1 || end > lineCount) return null;
+        // An empty replacement deletes the whole range: only when the AI said so. Usually it is a
+        // cut-off or empty answer, and applying it would silently remove existing code.
+        if (replacement.isBlank() && end >= start && !Boolean.TRUE.equals(answer.get("delete"))) return null;
         List<String> imports = new ArrayList<>();
         if (answer.get("imports") instanceof List<?> list) {
             for (Object o : list) {
@@ -364,6 +439,33 @@ public final class ReviewPrompt {
             }
         }
         return new Fix(start, end, replacement, imports);
+    }
+
+    private static int lineCount(@NotNull String content) {
+        String[] lines = content.replace("\r\n", "\n").split("\n", -1);
+        return lines.length > 0 && lines[lines.length - 1].isEmpty() ? lines.length - 1 : lines.length;
+    }
+
+    /**
+     * 1-based {@code [start, end]} of the lines of {@code content} equal (ignoring indentation
+     * and trailing space) to {@code quoted}: {@code hint} itself when it matches there, else the
+     * nearest match; {@code null} when the text is nowhere in the file.
+     */
+    static int @Nullable [] anchor(@NotNull String content, @NotNull String quoted, int hint) {
+        String[] file = content.replace("\r\n", "\n").split("\n", -1);
+        int total = lineCount(content);
+        List<String> want = new ArrayList<>();
+        for (String l : quoted.replace("\r\n", "\n").split("\n", -1)) want.add(l.strip());
+        while (!want.isEmpty() && want.get(0).isEmpty()) want.remove(0);
+        while (!want.isEmpty() && want.get(want.size() - 1).isEmpty()) want.remove(want.size() - 1);
+        if (want.isEmpty() || want.size() > total) return null;
+        int best = -1;
+        for (int k = 1; k + want.size() - 1 <= total; k++) {
+            boolean match = true;
+            for (int i = 0; i < want.size() && match; i++) match = file[k - 1 + i].strip().equals(want.get(i));
+            if (match && (best < 0 || Math.abs(k - hint) < Math.abs(best - hint))) best = k;
+        }
+        return best < 0 ? null : new int[]{best, best + want.size() - 1};
     }
 
     private static final Pattern IMPORT_LINE = Pattern.compile("^(?:import|using|#include|from)\\s+\\S.*$");
@@ -406,10 +508,7 @@ public final class ReviewPrompt {
         // insert the line it goes before (or after, at the end of a block).
         String base = null;
         for (String r : range) if (!r.isBlank()) { base = indentOf(r); break; }
-        if (base == null) {
-            for (int i = fix.startLine(); i <= total && base == null; i++) if (!lines[i - 1].isBlank()) base = indentOf(lines[i - 1]);
-            for (int i = fix.startLine() - 1; i >= 1 && base == null; i--) if (!lines[i - 1].isBlank()) base = indentOf(lines[i - 1]);
-        }
+        if (base == null) base = insertIndent(lines, total, fix.startLine());
         if (base == null) base = "";
         int minIndent = Integer.MAX_VALUE;
         for (String r : repl) if (!r.isBlank()) minIndent = Math.min(minIndent, indentOf(r).length());
@@ -418,17 +517,34 @@ public final class ReviewPrompt {
         boolean tabs = base.contains("\t");
 
         List<String> pool = new ArrayList<>(range);
+        List<Integer> poolAt = new ArrayList<>();
+        for (int i = 0; i < range.size(); i++) poolAt.add(i);
         List<String> out = new ArrayList<>();
-        for (String r : repl) {
+        String anchorAi = null;
+        String anchorFile = null;
+        for (int idx = 0; idx < repl.size(); idx++) {
+            String r = repl.get(idx);
             if (r.isBlank()) {
                 out.add("");
                 continue;
             }
-            String kept = takeSameLine(pool, r);
+            // Where this line sits in the range, so a repeated "}" or "return;" keeps its own indent.
+            int expected = repl.size() <= 1 ? 0 : (int) Math.round((double) idx * Math.max(0, range.size() - 1) / (repl.size() - 1));
+            String kept = takeSameLine(pool, poolAt, r, expected);
             if (kept != null) {
                 out.add(kept);
+                // The AI's indent for a line the file already has tells how far its block is off.
+                anchorAi = indentOf(r);
+                anchorFile = indentOf(kept);
             } else {
-                String line = shift.isEmpty() ? r : shift + r;
+                String ind = indentOf(r);
+                String line;
+                if (anchorAi != null && ind.startsWith(anchorAi)) {
+                    // Keep the line's depth relative to the nearest kept line above it.
+                    line = anchorFile + r.substring(anchorAi.length());
+                } else {
+                    line = shift.isEmpty() ? r : shift + r;
+                }
                 if (tabs) line = spacesToTabs(line, base);
                 out.add(line);
             }
@@ -467,12 +583,50 @@ public final class ReviewPrompt {
             && neighbor.stream().anyMatch(line -> line.chars().anyMatch(Character::isLetterOrDigit));
     }
 
-    private static @Nullable String takeSameLine(@NotNull List<String> pool, @NotNull String line) {
+    /** Removes and returns the pool line equal to {@code line} (ignoring whitespace) nearest {@code expected}. */
+    private static @Nullable String takeSameLine(@NotNull List<String> pool, @NotNull List<Integer> poolAt,
+                                                 @NotNull String line, int expected) {
         String key = line.strip();
+        int best = -1;
         for (int i = 0; i < pool.size(); i++) {
-            if (pool.get(i).strip().equals(key)) return pool.remove(i);
+            if (!pool.get(i).strip().equals(key)) continue;
+            if (best < 0 || Math.abs(poolAt.get(i) - expected) < Math.abs(poolAt.get(best) - expected)) best = i;
         }
-        return null;
+        if (best < 0) return null;
+        poolAt.remove(best);
+        return pool.remove(best);
+    }
+
+    /**
+     * Indentation for code inserted before line {@code at}: the next non-blank line's, except
+     * before a closing bracket, where the code belongs inside the block (the line above it, or one
+     * level deeper than the bracket when the line above opens the block).
+     */
+    private static @NotNull String insertIndent(@NotNull String[] lines, int total, int at) {
+        String next = null;
+        for (int i = at; i <= total && next == null; i++) if (!lines[i - 1].isBlank()) next = lines[i - 1];
+        String prev = null;
+        for (int i = at - 1; i >= 1 && prev == null; i--) if (!lines[i - 1].isBlank()) prev = lines[i - 1];
+        if (next == null) return prev == null ? "" : indentOf(prev);
+        String n = next.strip();
+        boolean closes = !n.isEmpty() && "}])".indexOf(n.charAt(0)) >= 0;
+        if (!closes || prev == null) return indentOf(next);
+        String p = stripTrailing(prev);
+        boolean opens = !p.isEmpty() && "{[(".indexOf(p.charAt(p.length() - 1)) >= 0;
+        if (!opens) return indentOf(prev);
+        return indentOf(next) + indentUnit(lines, total);
+    }
+
+    /** The file's indentation step: a tab, or the smallest positive space indent (default 4). */
+    private static @NotNull String indentUnit(@NotNull String[] lines, int total) {
+        int smallest = Integer.MAX_VALUE;
+        for (int i = 0; i < total; i++) {
+            String ind = indentOf(lines[i]);
+            if (lines[i].isBlank() || ind.isEmpty()) continue;
+            if (ind.charAt(0) == '\t') return "\t";
+            smallest = Math.min(smallest, ind.length());
+        }
+        return smallest == Integer.MAX_VALUE ? "    " : " ".repeat(Math.min(smallest, 8));
     }
 
     private static @NotNull String indentOf(@NotNull String line) {
@@ -564,7 +718,8 @@ public final class ReviewPrompt {
     public static @NotNull List<String> droppedLines(@NotNull String content, @NotNull Fix fix) {
         String[] lines = content.replace("\r\n", "\n").split("\n", -1);
         List<String> before = new ArrayList<>();
-        for (int i = fix.startLine(); i <= fix.endLine() && i <= lines.length; i++) {
+        int total = lineCount(content);
+        for (int i = fix.startLine(); i <= fix.endLine() && i <= total; i++) {
             if (!lines[i - 1].isBlank()) before.add(lines[i - 1].strip());
         }
         if (before.isEmpty()) return List.of();

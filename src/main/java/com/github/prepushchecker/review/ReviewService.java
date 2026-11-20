@@ -124,7 +124,7 @@ public final class ReviewService {
         // No commit yet: everything is new, and "git diff HEAD" would fail for every file.
         boolean hasHead = ReviewGit.headSha(root) != null;
         Set<String> tracked = hasHead ? ReviewGit.tracked(root, rels) : Set.of();
-        Map<String, String> ids = ReviewGit.hashObjects(root, rels);
+        Map<String, String> ids = ReviewGit.hashObjects(root, rels, true);
         for (String rel : rels) {
             String id = ids.get(rel);
             if (id == null) {
@@ -224,6 +224,7 @@ public final class ReviewService {
         int reviewed = 0;
         int findings = 0;
         List<String> errors = new ArrayList<>();
+        List<String> flagged = new ArrayList<>();
         for (Map.Entry<Path, List<Target>> e : byRoot.entrySet()) {
             ReviewRules rules = rules(e.getKey());
             if (rules == null) continue;
@@ -232,42 +233,27 @@ public final class ReviewService {
             for (Target t : e.getValue()) blobs.put(t.relPath(), t.contentId());
             Map<String, String> fixedVersions = fixedVersions(e.getKey(), blobs.keySet(), blobs);
             Set<String> awaitingCommit = fixesAwaitingCommit(e.getKey(), fixedVersions);
+            Set<String> trivial = approveTrivialChanges(e.getKey(), blobs.keySet(), blobs);
+            unchanged += trivial.size();
             for (Target t : e.getValue()) {
                 if (awaitingCommit.contains(t.relPath())) errors.add(commitFixMessage(e.getKey(), t.relPath()));
-                else byDisplay.put(t.relPath(), t);
+                else if (!trivial.contains(t.relPath())) byDisplay.put(t.relPath(), sinceApproved(t));
             }
             List<ReviewPrompt.FileDiff> diffs = new ArrayList<>();
-            for (Target t : byDisplay.values()) diffs.add(new ReviewPrompt.FileDiff(t.relPath(), t.numberedDiff()));
+            for (Target t : byDisplay.values()) {
+                diffs.add(new ReviewPrompt.FileDiff(t.relPath(), t.numberedDiff(), store.resolvedNotes(t.absolutePath())));
+            }
 
             List<List<ReviewPrompt.FileDiff>> batches = ReviewPrompt.batches(diffs);
+            List<Object> answers = askAll(batches, rules, deadline, indicator);
             for (int i = 0; i < batches.size(); i++) {
                 List<ReviewPrompt.FileDiff> batch = batches.get(i);
-                if (indicator != null) {
-                    indicator.checkCanceled();
-                    indicator.setText("AI review: " + (batches.size() > 1 ? "part " + (i + 1) + " of " + batches.size()
-                        : batch.size() + " file(s)"));
-                }
-                AiRequest request = AiRequest.review(ReviewPrompt.reviewSystemPrompt(rules.body()),
-                    ReviewPrompt.reviewUserPrompt(batch));
-                long left = deadline - System.nanoTime();
-                if (left <= Duration.ofSeconds(10).toNanos()) {
-                    errors.add("Not enough time left to review " + batch.size() + " file(s).");
-                    break;
-                }
-                if (left < request.timeout().toNanos()) request = request.withTimeout(Duration.ofNanos(left));
-
-                Map<?, ?> answer;
-                try {
-                    String raw = CommitMessageGeneratorService.resolveProvider().generate(request);
-                    if (LOG.isDebugEnabled()) LOG.debug("AI review answer: " + AiOutputSanitizer.truncate(raw, 4000));
-                    answer = AiOutputSanitizer.cleanStructured(raw, "findings");
-                } catch (ProcessCanceledException pce) {
-                    throw pce;
-                } catch (Exception ex) {
-                    LOG.info("AI review failed", ex);
-                    errors.add(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+                Object got = answers.get(i);
+                if (got instanceof String error) {
+                    errors.add(error);
                     continue;
                 }
+                Map<?, ?> answer = (Map<?, ?>) got;
                 Map<String, String> displayToAbs = new HashMap<>();
                 for (ReviewPrompt.FileDiff f : batch) displayToAbs.put(f.displayPath(), byDisplay.get(f.displayPath()).absolutePath());
                 // Never record "clean" for an answer that could not be read in full: that is a silent pass.
@@ -291,10 +277,107 @@ public final class ReviewService {
                     }
                     reviewed++;
                     findings += mine.size();
+                    if (!mine.isEmpty()) flagged.add(t.absolutePath());
                 }
             }
         }
+        // Prepare fixes while the developer reads the findings; capped and cancelled on any edit.
+        if (!flagged.isEmpty()) FixPrefetchService.getInstance(project).prefetch(flagged);
         return new RunResult(reviewed, 0, findings, false, errors, unchanged);
+    }
+
+    /** AI review calls in flight at once for one review run; batches beyond this wait. */
+    static final int PARALLEL_BATCHES = 2;
+
+    /**
+     * Sends every batch to the AI, {@link #PARALLEL_BATCHES} at a time, all within the deadline.
+     * Per batch: the parsed answer ({@code Map}, or {@code null} when unreadable) or an error
+     * message ({@code String}), in batch order.
+     */
+    private @NotNull List<Object> askAll(@NotNull List<List<ReviewPrompt.FileDiff>> batches, @NotNull ReviewRules rules,
+                                         long deadline, @Nullable ProgressIndicator indicator) {
+        Object[] out = new Object[batches.size()];
+        if (batches.isEmpty()) return List.of();
+        if (indicator != null) {
+            indicator.checkCanceled();
+            indicator.setText("AI review: " + (batches.size() > 1 ? batches.size() + " parts"
+                : batches.get(0).size() + " file(s)"));
+        }
+        java.util.concurrent.ExecutorService pool = batches.size() == 1 ? null
+            : com.intellij.util.concurrency.AppExecutorUtil.createBoundedApplicationPoolExecutor(
+                "PrePushChecker-AiReview", PARALLEL_BATCHES);
+        List<java.util.concurrent.Future<?>> futures = new ArrayList<>();
+        // The caller's lane (e.g. a background pre-review) must carry over to the worker threads.
+        boolean background = com.github.prepushchecker.commitgen.cli.AiCallScheduler.isBackgroundThread();
+        try {
+            for (int i = 0; i < batches.size(); i++) {
+                int index = i;
+                Runnable ask = () -> {
+                    if (!background) {
+                        out[index] = askOne(batches.get(index), rules, deadline);
+                        return;
+                    }
+                    try {
+                        out[index] = com.github.prepushchecker.commitgen.cli.AiCallScheduler.inBackground(
+                            () -> askOne(batches.get(index), rules, deadline));
+                    } catch (ProcessCanceledException pce) {
+                        throw pce;
+                    } catch (Exception ex) {
+                        out[index] = String.valueOf(ex.getMessage());
+                    }
+                };
+                if (pool == null) {
+                    ask.run();
+                    continue;
+                }
+                futures.add(pool.submit(() -> {
+                    if (indicator == null) ask.run();
+                    else ProgressManager.getInstance().executeProcessUnderProgress(ask, indicator);
+                }));
+            }
+            for (int i = 0; i < futures.size(); i++) {
+                while (true) {
+                    if (indicator != null) indicator.checkCanceled();
+                    try {
+                        futures.get(i).get(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+                        break;
+                    } catch (java.util.concurrent.TimeoutException ignored) {
+                        // poll for cancel
+                    } catch (java.util.concurrent.ExecutionException ex) {
+                        if (ex.getCause() instanceof ProcessCanceledException pce) throw pce;
+                        out[i] = String.valueOf(ex.getCause());
+                        break;
+                    } catch (InterruptedException ex) {
+                        Thread.currentThread().interrupt();
+                        throw new ProcessCanceledException();
+                    }
+                }
+            }
+        } finally {
+            if (pool != null) {
+                if (indicator != null && indicator.isCanceled()) futures.forEach(f -> f.cancel(true));
+                pool.shutdown();
+            }
+        }
+        return java.util.Arrays.asList(out);
+    }
+
+    private @Nullable Object askOne(@NotNull List<ReviewPrompt.FileDiff> batch, @NotNull ReviewRules rules, long deadline) {
+        AiRequest request = AiRequest.review(ReviewPrompt.reviewSystemPrompt(rules.body()),
+            ReviewPrompt.reviewUserPrompt(batch));
+        long left = deadline - System.nanoTime();
+        if (left <= Duration.ofSeconds(10).toNanos()) return "Not enough time left to review " + batch.size() + " file(s).";
+        if (left < request.timeout().toNanos()) request = request.withTimeout(Duration.ofNanos(left));
+        try {
+            String raw = CommitMessageGeneratorService.resolveProvider().generate(request);
+            if (LOG.isDebugEnabled()) LOG.debug("AI review answer: " + AiOutputSanitizer.truncate(raw, 4000));
+            return AiOutputSanitizer.cleanStructured(raw, "findings");
+        } catch (ProcessCanceledException pce) {
+            throw pce;
+        } catch (Exception ex) {
+            LOG.info("AI review failed", ex);
+            return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+        }
     }
 
     /** Reviews working-tree {@code files} in a cancellable background task and reports the result. */
@@ -347,6 +430,100 @@ public final class ReviewService {
     }
 
     /** Reviews the committed (pushed) content of {@code files}, as the push saw it. */
+    /** Delay after a commit before the pre-review starts; a quick follow-up commit restarts it. */
+    static final long PRE_REVIEW_DELAY_MILLIS = 3_000;
+    private final java.util.concurrent.atomic.AtomicReference<java.util.concurrent.Future<?>> preReviewTimer =
+        new java.util.concurrent.atomic.AtomicReference<>();
+    private volatile java.util.concurrent.CompletableFuture<Void> preReview =
+        java.util.concurrent.CompletableFuture.completedFuture(null);
+
+    /**
+     * On-push mode: reviews just-committed files in the background, so the push that follows finds
+     * the results recorded (by content id) instead of waiting for the AI. Skipped for pushes large
+     * enough to ask the user first, and when a review is already running.
+     */
+    public void preReviewAfterCommit(@NotNull Collection<Path> committed) {
+        if (!ReviewSettings.isEnabled(project) || ReviewSettings.mode(project) != ReviewSettings.Mode.ON_PUSH
+                || committed.isEmpty()) return;
+        List<Path> files = List.copyOf(committed);
+        java.util.concurrent.Future<?> next = com.intellij.util.concurrency.AppExecutorUtil.getAppScheduledExecutorService()
+            .schedule(() -> startPreReview(files), PRE_REVIEW_DELAY_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
+        java.util.concurrent.Future<?> previous = preReviewTimer.getAndSet(next);
+        if (previous != null) previous.cancel(false);
+    }
+
+    private void startPreReview(@NotNull List<Path> files) {
+        if (project.isDisposed() || !running.compareAndSet(false, true)) return;
+        java.util.concurrent.CompletableFuture<Void> done = new java.util.concurrent.CompletableFuture<>();
+        preReview = done;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) {
+                running.set(false);
+                done.complete(null);
+                return;
+            }
+            ProgressManager.getInstance().run(new Task.Backgroundable(project, "AI pre-review of committed changes", true) {
+                @Override
+                public void run(@NotNull ProgressIndicator indicator) {
+                    indicator.setIndeterminate(true);
+                    int threshold = ReviewSettings.confirmFileThreshold(project);
+                    List<Target> targets = new ArrayList<>();
+                    for (Map.Entry<Path, List<String>> e : groupByRoot(files).entrySet()) {
+                        ReviewRules rules = rules(e.getKey());
+                        if (rules == null) continue;
+                        List<String> rels = e.getValue().stream()
+                            .filter(r -> !com.github.prepushchecker.commitgen.SensitivePaths.isExcluded(r))
+                            .filter(rules::inScope).toList();
+                        if (rels.isEmpty()) continue;
+                        targets.addAll(pushTargets(e.getKey(), rels, null));
+                    }
+                    targets.removeIf(ReviewService.this::alreadyReviewed);
+                    if (targets.isEmpty() || (threshold > 0 && targets.size() > threshold)) return;
+                    RunResult r;
+                    try {
+                        r = com.github.prepushchecker.commitgen.cli.AiCallScheduler.inBackground(
+                            () -> review(targets, indicator, null));
+                    } catch (ProcessCanceledException pce) {
+                        throw pce;
+                    } catch (Exception ex) {
+                        LOG.info("AI pre-review did not finish", ex);
+                        return;
+                    }
+                    if (r.findings() > 0) {
+                        ReviewService.this.notify("AI pre-review found " + r.findings() + " issue(s) in your last commit. Fix them now to "
+                            + "keep the push fast.", NotificationType.WARNING, "Show Findings");
+                    }
+                }
+
+                @Override
+                public void onFinished() {
+                    running.set(false);
+                    done.complete(null);
+                    ReviewStateStore.getInstance(project).refresh();
+                }
+            });
+        }, com.intellij.openapi.application.ModalityState.nonModal());
+    }
+
+    /** Waits (cancellably, up to {@code max}) for a pre-review in flight, so a push does not ask the AI twice. */
+    private void awaitPreReview(@Nullable ProgressIndicator indicator, @NotNull Duration max) {
+        java.util.concurrent.CompletableFuture<Void> f = preReview;
+        long until = System.nanoTime() + max.toNanos();
+        while (!f.isDone() && System.nanoTime() < until) {
+            if (indicator != null) indicator.checkCanceled();
+            try {
+                f.get(200, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException ignored) {
+                // poll
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Exception e) {
+                return;
+            }
+        }
+    }
+
     public void reviewCommittedInBackground(@NotNull Path root, @NotNull List<String> rels) {
         if (!running.compareAndSet(false, true)) return;
         ProgressManager.getInstance().run(new Task.Backgroundable(project, "AI code review", true) {
@@ -472,13 +649,25 @@ public final class ReviewService {
         }
         if (rels.isEmpty()) return PushReview.CLEAR;
 
-        Set<String> awaitingCommit = fixesAwaitingCommit(repo, fixedVersions(repo, rels, blobs));
-        if (mandatory && !awaitingCommit.isEmpty()) {
-            return new PushReview(awaitingCommit.stream().map(rel -> commitFixMessage(repo, rel)).toList(), null);
+        // A pushed version whose findings were all resolved by a later (uncommitted) fix is not new
+        // code: never review it again, whatever the working tree holds now.
+        Map<String, String> fixed = fixedVersions(repo, rels, blobs);
+        if (mandatory && !fixed.isEmpty()) {
+            Set<String> onDisk = fixesAwaitingCommit(repo, fixed);
+            return new PushReview(fixed.keySet().stream()
+                .map(rel -> onDisk.contains(rel) ? commitFixMessage(repo, rel) : commitLaterFixMessage(repo, rel))
+                .toList(), null);
         }
-        rels.removeAll(awaitingCommit);
+        rels.removeAll(fixed.keySet());
+        rels.removeAll(approveTrivialChanges(repo, rels, blobs));
+        if (rels.isEmpty()) return PushReview.CLEAR;
 
         Classified c = classify(root, rels, blobs);
+        if (!c.unreviewed.isEmpty() && !preReview.isDone()) {
+            // The commit's pre-review is still running: its results are what this push needs.
+            awaitPreReview(indicator, budget.dividedBy(2));
+            c = classify(root, rels, blobs);
+        }
         ReviewGate.Decision decision = ReviewGate.decide(mode, mandatory, c.unreviewed, c.open);
         if (decision.action() == ReviewGate.Action.REVIEW_NOW) {
             int threshold = ReviewSettings.confirmFileThreshold(project);
@@ -595,6 +784,108 @@ public final class ReviewService {
             if (id.equals(working.get(rel))) pending.add(rel);
         });
         return pending;
+    }
+
+    private String commitLaterFixMessage(Path root, String rel) {
+        return "[" + display(root, rel) + "] Commit the resolved fix before pushing. "
+            + "The commit being pushed still contains the version the AI review flagged.";
+    }
+
+    /** Languages where an import-only change cannot add a rule violation worth an AI call. */
+    private static final Set<String> IMPORT_ONLY_TRIVIAL = Set.of("java", "kt", "kts", "groovy", "scala");
+    private static final java.util.regex.Pattern IMPORT_LINE =
+        java.util.regex.Pattern.compile("^import\\s+[\\w.*$`\\s]+;?$");
+
+    /**
+     * Approves files whose new version differs from their last approved version only by
+     * whitespace (where layout is not significant) or imports: e.g. a fix that was reformatted or
+     * had imports optimized on commit. Saves an AI call and stops a fixed file being re-reviewed.
+     *
+     * @return the files approved this way
+     */
+    @NotNull Set<String> approveTrivialChanges(@NotNull Path root, @NotNull Collection<String> rels,
+                                               @NotNull Map<String, String> blobs) {
+        ReviewStateStore store = ReviewStateStore.getInstance(project);
+        Path canonicalRoot = ReviewGit.canonical(root);
+        Set<String> out = new LinkedHashSet<>();
+        for (String rel : rels) {
+            String blob = blobs.get(rel);
+            if (blob == null) continue;
+            String abs = key(canonicalRoot.resolve(rel));
+            if (store.isApproved(abs, blob) || store.hasOpenReview(abs, blob)) continue;
+            ReviewStateStore.FileReview current = store.review(abs);
+            // Never drop open findings of another version: only build on a clean review.
+            if (current == null || current.hasOpenFindings()) continue;
+            String approved = store.lastApprovedId(abs);
+            if (approved == null || approved.equals(blob)) continue;
+            if (!isTrivialChange(root, rel, approved, blob)) continue;
+            store.record(abs, blob, List.of());
+            LOG.info("AI review: " + rel + " differs from its approved version only by whitespace or imports");
+            out.add(rel);
+        }
+        return out;
+    }
+
+    private static boolean isTrivialChange(Path root, String rel, String from, String to) {
+        boolean layoutFree = isWhitespaceInsensitive(rel);
+        String ext = rel.substring(rel.lastIndexOf('.') + 1).toLowerCase(java.util.Locale.ROOT);
+        boolean importsFree = IMPORT_ONLY_TRIVIAL.contains(ext);
+        if (!layoutFree && !importsFree) return false;
+        if (layoutFree) {
+            String a = ReviewGit.catBlob(root, from);
+            String b = ReviewGit.catBlob(root, to);
+            if (a == null || b == null) return false; // a blob is not in the object database: cannot tell
+            return normalizedCode(a, importsFree).equals(normalizedCode(b, importsFree));
+        }
+        String diff = ReviewGit.diffBlobs(root, from, to, false);
+        return diff != null && onlyImportChanges(diff);
+    }
+
+    /**
+     * Code with layout removed: whitespace next to punctuation dropped and other runs collapsed,
+     * so a reformat (re-wrapped lines, re-indented blocks) compares equal while a change of words
+     * does not. With {@code dropImports} import lines are left out too.
+     */
+    static @NotNull String normalizedCode(@NotNull String code, boolean dropImports) {
+        StringBuilder kept = new StringBuilder();
+        for (String line : code.replace("\r\n", "\n").split("\n")) {
+            if (dropImports && IMPORT_LINE.matcher(line.strip()).matches()) continue;
+            kept.append(line).append('\n');
+        }
+        return kept.toString().replaceAll("\\s+", " ").replaceAll(" ?([^\\w\\s]) ?", "$1").strip();
+    }
+
+    static boolean onlyImportChanges(@NotNull String unifiedDiff) {
+        boolean inHunk = false;
+        boolean any = false;
+        for (String line : unifiedDiff.replace("\r\n", "\n").split("\n")) {
+            if (line.startsWith("@@")) {
+                inHunk = true;
+                continue;
+            }
+            if (!inHunk || line.isEmpty() || line.startsWith("\\")) continue;
+            char c = line.charAt(0);
+            if (c != '+' && c != '-') continue;
+            String body = line.substring(1).strip();
+            if (body.isEmpty()) continue;
+            if (!IMPORT_LINE.matcher(body).matches()) return false;
+            any = true;
+        }
+        return any;
+    }
+
+    /**
+     * {@code t} with its diff taken from the file's last approved version when that is smaller:
+     * the approved code was already reviewed, so only what changed since needs the AI.
+     */
+    private @NotNull Target sinceApproved(@NotNull Target t) {
+        String approved = ReviewStateStore.getInstance(project).lastApprovedId(t.absolutePath());
+        if (approved == null || approved.equals(t.contentId())) return t;
+        String raw = ReviewGit.diffBlobs(t.root(), approved, t.contentId(), false);
+        if (raw == null || raw.isBlank()) return t;
+        String numbered = ReviewPrompt.numberDiff(raw);
+        if (numbered.isBlank() || numbered.length() >= t.numberedDiff().length()) return t;
+        return new Target(t.root(), t.relPath(), t.contentId(), numbered);
     }
 
     private String commitFixMessage(Path root, String rel) {

@@ -75,6 +75,11 @@ public final class AiCallScheduler {
         }
     }
 
+    /** {@code true} inside {@link #inBackground}: for handing the lane on to worker threads. */
+    public static boolean isBackgroundThread() {
+        return FORCED.get() == Lane.BACKGROUND;
+    }
+
     /** Wraps {@code provider} so each request waits for a slot in its lane. */
     public static @NotNull CommitMessageProvider wrap(@NotNull CommitMessageProvider provider) {
         if (provider instanceof Scheduled) return provider;

@@ -133,6 +133,121 @@ public class ReviewWorkflowTest extends BasePlatformTestCase {
         }
     }
 
+    public void testResolvedVersionIsNotReReviewedAfterLaterEdits() throws Exception {
+        for (boolean mandatory : new boolean[]{true, false}) {
+            Path repo = com.intellij.openapi.util.io.FileUtil.createTempDirectory("review-loop", "", true).toPath().toRealPath();
+            Path file = repo.resolve("Example.java");
+            Files.writeString(file, "class Example { int old; }\n");
+            Files.writeString(repo.resolve(ReviewRules.DEFAULT_FILE_NAME),
+                (mandatory ? "---\nmandatory: true\n---\n" : "") + "Review Java.\n");
+            initRepo(repo);
+            ReviewStateStore store = ReviewStateStore.getInstance(getProject());
+            ReviewService service = ReviewService.getInstance(getProject());
+            try {
+                String old = ReviewGit.blobsAt(repo, "HEAD", List.of("Example.java")).get("Example.java");
+                ReviewFinding finding = new ReviewFinding(file.toString(), 1, "R", "Fix old", "");
+                store.record(file.toString(), old, List.of(finding));
+                Files.writeString(file, "class Example { int fixed; }\n");
+                String fixed = ReviewGit.hashObjects(repo, List.of("Example.java"), true).get("Example.java");
+                assertTrue(store.resolve(finding.id, "ai", fixed));
+                // Edited again after the fix (reformat on save, more work): the flagged commit must
+                // not be sent to the AI again, and no finding may re-open.
+                Files.writeString(file, "class Example { int fixed; int more; }\n");
+                ReviewSettings.setMode(getProject(), ReviewSettings.Mode.ON_PUSH);
+                var retry = service.checkPush(repo, List.of(file), null, null, null, Duration.ZERO);
+                if (mandatory) {
+                    assertNull(retry.firstBlockingFindingId());
+                    assertTrue(retry.lines().toString(), retry.lines().stream().anyMatch(s -> s.contains("Commit the resolved fix")));
+                } else {
+                    assertEquals(ReviewService.PushReview.CLEAR, retry);
+                }
+                assertFalse(store.review(file.toString()).hasOpenFindings());
+            } finally {
+                ReviewSettings.setMode(getProject(), ReviewSettings.Mode.ON_DEMAND);
+                store.clear();
+            }
+        }
+    }
+
+    public void testReformattedFixCommitIsApprovedWithoutAiCall() throws Exception {
+        Path repo = com.intellij.openapi.util.io.FileUtil.createTempDirectory("review-reformat", "", true).toPath().toRealPath();
+        Path file = repo.resolve("Example.java");
+        Files.writeString(file, "class Example { int old; }\n");
+        Files.writeString(repo.resolve(ReviewRules.DEFAULT_FILE_NAME), "---\nmandatory: true\n---\nReview Java.\n");
+        initRepo(repo);
+        ReviewStateStore store = ReviewStateStore.getInstance(getProject());
+        ReviewService service = ReviewService.getInstance(getProject());
+        try {
+            String old = ReviewGit.blobsAt(repo, "HEAD", List.of("Example.java")).get("Example.java");
+            ReviewFinding finding = new ReviewFinding(file.toString(), 1, "R", "Fix old", "");
+            store.record(file.toString(), old, List.of(finding));
+            Files.writeString(file, "class Example { int fixed; }\n");
+            String fixed = ReviewGit.hashObjects(repo, List.of("Example.java"), true).get("Example.java");
+            assertTrue(store.resolve(finding.id, "ai", fixed));
+            // Commit-time reformat and import optimisation: the committed blob is not the approved one.
+            Files.writeString(file, "import java.util.List;\n\nclass Example {\n    int fixed;\n}\n");
+            git(repo, "commit", "-qam", "fix, reformatted");
+            for (var mode : ReviewSettings.Mode.values()) {
+                ReviewSettings.setMode(getProject(), mode);
+                assertEquals(ReviewService.PushReview.CLEAR,
+                    service.checkPush(repo, List.of(file), null, null, null, Duration.ZERO));
+            }
+            String committed = ReviewGit.blobsAt(repo, "HEAD", List.of("Example.java")).get("Example.java");
+            assertTrue(store.isApproved(file.toString(), committed));
+            assertTrue(store.resolvedNotes(file.toString()).toString(),
+                store.resolvedNotes(file.toString()).contains("R: Fix old"));
+            // A real change on top is still reviewed.
+            Files.writeString(file, "import java.util.List;\n\nclass Example {\n    int fixed;\n    int added;\n}\n");
+            git(repo, "commit", "-qam", "real change");
+            ReviewSettings.setMode(getProject(), ReviewSettings.Mode.ON_DEMAND);
+            var changed = service.checkPush(repo, List.of(file), null, null, null, Duration.ZERO);
+            assertTrue(changed.lines().toString(), changed.lines().stream().anyMatch(s -> s.contains("review required")));
+        } finally {
+            ReviewSettings.setMode(getProject(), ReviewSettings.Mode.ON_DEMAND);
+            store.clear();
+        }
+    }
+
+    public void testCheckedFindingsSurviveReloadAndDropWhenResolved() {
+        ReviewStateStore store = ReviewStateStore.getInstance(getProject());
+        ReviewPanel panel = new ReviewPanel(getProject());
+        try {
+            ReviewFinding a = new ReviewFinding("/r/A.java", 1, "", "A", "");
+            ReviewFinding b = new ReviewFinding("/r/A.java", 2, "", "B", "");
+            ReviewFinding c = new ReviewFinding("/r/C.java", 3, "", "C", "");
+            store.record("/r/A.java", "a1", List.of(a, b));
+            store.record("/r/C.java", "c1", List.of(c));
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+            assertEmpty(panel.checkedFindings());
+            panel.setAllChecked(true);
+            assertEquals(3, panel.checkedFindings().size());
+            store.resolve(b.id, "manual", null);
+            PlatformTestUtil.dispatchAllEventsInIdeEventQueue();
+            assertEquals(List.of(a.id, c.id).stream().sorted().toList(),
+                panel.checkedFindings().stream().map(f -> f.id).sorted().toList());
+            panel.setAllChecked(false);
+            assertEmpty(panel.checkedFindings());
+        } finally {
+            Disposer.dispose(panel);
+            store.clear();
+        }
+    }
+
+    public void testOnlyImportChanges() {
+        assertTrue(ReviewService.onlyImportChanges("@@ -1,2 +1,3 @@\n+import java.util.List;\n class A {}\n"));
+        assertFalse(ReviewService.onlyImportChanges("@@ -1,2 +1,3 @@\n+import java.util.List;\n+int x;\n"));
+        assertFalse(ReviewService.onlyImportChanges("@@ -1 +1 @@\n class A {}\n"));
+    }
+
+    private static void initRepo(Path repo) throws Exception {
+        git(repo, "init", "-q");
+        git(repo, "config", "user.name", "Tester");
+        git(repo, "config", "user.email", "test@example.com");
+        git(repo, "config", "commit.gpgsign", "false");
+        git(repo, "add", ".");
+        git(repo, "commit", "-qm", "initial");
+    }
+
     public void testReviewReusesManualResolutionForIdenticalTarget() throws Exception {
         Path repo = com.intellij.openapi.util.io.FileUtil.createTempDirectory("review-reuse", "", true).toPath().toRealPath();
         Files.writeString(repo.resolve(ReviewRules.DEFAULT_FILE_NAME), "Review Java.\n");

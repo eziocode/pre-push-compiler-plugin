@@ -319,4 +319,72 @@ public class ReviewPromptTest extends TestCase {
         assertFalse(ReviewFixer.changes(content, ReviewPrompt.normalize(content, new ReviewPrompt.Fix(2, 2, "b  "))));
         assertTrue(ReviewFixer.changes(content, new ReviewPrompt.Fix(2, 2, "    x")));
     }
+    public void testParseFixReanchorsToQuotedOriginal() {
+        String content = "class A {\n    int a;\n    int b;\n    int c;\n}\n";
+        // AI miscounted: says line 2 but quotes line 3.
+        ReviewPrompt.Fix fix = ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 2,
+            "original", "    int b;", "replacement", "    long b;"), content);
+        assertNotNull(fix);
+        assertEquals(3, fix.startLine());
+        assertEquals("class A {\n    int a;\n    long b;\n    int c;\n}\n", ReviewPrompt.apply(content, fix));
+        // Quoted text nowhere in the file: line numbers are used as given.
+        ReviewPrompt.Fix asGiven = ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 2,
+            "original", "missing();", "replacement", "    long a;"), content);
+        assertEquals(2, asGiven.startLine());
+    }
+
+    public void testAnchorPicksNearestRepeatedBlock() {
+        String content = "}\nx\n}\ny\n}\n";
+        assertEquals("[5, 5]", java.util.Arrays.toString(ReviewPrompt.anchor(content, "}", 5)));
+        assertEquals("[1, 1]", java.util.Arrays.toString(ReviewPrompt.anchor(content, "}", 1)));
+        assertNull(ReviewPrompt.anchor(content, "zzz", 1));
+    }
+
+    public void testBlankReplacementNeedsExplicitDelete() {
+        String content = "a\nb\nc\n";
+        assertNull(ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 2, "replacement", ""), content));
+        assertNull(ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 2, "replacement", "  \n"), content));
+        ReviewPrompt.Fix delete = ReviewPrompt.parseFix(Map.of("startLine", 2, "endLine", 2, "replacement", "",
+            "delete", true), content);
+        assertNotNull(delete);
+        assertEquals("a\nc\n", ReviewPrompt.apply(content, delete));
+    }
+
+    public void testInsertBeforeClosingBraceIndentsInsideBlock() {
+        String content = "class A {\n    void f() {\n        a();\n    }\n}\n";
+        // Insert before "    }" (line 4): belongs inside f(), at a();'s level, not the brace's.
+        ReviewPrompt.Fix fix = ReviewPrompt.normalize(content, new ReviewPrompt.Fix(4, 3, "b();"));
+        assertEquals("        b();", fix.replacement());
+        // Empty block: one level deeper than the brace.
+        String empty = "class A {\n    void f() {\n    }\n}\n";
+        assertEquals("        b();", ReviewPrompt.normalize(empty, new ReviewPrompt.Fix(3, 2, "b();")).replacement());
+    }
+
+    public void testNormalizeKeepsEachRepeatedLineItsOwnIndent() {
+        String content = "void f() {\n    if (x) {\n        a();\n    }\n}\n";
+        ReviewPrompt.Fix fix = ReviewPrompt.normalize(content,
+            new ReviewPrompt.Fix(1, 5, "void f() {\nif (x) {\na();\nb();\n}\n}"));
+        assertEquals("void f() {\n    if (x) {\n        a();\n        b();\n    }\n}", fix.replacement());
+    }
+
+    public void testCorrectionPromptListsEveryProblem() {
+        String p = ReviewPrompt.fixCorrectionUserPrompt("USER", new ReviewPrompt.Fix(2, 3, "x"), 10, false, true,
+            List.of("keep();"), List.of("line 2: ';' expected"), false);
+        assertTrue(p.startsWith("USER"));
+        assertTrue(p.contains("repeats code"));
+        assertTrue(p.contains("keep();"));
+        assertTrue(p.contains("';' expected"));
+        assertTrue(p.contains("\"original\""));
+        assertTrue(ReviewPrompt.fixCorrectionUserPrompt("USER", null, 10, true, false, List.of(), List.of(), false)
+            .contains("cut off"));
+    }
+
+    public void testTranslateLineAcrossEdit() throws Exception {
+        String before = "a\nb\nc\nd\n";
+        String after = "x\ny\na\nb\nC\nd\n";
+        var change = com.intellij.util.diff.Diff.buildChanges(before.split("\n", -1), after.split("\n", -1));
+        assertEquals(2, ReviewStateStore.translate(change, 0)); // a moved down by two
+        assertEquals(4, ReviewStateStore.translate(change, 2)); // rewritten c -> start of its edit
+        assertEquals(5, ReviewStateStore.translate(change, 3)); // d
+    }
 }
