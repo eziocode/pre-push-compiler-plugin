@@ -25,6 +25,51 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
 
     /** Default "Other CLI" template before 2.10.0; only valid for sahaa. */
     static final String LEGACY_SAHAA_TEMPLATE = "--chat {model?-m {model}} {prompt}";
+    /** Binary that was the built-in "Other CLI" default before 3.3; kept only where installed. */
+    static final String LEGACY_SAHAA = "sahaa";
+
+    /**
+     * One "Other local CLI" configuration: a user-added CLI, or the saved values of a catalog CLI
+     * that runs through an args template (gemini, cursor-agent, …). Keyed by {@link #name}, which is
+     * also the value of {@link State#customCliBinary} while it is the active CLI.
+     */
+    public static final class CustomCliEntry {
+        public String name = "";           // display name and key; a bare binary name for PATH lookup
+        public String path = "";           // absolute path, blank = find {@code name} on PATH
+        public String argsTemplate = "";   // {prompt}, {model}, {model?…}; blank = catalog preset
+        public String listModelsArgs = ""; // args that print one model per line
+        public String model = "";
+        public boolean userAdded = true;   // false = remembered values of a catalog CLI
+
+        public CustomCliEntry() {}
+
+        public CustomCliEntry(String name, String path, String argsTemplate, String listModelsArgs,
+                              String model, boolean userAdded) {
+            this.name = name == null ? "" : name;
+            this.path = path == null ? "" : path;
+            this.argsTemplate = argsTemplate == null ? "" : argsTemplate;
+            this.listModelsArgs = listModelsArgs == null ? "" : listModelsArgs;
+            this.model = model == null ? "" : model;
+            this.userAdded = userAdded;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof CustomCliEntry e && userAdded == e.userAdded
+                && java.util.Objects.equals(name, e.name) && java.util.Objects.equals(path, e.path)
+                && java.util.Objects.equals(argsTemplate, e.argsTemplate)
+                && java.util.Objects.equals(listModelsArgs, e.listModelsArgs)
+                && java.util.Objects.equals(model, e.model);
+        }
+
+        @Override
+        public int hashCode() {
+            return java.util.Objects.hash(name, path, argsTemplate, listModelsArgs, model, userAdded);
+        }
+
+        @Override
+        public String toString() { return name; }
+    }
 
     public static final class State {
         public String selectedProvider = CommitMessageProvider.Id.OPENAI.name();
@@ -50,12 +95,17 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
         public String claudeEffort = "low"; // --effort for commit messages; blank = CLI default
         public String codexEffort = "low";  // model_reasoning_effort for commit messages; blank = CLI default
 
-        // Other local CLI (sahaa, gemini, cursor-agent, …)
-        public String customCliBinary     = "sahaa"; // binary name used for auto-detect
+        // Other local CLI (gemini, cursor-agent, a user-added CLI, …): the active one.
+        // Every custom CLI's own values are kept in customClis, so switching never wipes them.
+        public String customCliBinary     = "";      // catalog binary or CustomCliEntry name; blank = none
         public String customCliPath       = "";      // blank = auto-detect customCliBinary
         public String customCliArgs       = "";      // blank = preset of the binary; prompt on stdin unless {prompt} used
         public String customCliModel      = "";
         public String customCliModelsArgs = "";      // args that list models, one per line
+        public java.util.List<CustomCliEntry> customClis = new java.util.ArrayList<>();
+
+        /** Set once the user clicked Generate: only then are messages generated ahead of time. */
+        public boolean commitGenerateUsed = false;
 
         // Commit message rules
         public boolean useConventionalCommits = true;
@@ -115,43 +165,151 @@ public final class CommitMessageSettings implements PersistentStateComponent<Com
      *       {@code codex --chat} and bare {@code codex} ("stdin is not a terminal").</li>
      *   <li>The old sahaa default template saved for another binary is cleared, so that
      *       binary's preset is used.</li>
+     *   <li>sahaa, the built-in default before 3.3 (stored as an absent value), stays only when it
+     *       is installed; it then becomes a user-added entry.</li>
      * </ul>
      */
     static void migrate(@NotNull State s) {
+        migrate(s, CommitMessageSettings::installedWithoutShell);
+    }
+
+    static void migrate(@NotNull State s, @NotNull java.util.function.BiPredicate<String, String> installed) {
+        if (s.customClis == null) s.customClis = new java.util.ArrayList<>();
+        s.customClis.removeIf(e -> e == null || isBlank(e.name));
+        boolean customSelected = CommitMessageProvider.Id.CUSTOM_CLI.name().equals(s.selectedProvider);
+        if (isBlank(s.customCliBinary) && customSelected && findCustom(s, LEGACY_SAHAA) == null) {
+            s.customCliBinary = LEGACY_SAHAA; // absent value = the old default
+        }
         AiCli known = AiCli.byBinary(s.customCliBinary);
-        if (LEGACY_SAHAA_TEMPLATE.equals(s.customCliArgs) && known != AiCli.SAHAA) {
+        if (LEGACY_SAHAA_TEMPLATE.equals(s.customCliArgs) && !LEGACY_SAHAA.equals(trim(s.customCliBinary))) {
             s.customCliArgs = "";
         }
-        if (known == null || known.isCustom()) return;
-        if (CommitMessageProvider.Id.CUSTOM_CLI.name().equals(s.selectedProvider)) {
-            s.selectedProvider = known.providerId().name();
+        if (known != null && !known.isCustom()) {
+            if (customSelected) s.selectedProvider = known.providerId().name();
+            String path = s.customCliPath == null ? "" : s.customCliPath;
+            String model = s.customCliModel == null ? "" : s.customCliModel;
+            switch (known) {
+                case CODEX -> {
+                    if (isBlank(s.codexCliPath)) s.codexCliPath = path;
+                    if (isBlank(s.codexModel)) s.codexModel = model;
+                }
+                case CLAUDE -> {
+                    if (isBlank(s.claudeCliPath)) s.claudeCliPath = path;
+                    if (isBlank(s.claudeModel)) s.claudeModel = model;
+                }
+                case LLM -> {
+                    if (isBlank(s.llmCliPath)) s.llmCliPath = path;
+                    if (isBlank(s.llmModel)) s.llmModel = model;
+                }
+                case GH -> {
+                    if (isBlank(s.ghCliPath)) s.ghCliPath = path;
+                    if (isBlank(s.ghModel)) s.ghModel = model;
+                }
+                default -> { }
+            }
+            clearActiveCustom(s);
+            return;
         }
-        String path = s.customCliPath == null ? "" : s.customCliPath;
-        String model = s.customCliModel == null ? "" : s.customCliModel;
-        switch (known) {
-            case CODEX -> {
-                if (isBlank(s.codexCliPath)) s.codexCliPath = path;
-                if (isBlank(s.codexModel)) s.codexModel = model;
+        if (LEGACY_SAHAA.equals(trim(s.customCliBinary)) && findCustom(s, LEGACY_SAHAA) == null) {
+            if (installed.test(s.customCliPath, LEGACY_SAHAA)) {
+                String args = isBlank(s.customCliArgs) ? LEGACY_SAHAA_TEMPLATE : s.customCliArgs;
+                s.customCliArgs = args;
+                s.customClis.add(new CustomCliEntry(LEGACY_SAHAA, s.customCliPath, args,
+                    s.customCliModelsArgs, s.customCliModel, true));
+            } else {
+                clearActiveCustom(s);
             }
-            case CLAUDE -> {
-                if (isBlank(s.claudeCliPath)) s.claudeCliPath = path;
-                if (isBlank(s.claudeModel)) s.claudeModel = model;
-            }
-            case LLM -> {
-                if (isBlank(s.llmCliPath)) s.llmCliPath = path;
-                if (isBlank(s.llmModel)) s.llmModel = model;
-            }
-            case GH -> {
-                if (isBlank(s.ghCliPath)) s.ghCliPath = path;
-                if (isBlank(s.ghModel)) s.ghModel = model;
-            }
-            default -> { }
+            return;
         }
-        s.customCliBinary = AiCli.SAHAA.binaryName();
+        rememberActiveCustom(s);
+    }
+
+    private static void clearActiveCustom(@NotNull State s) {
+        s.customCliBinary = "";
         s.customCliPath = "";
         s.customCliArgs = "";
         s.customCliModel = "";
         s.customCliModelsArgs = "";
+    }
+
+    /** The custom entry named {@code name}, or {@code null}. */
+    public static @Nullable CustomCliEntry findCustom(@NotNull State s, @Nullable String name) {
+        if (name == null || s.customClis == null) return null;
+        String key = name.trim();
+        for (CustomCliEntry e : s.customClis) {
+            if (e != null && key.equals(trim(e.name))) return e;
+        }
+        return null;
+    }
+
+    /** Stores the active custom CLI's fields in its entry (creating one for a catalog CLI). */
+    public static void rememberActiveCustom(@NotNull State s) {
+        String name = trim(s.customCliBinary);
+        if (name.isEmpty()) return;
+        if (s.customClis == null) s.customClis = new java.util.ArrayList<>();
+        CustomCliEntry e = findCustom(s, name);
+        if (e == null) {
+            boolean catalog = AiCli.byBinary(name) != null;
+            if (catalog && isBlank(s.customCliPath) && isBlank(s.customCliArgs) && isBlank(s.customCliModel)
+                    && isBlank(s.customCliModelsArgs)) {
+                return; // nothing worth remembering for a catalog preset
+            }
+            e = new CustomCliEntry(name, "", "", "", "", !catalog);
+            s.customClis.add(e);
+        }
+        e.path = nz(s.customCliPath);
+        e.argsTemplate = nz(s.customCliArgs);
+        e.model = nz(s.customCliModel);
+        e.listModelsArgs = nz(s.customCliModelsArgs);
+    }
+
+    /** Makes {@code name} (a catalog binary or an entry) the active custom CLI, restoring its values. */
+    public static void activateCustom(@NotNull State s, @NotNull String name) {
+        rememberActiveCustom(s);
+        CustomCliEntry e = findCustom(s, name);
+        s.customCliBinary = name.trim();
+        s.customCliPath = e == null ? "" : nz(e.path);
+        s.customCliArgs = e == null ? "" : nz(e.argsTemplate);
+        s.customCliModel = e == null ? "" : nz(e.model);
+        s.customCliModelsArgs = e == null ? "" : nz(e.listModelsArgs);
+    }
+
+    /** User-added custom CLIs, in the order they were added. */
+    public static @NotNull java.util.List<CustomCliEntry> userCustomClis(@NotNull State s) {
+        java.util.List<CustomCliEntry> out = new java.util.ArrayList<>();
+        if (s.customClis == null) return out;
+        for (CustomCliEntry e : s.customClis) if (e != null && e.userAdded && !isBlank(e.name)) out.add(e);
+        return out;
+    }
+
+    /**
+     * Cheap install check without a shell (settings load may run on the EDT): a configured
+     * absolute path, the IDE's PATH, then the well-known install directories.
+     */
+    static boolean installedWithoutShell(@Nullable String configured, @NotNull String name) {
+        try {
+            if (!isBlank(configured)) {
+                java.nio.file.Path p = java.nio.file.Path.of(configured.trim());
+                if (p.isAbsolute() && java.nio.file.Files.isExecutable(p)) return true;
+            }
+            String path = System.getenv("PATH");
+            if (path != null) {
+                for (String dir : path.split(java.io.File.pathSeparator)) {
+                    if (!dir.isBlank() && java.nio.file.Files.isExecutable(java.nio.file.Path.of(dir, name))) return true;
+                }
+            }
+            return CliPathResolver.findInExtraDirs(name) != null;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private static @NotNull String trim(@Nullable String v) {
+        return v == null ? "" : v.trim();
+    }
+
+    private static @NotNull String nz(@Nullable String v) {
+        return v == null ? "" : v;
     }
 
     private static boolean isBlank(@Nullable String v) {

@@ -32,4 +32,39 @@ public class CliPathResolverTest extends TestCase {
     public void testFindInExtraDirsRejectsUnsafeNames() {
         assertNull(CliPathResolver.findInExtraDirs("../../bin/sh"));
     }
+
+    public void testResolvedPathIsCachedUntilClearedOrGone() throws Exception {
+        CliPathResolver.clearResolveCache();
+        Path bin = Files.createTempFile("prepushchecker-cached-cli", "");
+        try {
+            assertTrue(bin.toFile().setExecutable(true));
+            assertEquals(bin.toString(), CliPathResolver.resolveOrNull(bin.toString(), "no-such-cli-xyz"));
+            int size = CliPathResolver.resolveCacheSize();
+            assertTrue(size >= 1);
+            // Second lookup is a cache hit: no new entry, same answer.
+            assertEquals(bin.toString(), CliPathResolver.resolveOrNull(bin.toString(), "no-such-cli-xyz"));
+            assertTrue(CliPathResolver.resolveCacheSize() <= size);
+            CliPathResolver.clearResolveCache();
+            assertEquals(bin.toString(), CliPathResolver.resolveOrNull(bin.toString(), "no-such-cli-xyz"));
+        } finally {
+            Files.deleteIfExists(bin);
+        }
+        // A cached path that no longer exists is looked up again (and is now missing).
+        assertNull(CliPathResolver.resolveOrNull(bin.toString(), "no-such-cli-xyz"));
+        CliPathResolver.clearResolveCache();
+    }
+
+    public void testMissingCliIsCachedBriefly() {
+        CliPathResolver.clearResolveCache();
+        long started = System.nanoTime();
+        assertNull(CliPathResolver.resolveOrNull("", "no-such-cli-cache-123"));
+        long firstNanos = System.nanoTime() - started;
+        started = System.nanoTime();
+        assertNull(CliPathResolver.resolveOrNull("", "no-such-cli-cache-123"));
+        long secondNanos = System.nanoTime() - started;
+        // The first lookup spawns a login shell; the cached miss answers without one.
+        assertTrue(firstNanos + " vs " + secondNanos, secondNanos < firstNanos);
+        assertTrue(secondNanos < java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(20));
+        CliPathResolver.clearResolveCache();
+    }
 }

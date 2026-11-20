@@ -7,7 +7,7 @@ public class CustomCliProviderTest extends TestCase {
 
     public void testBlankTemplateUsesPresetOfKnownBinary() {
         assertEquals(AiCli.GEMINI.defaultArgsTemplate(), CustomCliProvider.effectiveTemplate("", AiCli.GEMINI));
-        assertEquals(AiCli.SAHAA.defaultArgsTemplate(), CustomCliProvider.effectiveTemplate(null, AiCli.SAHAA));
+        assertEquals(AiCli.QWEN.defaultArgsTemplate(), CustomCliProvider.effectiveTemplate(null, AiCli.QWEN));
         assertEquals("", CustomCliProvider.effectiveTemplate(" ", null));
     }
 

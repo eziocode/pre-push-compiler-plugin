@@ -17,7 +17,14 @@ public record AiRequest(@NotNull String system,
                         @NotNull Kind kind,
                         int maxOutputTokens,
                         @NotNull Duration timeout,
-                        @Nullable String model) {
+                        @Nullable String model,
+                        @Nullable java.util.function.Consumer<String> onPartial) {
+
+    /** Request without partial-answer updates. */
+    public AiRequest(@NotNull String system, @NotNull String user, @NotNull Kind kind, int maxOutputTokens,
+                     @NotNull Duration timeout, @Nullable String model) {
+        this(system, user, kind, maxOutputTokens, timeout, model, null);
+    }
 
     public enum Kind { COMMIT_MESSAGE, REVIEW, FIX, COMPLETION }
 
@@ -52,8 +59,16 @@ public record AiRequest(@NotNull String system,
         return kind == Kind.COMPLETION;
     }
 
-        public @NotNull AiRequest withTimeout(@NotNull Duration newTimeout) {
-        return new AiRequest(system, user, kind, maxOutputTokens, newTimeout, model);
+    public @NotNull AiRequest withTimeout(@NotNull Duration newTimeout) {
+        return new AiRequest(system, user, kind, maxOutputTokens, newTimeout, model, onPartial);
+    }
+
+    /**
+     * The same request, with {@code listener} receiving the answer so far each time it grows
+     * (providers that can stream call it; others never do). Called on a background thread.
+     */
+    public @NotNull AiRequest withPartial(@Nullable java.util.function.Consumer<String> listener) {
+        return new AiRequest(system, user, kind, maxOutputTokens, timeout, model, listener);
     }
 
     /** The per-request model when set, otherwise the provider's configured {@code fallback}. */

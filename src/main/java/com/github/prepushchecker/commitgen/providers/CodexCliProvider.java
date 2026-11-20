@@ -7,6 +7,7 @@ import com.github.prepushchecker.commitgen.CommitMessageProvider;
 import com.github.prepushchecker.commitgen.CommitMessageSettings;
 import com.github.prepushchecker.commitgen.cli.AiCliCommand;
 import com.github.prepushchecker.commitgen.cli.AiCliRunner;
+import com.github.prepushchecker.commitgen.cli.CliCapabilities;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
@@ -66,6 +67,7 @@ public final class CodexCliProvider implements CommitMessageProvider {
                                @Nullable String configuredPath, @Nullable String model,
                                @Nullable String extraArgs, @Nullable String effort) throws Exception {
         CommitMessageSettings cfg = CommitMessageSettings.getInstance();
+        long resolveStarted = System.nanoTime();
         String path = CliPathResolver.resolveOrNull(configuredPath, CLI_NAME);
         if (path == null) {
             throw new IllegalStateException(
@@ -84,7 +86,9 @@ public final class CodexCliProvider implements CommitMessageProvider {
         Path workDir = AiCliRunner.createWorkDir();
         try {
             Path lastMessage = workDir.resolve("last-message.txt");
-            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage, request.lowLatency(), effort);
+            CliCapabilities caps = CliCapabilities.probe(path);
+            List<String> cmd = AiCliCommand.codex(path, model, extraArgs, lastMessage, request.lowLatency(), effort, caps);
+            AiCliRunner.noteResolve(resolveStarted);
             String stdout;
             try {
                 stdout = AiCliRunner.run(label, cmd,

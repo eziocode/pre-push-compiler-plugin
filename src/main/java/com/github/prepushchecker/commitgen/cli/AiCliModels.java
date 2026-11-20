@@ -57,9 +57,10 @@ public final class AiCliModels {
      * Returns the models for {@code cli}. {@code customListArgs} is only used for
      * custom CLIs: arguments that make the CLI print one model per line.
      */
-    public static @NotNull List<String> list(@NotNull AiCli cli, @Nullable String path,
+    public static @NotNull List<String> list(@Nullable AiCli cli, @Nullable String path,
                                              @Nullable String customListArgs) {
         try {
+            if (cli == null) return customModels(path, customListArgs); // a user-added CLI
             return switch (cli) {
                 case CLAUDE -> claudeModels();
                 case CODEX  -> codexModels(path);
@@ -76,7 +77,8 @@ public final class AiCliModels {
     }
 
     /** Models offered before the user clicks refresh — no I/O. */
-    public static @NotNull List<String> staticModels(@NotNull AiCli cli) {
+    public static @NotNull List<String> staticModels(@Nullable AiCli cli) {
+        if (cli == null) return List.of();
         return switch (cli) {
             case CLAUDE -> CLAUDE_STATIC;
             case CODEX  -> CODEX_STATIC;

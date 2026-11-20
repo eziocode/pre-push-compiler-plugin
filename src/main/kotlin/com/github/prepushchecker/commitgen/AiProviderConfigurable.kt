@@ -58,14 +58,6 @@ class AiProviderConfigurable : SearchableConfigurable {
             Id.OLLAMA -> "Ollama (local)"
             else -> id.displayName()
         }
-
-        private fun cliOf(id: Id, binary: String?): AiCli = when (id) {
-            Id.CODEX_CLI -> AiCli.CODEX
-            Id.CLAUDE_CLI -> AiCli.CLAUDE
-            Id.GH_COPILOT -> AiCli.GH
-            Id.LLM_CLI -> AiCli.LLM
-            else -> AiCli.byBinary(binary) ?: AiCli.SAHAA
-        }
     }
 
     private enum class Source { API, CLI, IDE }
@@ -91,8 +83,10 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     // CLI
     private val cliSummary = JBLabel()
-    private val cliCombo = ComboBox(DefaultComboBoxModel(AiCli.values()))
-    @Volatile private var detected: Map<AiCli, AiCliDetector.DetectedCli> = emptyMap()
+    private val cliCombo = ComboBox<ProviderUi.CliChoice>()
+    /** Last scan of installed CLIs (shared with the Inline Suggestions page); `null` until one ran. */
+    @Volatile private var scan: List<AiCliDetector.DetectedCli>? = AiCliDetector.lastScan()
+    private val detectResult = JBLabel()
     private val cliModelCombo = ComboBox<String>().apply { isEditable = true }
     private val cliPathField = TextFieldWithBrowseButton(JBTextField().apply { emptyText.text = "blank = find on PATH" }).apply {
         addBrowseFolderListener(TextBrowseFolderListener(
@@ -102,12 +96,17 @@ class AiProviderConfigurable : SearchableConfigurable {
         renderer = ProviderUi.effortRenderer()
     }
     private val speedHint = JBLabel()
-    private val customBinaryField = JBTextField()
     private val extraArgsField = JBTextField()
     private val templateField = JBTextField()
     private val listModelsArgsField = JBTextField()
     private val cliKeyField = JBPasswordField()
     private val codexStatus = JBLabel()
+
+    // Add custom CLI (inline form, no dialog: see class doc)
+    private val addNameField = JBTextField().apply { emptyText.text = "e.g. mycli" }
+    private val addPathField = JBTextField().apply { emptyText.text = "blank = find the name on PATH" }
+    private val addArgsField = JBTextField().apply { emptyText.text = "-p {prompt}" }
+    private val addError = JBLabel()
     private val modelsStatus = JBLabel()
 
     // JetBrains AI
@@ -120,7 +119,8 @@ class AiProviderConfigurable : SearchableConfigurable {
     private var ideRange: RowsRange? = null
     private var keyRow: Row? = null
     private var urlRow: Row? = null
-    private var binaryRow: Row? = null
+    private var addRange: RowsRange? = null
+    private var removeCustomRow: Row? = null
     private var extraArgsRow: Row? = null
     private var effortRow: Row? = null
     private var speedHintRow: Row? = null
@@ -172,23 +172,7 @@ class AiProviderConfigurable : SearchableConfigurable {
             loadApi()
             updateVisibility()
         }
-        customBinaryField.document.addDocumentListener(object : com.intellij.ui.DocumentAdapter() {
-            override fun textChanged(e: javax.swing.event.DocumentEvent) {
-                if (!loading) templateField.emptyText.text = presetHint()
-            }
-        })
-        cliCombo.renderer = object : SimpleListCellRenderer<AiCli>() {
-            override fun customize(list: JList<out AiCli>, value: AiCli?, index: Int, selected: Boolean, hasFocus: Boolean) {
-                if (value == null) { text = ""; return }
-                val d = detected[value]
-                text = when {
-                    d == null -> value.displayName()
-                    d.found() -> value.displayName()
-                    else -> value.displayName() + "  (not installed)"
-                }
-                if (d != null && !d.found() && !selected) foreground = UIUtil.getContextHelpForeground()
-            }
-        }
+        cliCombo.renderer = ProviderUi.cliChoiceRenderer { scan }
         cliModelCombo.addActionListener { updateSpeedHint() }
         (cliModelCombo.editor.editorComponent as? javax.swing.text.JTextComponent)?.document?.addDocumentListener(
             object : javax.swing.event.DocumentListener {
@@ -198,10 +182,8 @@ class AiProviderConfigurable : SearchableConfigurable {
             })
         cliCombo.addActionListener {
             if (loading) return@addActionListener
-            val cli = cliCombo.selectedItem as? AiCli ?: return@addActionListener
-            stashCliInto(work)
-            selectCli(cli)
-            updateVisibility()
+            val choice = cliCombo.selectedItem as? ProviderUi.CliChoice ?: return@addActionListener
+            chooseCli(choice)
         }
     }
 
@@ -228,9 +210,31 @@ class AiProviderConfigurable : SearchableConfigurable {
             cliRange = rowsRange {
                 row("CLI:") {
                     cell(cliCombo)
+                    link("Detect Local CLIs") { detectClis(explicit = true) }
                     link("Browse…") { browseCli() }
                 }
+                row("") { cell(detectResult) }
+                addRange = rowsRange {
+                    row("Name:") {
+                        cell(addNameField).columns(COLUMNS_MEDIUM)
+                            .comment("Shown in the CLI list. Without a path it must be the command name on PATH.")
+                    }
+                    row("Path:") {
+                        cell(addPathField).columns(COLUMNS_LARGE)
+                        link("Browse…") { browseAddPath() }
+                    }
+                    row("Arguments:") {
+                        cell(addArgsField).columns(COLUMNS_LARGE)
+                            .comment("Placeholders: {prompt}, {model}, {model?…}. Without {prompt} the prompt goes on stdin.")
+                    }
+                    row("") {
+                        button("Add") { addCustomCli() }
+                        link("Cancel") { showAddForm(false) }
+                        cell(addError)
+                    }
+                }
                 row("") { cell(cliSummary) }
+                removeCustomRow = row("") { link("Remove this custom CLI") { removeCustomCli() } }
                 row("Model:") {
                     cell(cliModelCombo).columns(COLUMNS_MEDIUM)
                     link("Refresh models") { refreshModels() }
@@ -258,10 +262,6 @@ class AiProviderConfigurable : SearchableConfigurable {
     }
 
     private fun advancedCliRows(panel: Panel) = with(panel) {
-        binaryRow = row("Binary name:") {
-            cell(customBinaryField).columns(COLUMNS_MEDIUM)
-                .comment("Command name found on PATH, e.g. sahaa, gemini, cursor-agent, copilot, opencode.")
-        }
         row("Path:") {
             cell(cliPathField).columns(COLUMNS_LARGE)
         }
@@ -318,6 +318,7 @@ class AiProviderConfigurable : SearchableConfigurable {
             loading = false
         }
         testResult.text = ""
+        showAddForm(false)
         updateVisibility()
         refreshIdeStatus()
     }
@@ -334,6 +335,9 @@ class AiProviderConfigurable : SearchableConfigurable {
         writeUi(work)
         stashKeys()
         XmlSerializerUtil.copyBean(work, saved)
+        work = XmlSerializerUtil.createCopy(saved) // saved now owns the custom CLI list
+        // Paths may have changed: the next AI call looks the CLI up again.
+        CliPathResolver.clearResolveCache()
         val apiKeys = typedApiKeys.filterValues { it.isNotBlank() }
         val cliKeys = typedCliKeys.filterValues { it.isNotBlank() }
         typedApiKeys.clear()
@@ -374,7 +378,7 @@ class AiProviderConfigurable : SearchableConfigurable {
         s.selectedProvider, s.openAiModel, s.anthropicModel, s.geminiModel, s.ollamaModel, s.ollamaBaseUrl,
         s.codexCliPath, s.codexModel, s.codexExtraArgs, s.ghCliPath, s.ghModel, s.llmCliPath, s.llmModel,
         s.claudeCliPath, s.claudeModel, s.claudeExtraArgs, s.claudeEffort, s.codexEffort, s.customCliBinary, s.customCliPath, s.customCliArgs,
-        s.customCliModel, s.customCliModelsArgs)
+        s.customCliModel, s.customCliModelsArgs, s.customClis.orEmpty().toList())
 
     private fun stashApi() = stashApiInto(work)
 
@@ -425,11 +429,11 @@ class AiProviderConfigurable : SearchableConfigurable {
             Id.GH_COPILOT -> { s.ghCliPath = path; s.ghModel = model }
             Id.LLM_CLI -> { s.llmCliPath = path; s.llmModel = model }
             Id.CUSTOM_CLI -> {
-                s.customCliBinary = customBinaryField.text.trim()
                 s.customCliPath = path
                 s.customCliModel = model
                 s.customCliArgs = templateField.text.trim()
                 s.customCliModelsArgs = listModelsArgsField.text.trim()
+                CommitMessageSettings.rememberActiveCustom(s)
             }
             else -> {}
         }
@@ -448,12 +452,11 @@ class AiProviderConfigurable : SearchableConfigurable {
             }
             cliPathField.text = path.orEmpty()
             extraArgsField.text = extra.orEmpty()
-            customBinaryField.text = work.customCliBinary.orEmpty()
             templateField.text = work.customCliArgs.orEmpty()
             templateField.emptyText.text = presetHint()
             listModelsArgsField.text = work.customCliModelsArgs.orEmpty()
-            val cli = cliOf(cliId, work.customCliBinary)
-            cliCombo.selectedItem = cli
+            val cli = ProviderUi.cliOf(cliId, work.customCliBinary)
+            rebuildCliCombo()
             cliModelCombo.model = DefaultComboBoxModel(AiCliModels.staticModels(cli).toTypedArray())
             cliModelCombo.editor.item = model.orEmpty()
             cliModelCombo.selectedItem = model.orEmpty()
@@ -481,7 +484,7 @@ class AiProviderConfigurable : SearchableConfigurable {
     }
 
     private fun presetHint(): String {
-        val preset = AiCli.byBinary(customBinaryField.text.trim())?.takeIf { it.isCustom }?.defaultArgsTemplate()
+        val preset = AiCli.byBinary(work.customCliBinary?.trim())?.takeIf { it.isCustom }?.defaultArgsTemplate()
         return if (preset.isNullOrBlank()) "-p {prompt}" else preset
     }
 
@@ -512,7 +515,8 @@ class AiProviderConfigurable : SearchableConfigurable {
         }
         if (source == Source.CLI) {
             val custom = cliId == Id.CUSTOM_CLI
-            binaryRow?.visible(custom)
+            removeCustomRow?.visible(currentChoice() is ProviderUi.CliChoice.Custom)
+            addRange?.visible(addFormShown)
             templateRow?.visible(custom)
             listArgsRow?.visible(custom)
             extraArgsRow?.visible(cliId == Id.CODEX_CLI || cliId == Id.CLAUDE_CLI)
@@ -526,34 +530,156 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     // ── CLI: choose, summary, models, sign-in ─────────────────────────────────
 
-    /** Background scan of every CLI; the combo shows which are installed and the summary their sign-in. */
-    private fun detectClis() {
+    /**
+     * Background scan of every catalog CLI; the combo then lists the installed ones. [explicit]
+     * ("Detect Local CLIs") also forgets cached paths and probes, and shows what was found.
+     */
+    private fun detectClis(explicit: Boolean = false) {
         val generation = ++detectGeneration
+        stashCliInto(work)
         val snapshot = XmlSerializerUtil.createCopy(work)
+        if (explicit) {
+            detectResult.text = "Detecting…"
+            detectResult.foreground = UIUtil.getContextHelpForeground()
+        }
         ApplicationManager.getApplication().executeOnPooledThread {
-            val scan = runCatching { AiCliDetector.scanAll(snapshot) }.getOrDefault(emptyList())
+            val result = runCatching {
+                if (explicit) AiCliDetector.rescan(snapshot) else AiCliDetector.scanAll(snapshot)
+            }.getOrDefault(emptyList())
             ApplicationManager.getApplication().invokeLater({
                 if (generation != detectGeneration) return@invokeLater
-                detected = scan.associateBy { it.cli() }
-                cliCombo.repaint()
+                scan = result
+                rebuildCliCombo()
+                if (explicit) {
+                    detectResult.text = ProviderUi.detectSummary(result)
+                    detectResult.foreground = UIUtil.getLabelForeground()
+                }
+                refreshCliSummary()
             }, ModalityState.any())
         }
     }
 
-    /** Switches to [cli], keeping each CLI's own path and model. */
-    private fun selectCli(cli: AiCli) {
-        if (cli.isCustom) {
-            if (work.customCliBinary != cli.binaryName()) {
-                // The "Other CLI" fields are shared by every custom binary: drop the previous binary's values.
-                work.customCliArgs = ""
-                work.customCliModel = ""
-                work.customCliModelsArgs = ""
-                work.customCliPath = detected[cli]?.path().orEmpty()
-            }
-            work.customCliBinary = cli.binaryName()
+    private fun currentChoice(): ProviderUi.CliChoice? = ProviderUi.choiceOf(cliId, work.customCliBinary, work)
+
+    /** Lists installed catalog CLIs, user-added CLIs and "Add custom CLI…"; keeps the current choice selected. */
+    private fun rebuildCliCombo() {
+        val current = currentChoice()
+        val items = ProviderUi.cliChoices(work, scan, current, onlyActiveCustom = false, withAdd = true)
+        val wasLoading = loading
+        loading = true
+        try {
+            cliCombo.model = DefaultComboBoxModel(items.toTypedArray())
+            cliCombo.selectedItem = current
+        } finally {
+            loading = wasLoading
         }
-        cliId = cli.providerId()
+        removeCustomRow?.visible(source == Source.CLI && current is ProviderUi.CliChoice.Custom)
+    }
+
+    /** Switches to [choice] (also used by tests); "Add custom CLI…" opens the inline form instead. */
+    fun chooseCli(choice: ProviderUi.CliChoice) {
+        if (choice is ProviderUi.CliChoice.AddCustom) {
+            showAddForm(true)
+            rebuildCliCombo() // keep the real CLI selected
+            return
+        }
+        stashCliInto(work)
+        when (choice) {
+            is ProviderUi.CliChoice.Catalog -> {
+                if (choice.cli.isCustom) CommitMessageSettings.activateCustom(work, choice.cli.binaryName())
+                cliId = choice.cli.providerId()
+            }
+            is ProviderUi.CliChoice.Custom -> {
+                CommitMessageSettings.activateCustom(work, choice.name)
+                cliId = Id.CUSTOM_CLI
+            }
+            else -> {}
+        }
         loadCli()
+        updateVisibility()
+    }
+
+    private var addFormShown = false
+
+    private fun showAddForm(show: Boolean) {
+        addFormShown = show
+        if (show) {
+            addNameField.text = ""
+            addPathField.text = ""
+            addArgsField.text = ""
+            addError.text = ""
+        }
+        addRange?.visible(show && source == Source.CLI)
+    }
+
+    /** Adds (or updates) a user CLI from the inline form and selects it. */
+    fun addCustomCli() {
+        val name = addNameField.text.trim()
+        val path = addPathField.text.trim()
+        val args = addArgsField.text.trim()
+        val error = customCliError(name, path)
+        if (error != null) {
+            addError.text = error
+            addError.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
+            return
+        }
+        stashCliInto(work)
+        if (CommitMessageSettings.findCustom(work, name) == null) {
+            work.customClis.add(CommitMessageSettings.CustomCliEntry(name, path, args, "", "", true))
+        }
+        CommitMessageSettings.activateCustom(work, name)
+        CommitMessageSettings.findCustom(work, name)?.let {
+            it.path = path
+            it.argsTemplate = args
+            it.userAdded = true
+        }
+        work.customCliPath = path
+        work.customCliArgs = args
+        cliId = Id.CUSTOM_CLI
+        showAddForm(false)
+        loadCli()
+        updateVisibility()
+    }
+
+    private fun customCliError(name: String, path: String): String? {
+        if (name.isEmpty()) return "Enter a name."
+        val known = AiCli.byBinary(name)
+        if (known != null && !known.isCustom) return "${known.displayName()} has its own entry: use Detect Local CLIs."
+        if (path.isEmpty() && !name.matches(Regex("[A-Za-z0-9._+-]+"))) {
+            return "Without a path the name must be a command name (letters, digits, . _ + -)."
+        }
+        if (path.isNotEmpty()) {
+            val p = runCatching { java.nio.file.Path.of(path) }.getOrNull() ?: return "Not a valid path."
+            if (p.isAbsolute && !java.nio.file.Files.isRegularFile(p)) return "No file at this path."
+        }
+        return null
+    }
+
+    private fun removeCustomCli() {
+        val name = work.customCliBinary?.trim().orEmpty()
+        if (name.isEmpty()) return
+        work.customClis.removeIf { it.name.trim() == name }
+        work.customCliBinary = ""
+        work.customCliPath = ""
+        work.customCliArgs = ""
+        work.customCliModel = ""
+        work.customCliModelsArgs = ""
+        val next = scan.orEmpty().firstOrNull { it.found() && !it.cli().isCustom }?.cli()
+        if (next != null) cliId = next.providerId()
+        loadCli()
+        updateVisibility()
+    }
+
+    /** Picks the executable for the Add custom CLI form. The file chooser is modal: see [ownModalUntil]. */
+    private fun browseAddPath() {
+        val file = FileChooser.chooseFile(
+            FileChooserDescriptorFactory.createSingleFileNoJarsDescriptor().withTitle("Select CLI Executable"),
+            component, null, null)
+        ownModalUntil = System.currentTimeMillis() + MODAL_GUARD_MS
+        if (file == null) return
+        addPathField.text = file.path
+        if (addNameField.text.isBlank()) addNameField.text = file.name
+        ownModalUntil = System.currentTimeMillis() + MODAL_GUARD_MS
     }
 
     /** Picks an unlisted executable. The file chooser is modal: see [ownModalUntil]. */
@@ -577,14 +703,12 @@ class AiProviderConfigurable : SearchableConfigurable {
             }
             cliId = known.providerId()
         } else {
-            cliId = Id.CUSTOM_CLI
-            if (work.customCliBinary != name) {
-                work.customCliArgs = ""
-                work.customCliModel = ""
-                work.customCliModelsArgs = ""
+            if (known == null && CommitMessageSettings.findCustom(work, name) == null) {
+                work.customClis.add(CommitMessageSettings.CustomCliEntry(name, chosenPath, "", "", "", true))
             }
-            work.customCliBinary = name
+            CommitMessageSettings.activateCustom(work, name)
             work.customCliPath = chosenPath
+            cliId = Id.CUSTOM_CLI
         }
         loadCli()
         updateVisibility()
@@ -593,10 +717,16 @@ class AiProviderConfigurable : SearchableConfigurable {
 
     private fun refreshCliSummary(): java.util.concurrent.Future<*> {
         val generation = ++cliSummaryGeneration
-        val cli = cliOf(cliId, customBinaryField.text.trim())
-        val binary = if (cliId == Id.CUSTOM_CLI) customBinaryField.text.trim().ifEmpty { "sahaa" } else cli.binaryName()
-        val name = if (cliId == Id.CUSTOM_CLI) AiCli.byBinary(binary)?.displayName() ?: binary else cli.displayName()
+        val customName = work.customCliBinary?.trim().orEmpty()
+        val cli = ProviderUi.cliOf(cliId, customName)
+        val binary = if (cliId == Id.CUSTOM_CLI) customName else cli?.binaryName().orEmpty()
+        val name = cli?.displayName() ?: binary
         val configured = cliPathField.text.trim()
+        if (binary.isEmpty()) {
+            cliSummary.text = ProviderUi.NO_CLI_TEXT
+            cliSummary.foreground = UIUtil.getContextHelpForeground()
+            return java.util.concurrent.CompletableFuture.completedFuture(null)
+        }
         cliSummary.text = "checking…"
         cliSummary.foreground = UIUtil.getLabelForeground()
         return ApplicationManager.getApplication().executeOnPooledThread {
@@ -609,7 +739,7 @@ class AiProviderConfigurable : SearchableConfigurable {
                     cliSummary.text = "$name not found. Install it, use Browse…, or set the path under Advanced."
                     cliSummary.foreground = JBColor.namedColor("Label.errorForeground", JBColor.RED)
                 } else {
-                    val auth = detected[cli]?.takeIf { it.found() }?.auth().orEmpty()
+                    val auth = scan.orEmpty().firstOrNull { it.cli() == cli && it.found() }?.auth().orEmpty()
                     cliSummary.text = "$path" + (if (version.isBlank()) "" else "  ·  $version") +
                         (if (auth.isBlank()) "" else "  ·  $auth")
                     cliSummary.foreground = UIUtil.getLabelForeground()
@@ -622,8 +752,13 @@ class AiProviderConfigurable : SearchableConfigurable {
     private fun refreshModels() {
         val generation = ++modelsGeneration
         val forCli = cliId
-        val cli = cliOf(cliId, customBinaryField.text.trim())
-        val binary = if (cliId == Id.CUSTOM_CLI) customBinaryField.text.trim().ifEmpty { "sahaa" } else cli.binaryName()
+        val customName = work.customCliBinary?.trim().orEmpty()
+        val cli = ProviderUi.cliOf(cliId, customName)
+        val binary = if (cliId == Id.CUSTOM_CLI) customName else cli?.binaryName().orEmpty()
+        if (binary.isEmpty()) {
+            modelsStatus.text = "Pick a CLI first."
+            return
+        }
         val configured = cliPathField.text.trim()
         val listArgs = if (cliId == Id.CUSTOM_CLI) listModelsArgsField.text.trim() else null
         modelsStatus.text = "loading…"

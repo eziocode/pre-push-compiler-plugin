@@ -80,8 +80,8 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
                 CommitMessageProvider.Id.CUSTOM_CLI
             }) {
                 AiCli cli = id == CommitMessageProvider.Id.CLAUDE_CLI ? AiCli.CLAUDE
-                    : id == CommitMessageProvider.Id.CODEX_CLI ? AiCli.CODEX : AiCli.SAHAA;
-                combo(page).setSelectedItem(cli);
+                    : id == CommitMessageProvider.Id.CODEX_CLI ? AiCli.CODEX : AiCli.GEMINI;
+                page.chooseCli(new ProviderUi.CliChoice.Catalog(cli));
                 ((com.intellij.openapi.ui.TextFieldWithBrowseButton) field(page, "cliPathField").get(page))
                     .setText("/usr/bin/true");
                 var models = (javax.swing.JComboBox<?>) field(page, "cliModelCombo").get(page);
@@ -111,19 +111,48 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
         AiProviderConfigurable page = new AiProviderConfigurable();
         try {
             page.createComponent();
-            combo(page).setSelectedItem(AiCli.CODEX);
+            page.chooseCli(new ProviderUi.CliChoice.Catalog(AiCli.CODEX));
             assertEquals(CommitMessageProvider.Id.CODEX_CLI, field(page, "cliId").get(page));
             assertTrue(page.isModified());
             // Right after one of the page's own modal windows, a reset from the platform keeps the edit.
             field(page, "ownModalUntil").set(page, System.currentTimeMillis() + 60_000);
             page.reset();
             assertEquals(CommitMessageProvider.Id.CODEX_CLI, field(page, "cliId").get(page));
-            assertEquals(AiCli.CODEX, combo(page).getSelectedItem());
+            assertEquals(new ProviderUi.CliChoice.Catalog(AiCli.CODEX), combo(page).getSelectedItem());
             // Outside that window an explicit reset (Revert changes) still restores the saved CLI.
             field(page, "ownModalUntil").set(page, 0L);
             page.reset();
             assertEquals(CommitMessageProvider.Id.GH_COPILOT, field(page, "cliId").get(page));
-            assertEquals(AiCli.GH, combo(page).getSelectedItem());
+            assertEquals(new ProviderUi.CliChoice.Catalog(AiCli.GH), combo(page).getSelectedItem());
+        } finally {
+            page.disposeUIResources();
+            settings.loadState(original);
+        }
+    }
+
+    public void testAddCustomCliIsListedSelectedAndSaved() throws Exception {
+        CommitMessageSettings settings = CommitMessageSettings.getInstance();
+        CommitMessageSettings.State original = settings.settings();
+        settings.loadState(new CommitMessageSettings.State());
+        AiProviderConfigurable page = new AiProviderConfigurable();
+        try {
+            page.createComponent();
+            ((javax.swing.JRadioButton) field(page, "cliRadio").get(page)).doClick();
+            page.chooseCli(ProviderUi.CliChoice.AddCustom.INSTANCE);
+            ((javax.swing.JTextField) field(page, "addNameField").get(page)).setText("mycli");
+            ((javax.swing.JTextField) field(page, "addPathField").get(page)).setText("/usr/bin/true");
+            ((javax.swing.JTextField) field(page, "addArgsField").get(page)).setText("ask {prompt}");
+            page.addCustomCli();
+            assertEquals(CommitMessageProvider.Id.CUSTOM_CLI, field(page, "cliId").get(page));
+            assertEquals(new ProviderUi.CliChoice.Custom("mycli"), combo(page).getSelectedItem());
+            javax.swing.ComboBoxModel<ProviderUi.CliChoice> model = combo(page).getModel();
+            assertEquals(ProviderUi.CliChoice.AddCustom.INSTANCE, model.getElementAt(model.getSize() - 1));
+            page.apply();
+            assertEquals("mycli", settings.settings().customCliBinary);
+            assertEquals("/usr/bin/true", settings.settings().customCliPath);
+            assertEquals("ask {prompt}", settings.settings().customCliArgs);
+            assertEquals(1, CommitMessageSettings.userCustomClis(settings.settings()).size());
+            assertFalse(page.isModified());
         } finally {
             page.disposeUIResources();
             settings.loadState(original);
@@ -143,8 +172,11 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
             page.createComponent();
             var models = (javax.swing.JComboBox<?>) field(page, "cliModelCombo").get(page);
             assertEquals("gemini-model", models.getEditor().getItem());
-            combo(page).setSelectedItem(AiCli.OPENCODE);
+            page.chooseCli(new ProviderUi.CliChoice.Catalog(AiCli.OPENCODE));
             assertEquals("", models.getEditor().getItem());
+            // Switching back restores gemini's own model instead of wiping it.
+            page.chooseCli(new ProviderUi.CliChoice.Catalog(AiCli.GEMINI));
+            assertEquals("gemini-model", models.getEditor().getItem());
         } finally {
             page.disposeUIResources();
             settings.loadState(original);
@@ -152,8 +184,8 @@ public class AiProviderConfigurableTest extends BasePlatformTestCase {
     }
 
     @SuppressWarnings("unchecked")
-    private static javax.swing.JComboBox<AiCli> combo(AiProviderConfigurable page) throws Exception {
-        return (javax.swing.JComboBox<AiCli>) field(page, "cliCombo").get(page);
+    private static javax.swing.JComboBox<ProviderUi.CliChoice> combo(AiProviderConfigurable page) throws Exception {
+        return (javax.swing.JComboBox<ProviderUi.CliChoice>) field(page, "cliCombo").get(page);
     }
 
     private static Future<?> selectForSummary(AiProviderConfigurable page, CommitMessageProvider.Id id,

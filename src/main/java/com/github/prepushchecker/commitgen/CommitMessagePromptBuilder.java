@@ -46,6 +46,9 @@ final class CommitMessagePromptBuilder {
     private CommitMessagePromptBuilder() {}
 
     record Prompt(@NotNull String system, @NotNull String user) {}
+
+    /** Two context lines instead of git's three: a smaller prompt, and the AI answers sooner. */
+    static final String DIFF_CONTEXT = "--unified=2";
     private record DiffContext(@NotNull String diff,
                                @Nullable String branchName,
                                @Nullable String repoRoot) {}
@@ -198,17 +201,17 @@ final class CommitMessagePromptBuilder {
                 String root = repo.getRoot().getPath();
                 int beforeLength = combined.length();
                 // 1. staged changes
-                String staged = runGitInDir(root, "diff", "--cached");
+                String staged = runGitInDir(root, "diff", DIFF_CONTEXT, "--cached");
                 if (staged != null && !staged.isBlank()) {
                     combined.append(staged);
                 } else {
                     // 2. unstaged (working tree vs HEAD)
-                    String unstaged = runGitInDir(root, "diff");
+                    String unstaged = runGitInDir(root, "diff", DIFF_CONTEXT);
                     if (unstaged != null && !unstaged.isBlank()) {
                         combined.append(unstaged);
                     } else {
                         // 3. last resort: HEAD diff (handles initial commit edge case)
-                        String head = runGitInDir(root, "diff", "HEAD");
+                        String head = runGitInDir(root, "diff", DIFF_CONTEXT, "HEAD");
                         if (head != null && !head.isBlank()) combined.append(head);
                     }
                 }
@@ -225,11 +228,11 @@ final class CommitMessagePromptBuilder {
         // Fallback: run from project.getBasePath() (single-repo or non-git4idea context)
         String basePath = project.getBasePath();
         if (basePath == null) return null;
-        String staged = runGitInDir(basePath, "diff", "--cached");
+        String staged = runGitInDir(basePath, "diff", DIFF_CONTEXT, "--cached");
         if (staged != null && !staged.isBlank()) {
             return new DiffContext(staged, resolveBranchName(basePath), basePath);
         }
-        String head = runGitInDir(basePath, "diff", "HEAD");
+        String head = runGitInDir(basePath, "diff", DIFF_CONTEXT, "HEAD");
         if (head != null && !head.isBlank()) {
             return new DiffContext(head, resolveBranchName(basePath), basePath);
         }
@@ -281,15 +284,15 @@ final class CommitMessagePromptBuilder {
         if (paths.isEmpty()) return false;
 
         // 1. staged
-        String staged = runGitInDir(root, buildArgs(List.of("diff", "--cached", "--"), paths));
+        String staged = runGitInDir(root, buildArgs(List.of("diff", DIFF_CONTEXT, "--cached", "--"), paths));
         if (staged != null && !staged.isBlank()) { combined.append(staged); return true; }
 
         // 2. unstaged
-        String unstaged = runGitInDir(root, buildArgs(List.of("diff", "--"), paths));
+        String unstaged = runGitInDir(root, buildArgs(List.of("diff", DIFF_CONTEXT, "--"), paths));
         if (unstaged != null && !unstaged.isBlank()) { combined.append(unstaged); return true; }
 
         // 3. HEAD (handles initial-commit edge case)
-        String head = runGitInDir(root, buildArgs(List.of("diff", "HEAD", "--"), paths));
+        String head = runGitInDir(root, buildArgs(List.of("diff", DIFF_CONTEXT, "HEAD", "--"), paths));
         if (head != null && !head.isBlank()) {
             combined.append(head);
             return true;

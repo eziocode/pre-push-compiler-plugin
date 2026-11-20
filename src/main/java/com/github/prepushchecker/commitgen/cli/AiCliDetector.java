@@ -31,8 +31,32 @@ public final class AiCliDetector {
 
     private AiCliDetector() {}
 
+    /** Result of the last {@link #scanAll}, shared by the settings pages; {@code null} before the first. */
+    private static volatile List<DetectedCli> lastScan;
+
+    public static @Nullable List<DetectedCli> lastScan() {
+        return lastScan;
+    }
+
+    /**
+     * "Detect Local CLIs": forgets cached paths and capability probes, then scans again, so a CLI
+     * installed or upgraded while the IDE runs is found.
+     */
+    public static @NotNull List<DetectedCli> rescan(@NotNull CommitMessageSettings.State settings) {
+        CliPathResolver.clearResolveCache();
+        CliPathResolver.clearShellPathCache();
+        CliCapabilities.clearCache();
+        return scanAll(settings);
+    }
+
     /** Probes every registered CLI in parallel. Order matches {@link AiCli#values()}. */
     public static @NotNull List<DetectedCli> scanAll(@NotNull CommitMessageSettings.State settings) {
+        List<DetectedCli> out = scanAllUncached(settings);
+        lastScan = List.copyOf(out);
+        return out;
+    }
+
+    private static @NotNull List<DetectedCli> scanAllUncached(@NotNull CommitMessageSettings.State settings) {
         AiCli[] all = AiCli.values();
         ExecutorService pool = Executors.newFixedThreadPool(Math.min(all.length, 6), r -> {
             Thread t = new Thread(r, "CommitGen-CliScan");

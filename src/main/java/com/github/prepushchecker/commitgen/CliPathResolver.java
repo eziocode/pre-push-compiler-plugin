@@ -102,6 +102,51 @@ public final class CliPathResolver {
      */
     @Nullable
     public static String resolveOrNull(@Nullable String configured, @NotNull String cliName) {
+        String key = (configured == null ? "" : configured.trim()) + "\u0000" + cliName;
+        Resolved hit = RESOLVE_CACHE.get(key);
+        long now = System.currentTimeMillis();
+        if (hit != null) {
+            if (hit.path != null && isExecutable(hit.path)) return hit.path;
+            if (hit.path == null && now - hit.at < MISS_TTL_MS) return null;
+            RESOLVE_CACHE.remove(key, hit);
+        }
+        String found = resolveUncached(configured, cliName);
+        RESOLVE_CACHE.put(key, new Resolved(found, now));
+        return found;
+    }
+
+    /** A resolved path ({@code null} = not found) and when it was looked up. */
+    private record Resolved(@Nullable String path, long at) {}
+
+    /** Not-found results are retried after this long; found paths stay until invalidated. */
+    static final long MISS_TTL_MS = 60_000;
+    private static final java.util.concurrent.ConcurrentHashMap<String, Resolved> RESOLVE_CACHE =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * Forgets resolved CLI paths. Called when AI settings are applied and by "Detect Local CLIs",
+     * so a newly installed or moved CLI is found again.
+     */
+    public static void clearResolveCache() {
+        RESOLVE_CACHE.clear();
+    }
+
+    /** Number of cached lookups; for tests. */
+    static int resolveCacheSize() {
+        return RESOLVE_CACHE.size();
+    }
+
+    private static boolean isExecutable(@NotNull String path) {
+        try {
+            return Files.isExecutable(Path.of(path));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @Nullable
+    private static String resolveUncached(@Nullable String configured, @NotNull String cliName) {
+        if (com.intellij.openapi.util.SystemInfo.isWindows) return resolveOnWindows(configured, cliName);
         if (configured != null && !configured.isBlank()) {
             String trimmed = configured.trim();
             Path p = Path.of(trimmed);
@@ -116,6 +161,41 @@ public final class CliPathResolver {
         String shellResult = whichViaShell(cliName);
         if (shellResult != null) return shellResult;
         return findInExtraDirs(cliName);
+    }
+
+    /**
+     * Windows has no {@code sh}/{@code which}: a configured path, then the IDE's PATH (with the
+     * {@code .exe}/{@code .cmd}/{@code .bat} forms npm and pip install).
+     */
+    @Nullable
+    private static String resolveOnWindows(@Nullable String configured, @NotNull String cliName) {
+        if (configured != null && !configured.isBlank()) {
+            Path p = Path.of(configured.trim());
+            if (p.isAbsolute() && Files.isRegularFile(p)) return p.toString();
+            if (isSafeBareNameForShell(configured.trim())) {
+                String found = findOnWindowsPath(configured.trim());
+                if (found != null) return found;
+            }
+        }
+        return isSafeBareNameForShell(cliName) ? findOnWindowsPath(cliName) : null;
+    }
+
+    @Nullable
+    private static String findOnWindowsPath(@NotNull String name) {
+        String path = System.getenv("PATH");
+        if (path == null) return null;
+        for (String dir : path.split(java.io.File.pathSeparator)) {
+            if (dir.isBlank()) continue;
+            for (String candidate : List.of(name + ".exe", name + ".cmd", name + ".bat", name)) {
+                try {
+                    Path p = Path.of(dir.trim(), candidate);
+                    if (Files.isRegularFile(p)) return p.toString();
+                } catch (Exception ignored) {
+                    // malformed PATH entry
+                }
+            }
+        }
+        return null;
     }
 
     /** Looks for {@code cliName} in the well-known install directories only. */
