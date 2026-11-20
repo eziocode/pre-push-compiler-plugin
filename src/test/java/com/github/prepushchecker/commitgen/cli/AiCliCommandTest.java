@@ -102,7 +102,8 @@ public class AiCliCommandTest extends TestCase {
             assertTrue(cli + " preset must take {prompt}", AiCliCommand.usesPromptArg(template));
             List<String> cmd = AiCliCommand.fromTemplate("/bin/" + cli.binaryName(), template, "m1", "a b");
             assertTrue(cli + " " + cmd, cmd.contains("a b"));
-            assertTrue(cli + " " + cmd, cmd.contains("m1"));
+            // amp and crush have no model option: they use the model set in their own config.
+            if (cli != AiCli.AMP && cli != AiCli.CRUSH) assertTrue(cli + " " + cmd, cmd.contains("m1"));
             assertFalse(cli + " " + cmd, AiCliCommand.fromTemplate("/bin/x", template, "", "p").contains(""));
         }
     }
@@ -121,5 +122,80 @@ public class AiCliCommandTest extends TestCase {
         assertTrue(AiCliCommand.codex("/bin/codex", null, "", out, false, "medium")
             .contains("model_reasoning_effort=\"medium\""));
         assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false, "").toString().contains("reasoning"));
+    }
+
+    // ── Lean flags gated by the probed capabilities ───────────────────────────
+
+    private static final CliCapabilities CLAUDE_ALL = CliCapabilities.of("--tools", "--strict-mcp-config",
+        "--no-session-persistence", "--disable-slash-commands", "--setting-sources", "--system-prompt",
+        "--include-partial-messages", "--verbose", "--effort");
+
+    public void testClaudeLeanFlagsForEveryRequestWhenAdvertised() {
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text", "--model", "haiku",
+                "--tools", "", "--strict-mcp-config", "--no-session-persistence", "--disable-slash-commands",
+                "--setting-sources", "", "--system-prompt", AiCliCommand.LEAN_SYSTEM_PROMPT, "--effort", "low"),
+            AiCliCommand.claude("/bin/claude", "haiku", null, false, "low", CLAUDE_ALL, false, false));
+    }
+
+    public void testClaudeOnlyAddsFlagsTheInstalledVersionLists() {
+        CliCapabilities old = CliCapabilities.of("--tools", "--strict-mcp-config");
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text", "--tools", "", "--strict-mcp-config"),
+            AiCliCommand.claude("/bin/claude", null, null, false, null, old, true, false));
+    }
+
+    public void testClaudeUnprobedKeepsOldBehaviour() {
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text"),
+            AiCliCommand.claude("/bin/claude", null, null, false, null, CliCapabilities.UNKNOWN, true, false));
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "text",
+                "--tools", "", "--strict-mcp-config", "--no-session-persistence"),
+            AiCliCommand.claude("/bin/claude", null, null, true, null, CliCapabilities.UNKNOWN, false, false));
+    }
+
+    public void testClaudeKeepsUserSettingsWhenAsked() {
+        List<String> cmd = AiCliCommand.claude("/bin/claude", null, null, false, null, CLAUDE_ALL, false, true);
+        assertFalse(cmd.contains("--setting-sources"));
+        assertTrue(cmd.contains("--strict-mcp-config"));
+    }
+
+    public void testClaudeStreamsOnlyWhenSupported() {
+        List<String> cmd = AiCliCommand.claude("/bin/claude", null, null, false, null, CLAUDE_ALL, true, false);
+        assertEquals(List.of("/bin/claude", "-p", "--output-format", "stream-json", "--verbose",
+            "--include-partial-messages"), cmd.subList(0, 6));
+        assertTrue(AiCliCommand.claude("/bin/claude", null, null, false, null,
+            CliCapabilities.of("--tools"), true, false).containsAll(List.of("--output-format", "text")));
+    }
+
+    public void testClaudeFastModelOnlyForCommitMessagesAndCompletions() {
+        assertEquals("haiku", AiCliCommand.claudeModelFor(AiRequest.commitMessage("s", "u"), ""));
+        assertEquals("haiku", AiCliCommand.claudeModelFor(
+            AiRequest.completion("s", "u", null, AiRequest.COMPLETION_FAST_TIMEOUT), null));
+        assertEquals("opus", AiCliCommand.claudeModelFor(AiRequest.commitMessage("s", "u"), "opus"));
+        assertNull(AiCliCommand.claudeModelFor(AiRequest.review("s", "u"), null));
+        assertEquals("", AiCliCommand.claudeModelFor(AiRequest.fix("s", "u"), ""));
+    }
+
+    public void testCodexLeanFlagsWhenEphemeralIsAdvertised() {
+        Path out = Path.of("/tmp/x/last.txt");
+        assertEquals(List.of("/bin/codex", "exec", "--skip-git-repo-check", "--sandbox", "read-only",
+                "--color", "never", "--output-last-message", "/tmp/x/last.txt",
+                "--ephemeral", "-c", "mcp_servers={}", "-c", "model_reasoning_effort=\"medium\"", "-"),
+            AiCliCommand.codex("/bin/codex", null, "", out, false, "medium", CliCapabilities.of("--ephemeral")));
+        assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false, null, CliCapabilities.of("--json"))
+            .contains("mcp_servers={}"));
+        assertFalse(AiCliCommand.codex("/bin/codex", null, "", out, false, null, CliCapabilities.UNKNOWN)
+            .contains("--ephemeral"));
+    }
+
+    public void testTemplateCliLeanFlags() {
+        assertEquals(List.of("--disable-builtin-mcps", "--no-custom-instructions"),
+            AiCliCommand.leanTemplateFlags(AiCli.COPILOT,
+                CliCapabilities.of("--disable-builtin-mcps", "--no-custom-instructions")));
+        assertEquals(List.of("--no-custom-instructions"),
+            AiCliCommand.leanTemplateFlags(AiCli.COPILOT, CliCapabilities.of("--no-custom-instructions")));
+        assertEquals(List.of("--extensions", "none"),
+            AiCliCommand.leanTemplateFlags(AiCli.GEMINI, CliCapabilities.of("--extensions")));
+        assertEquals(List.of(), AiCliCommand.leanTemplateFlags(AiCli.GEMINI, CliCapabilities.UNKNOWN));
+        assertEquals(List.of(), AiCliCommand.leanTemplateFlags(AiCli.OPENCODE, CliCapabilities.of("--extensions")));
+        assertEquals(List.of(), AiCliCommand.leanTemplateFlags(null, CliCapabilities.of("--extensions")));
     }
 }

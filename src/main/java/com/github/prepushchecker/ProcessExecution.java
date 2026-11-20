@@ -59,25 +59,46 @@ public final class ProcessExecution {
         @NotNull Duration timeout,
         String stdin
     ) throws IOException, InterruptedException {
-        return run(processBuilder, timeout, stdin, false);
+        return run(processBuilder, timeout, stdin, false, null);
+    }
+
+    /** Progress of a running process; callbacks run on I/O threads and must be quick. */
+    public interface Observer {
+        /** The process was spawned. */
+        default void started() {}
+
+        /** One complete stdout line (without the line break), as it arrives. */
+        default void stdoutLine(@NotNull String line) {}
+    }
+
+    /** As {@link #run(ProcessBuilder, Duration, String)}, reporting progress to {@code observer}. */
+    public static @NotNull Result run(
+        @NotNull ProcessBuilder processBuilder,
+        @NotNull Duration timeout,
+        String stdin,
+        Observer observer
+    ) throws IOException, InterruptedException {
+        return run(processBuilder, timeout, stdin, false, observer);
     }
 
     /** Machine-readable stdout. Preserve separators and reject results beyond the capture limit. */
     public static Result runWithCompleteOutput(ProcessBuilder builder, Duration timeout)
         throws IOException, InterruptedException {
-        return run(builder, timeout, null, true);
+        return run(builder, timeout, null, true, null);
     }
 
-    private static Result run(ProcessBuilder processBuilder, Duration timeout, String stdin, boolean exact)
+    private static Result run(ProcessBuilder processBuilder, Duration timeout, String stdin, boolean exact,
+                              Observer observer)
         throws IOException, InterruptedException {
         if (timeout.isNegative()) throw new IllegalArgumentException("Timeout must not be negative.");
         long timeoutNanos = timeout.toNanos();
         Process process = processBuilder.start();
         long started = System.nanoTime();
-        CompletableFuture<String> stdout = readAsync(process.getInputStream(), exact);
+        if (observer != null) observer.started();
+        CompletableFuture<String> stdout = readAsync(process.getInputStream(), exact, observer);
         CompletableFuture<String> stderr = processBuilder.redirectErrorStream()
             ? CompletableFuture.completedFuture("")
-            : readAsync(process.getErrorStream(), false);
+            : readAsync(process.getErrorStream(), false, null);
         CompletableFuture<Void> input = stdin == null ? CompletableFuture.completedFuture(null)
             : CompletableFuture.runAsync(() -> {
                 try {
@@ -141,10 +162,11 @@ public final class ProcessExecution {
         }
     }
 
-    private static CompletableFuture<String> readAsync(InputStream inputStream, boolean exact) {
+    private static CompletableFuture<String> readAsync(InputStream inputStream, boolean exact, Observer observer) {
         return CompletableFuture.supplyAsync(() -> {
             try (InputStream in = inputStream) {
                 ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+                ByteArrayOutputStream line = observer == null ? null : new ByteArrayOutputStream();
                 byte[] chunk = new byte[8192];
                 boolean truncated = false;
                 int read;
@@ -153,13 +175,38 @@ public final class ProcessExecution {
                     int room = MAX_CAPTURED_BYTES - buffer.size();
                     if (room < read) truncated = true;
                     if (room > 0) buffer.write(chunk, 0, Math.min(read, room));
+                    if (line != null) emitLines(chunk, read, line, observer);
                 }
+                if (line != null && line.size() > 0) notifyLine(observer, line);
                 if (exact && truncated) throw new IOException("Process output exceeded capture limit");
                 return buffer.toString(StandardCharsets.UTF_8);
             } catch (IOException e) {
                 throw new CompletionException(e);
             }
         }, IO_EXECUTOR);
+    }
+
+    private static void emitLines(byte[] chunk, int length, ByteArrayOutputStream line, Observer observer) {
+        int start = 0;
+        for (int i = 0; i < length; i++) {
+            if (chunk[i] == '\n') {
+                line.write(chunk, start, i - start);
+                notifyLine(observer, line);
+                start = i + 1;
+            }
+        }
+        if (start < length) line.write(chunk, start, length - start);
+    }
+
+    private static void notifyLine(Observer observer, ByteArrayOutputStream line) {
+        String text = line.toString(StandardCharsets.UTF_8);
+        line.reset();
+        if (text.endsWith("\r")) text = text.substring(0, text.length() - 1);
+        try {
+            observer.stdoutLine(text);
+        } catch (RuntimeException ignored) {
+            // A failing observer must not stop the pipe from draining.
+        }
     }
 
     private static String awaitDrain(CompletableFuture<String> output)

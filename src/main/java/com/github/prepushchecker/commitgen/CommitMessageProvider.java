@@ -19,7 +19,7 @@ public interface CommitMessageProvider {
         GH_COPILOT("GitHub Copilot (gh auth)"),
         LLM_CLI("llm CLI (multi-provider)"),
         CLAUDE_CLI("Claude Code CLI (claude -p — uses claude login)"),
-        CUSTOM_CLI("Other local CLI (sahaa, gemini, cursor-agent, …)");
+        CUSTOM_CLI("Other local CLI (gemini, cursor-agent, custom, …)");
 
         private final String displayName;
 

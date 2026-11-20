@@ -85,6 +85,93 @@ public final class AiCliRunner {
                                       @NotNull Map<String, String> extraEnv,
                                       @NotNull Duration timeout,
                                       @NotNull String authHint) throws Exception {
+        return run(label, command, stdin, workDir, extraEnv, timeout, authHint, null);
+    }
+
+    /**
+     * As {@link #run(String, List, String, Path, Map, Duration, String)}; {@code onLine} receives
+     * each stdout line as it arrives (on an I/O thread). Logs per-phase timings: binary lookup
+     * (see {@link #noteResolve}), spawn, first output line and total.
+     */
+    public static @NotNull String run(@NotNull String label,
+                                      @NotNull List<String> command,
+                                      @Nullable String stdin,
+                                      @NotNull Path workDir,
+                                      @NotNull Map<String, String> extraEnv,
+                                      @NotNull Duration timeout,
+                                      @NotNull String authHint,
+                                      @Nullable java.util.function.Consumer<String> onLine) throws Exception {
+        Timing timing = new Timing(label, RESOLVE_NANOS.get());
+        RESOLVE_NANOS.remove();
+        try {
+            return runTimed(label, command, stdin, workDir, extraEnv, timeout, authHint, onLine, timing);
+        } finally {
+            LOG.info(timing.summary());
+        }
+    }
+
+    private static final com.intellij.openapi.diagnostic.Logger LOG =
+        com.intellij.openapi.diagnostic.Logger.getInstance(AiCliRunner.class);
+    private static final ThreadLocal<Long> RESOLVE_NANOS = new ThreadLocal<>();
+
+    /**
+     * Records how long finding the binary took on this thread; the next {@link #run} on the same
+     * thread includes it in its timing log line.
+     */
+    public static void noteResolve(long startedNanos) {
+        RESOLVE_NANOS.set(System.nanoTime() - startedNanos);
+    }
+
+    /** Per-phase timings of one CLI call, logged as one line. */
+    static final class Timing implements ProcessExecution.Observer {
+        private final String label;
+        private final Long resolveNanos;
+        private final long created = System.nanoTime();
+        private volatile long spawned;
+        private volatile long firstLine;
+        private volatile java.util.function.Consumer<String> onLine;
+
+        Timing(String label, Long resolveNanos) {
+            this.label = label;
+            this.resolveNanos = resolveNanos;
+        }
+
+        @Override
+        public void started() {
+            spawned = System.nanoTime();
+        }
+
+        @Override
+        public void stdoutLine(@NotNull String line) {
+            if (firstLine == 0) firstLine = System.nanoTime();
+            java.util.function.Consumer<String> l = onLine;
+            if (l != null) l.accept(line);
+        }
+
+        String summary() {
+            long now = System.nanoTime();
+            return "AI CLI timing [" + label + "]"
+                + (resolveNanos == null ? "" : " resolve=" + ms(resolveNanos) + "ms")
+                + " spawn=" + (spawned == 0 ? "-" : ms(spawned - created) + "ms")
+                + " firstOutput=" + (firstLine == 0 ? "-" : ms(firstLine - created) + "ms")
+                + " total=" + ms(now - created) + "ms";
+        }
+
+        private static long ms(long nanos) {
+            return nanos / 1_000_000;
+        }
+    }
+
+    private static @NotNull String runTimed(@NotNull String label,
+                                           @NotNull List<String> command,
+                                           @Nullable String stdin,
+                                           @NotNull Path workDir,
+                                           @NotNull Map<String, String> extraEnv,
+                                           @NotNull Duration timeout,
+                                           @NotNull String authHint,
+                                           @Nullable java.util.function.Consumer<String> onLine,
+                                           @NotNull Timing timing) throws Exception {
+        timing.onLine = onLine;
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir.toFile());
         pb.redirectErrorStream(false);
@@ -95,7 +182,7 @@ public final class AiCliRunner {
         ProcessExecution.Result result;
         try {
             result = runCancellable(pb, timeout, stdin == null ? "" : stdin,
-                ProgressIndicatorProvider.getGlobalProgressIndicator());
+                ProgressIndicatorProvider.getGlobalProgressIndicator(), timing);
         } catch (IOException e) {
             throw new RuntimeException(
                 "Cannot start " + label + " at '" + command.get(0) + "'.\n"
@@ -127,8 +214,18 @@ public final class AiCliRunner {
                                                            @Nullable String stdin,
                                                            @Nullable ProgressIndicator indicator)
             throws IOException, InterruptedException {
-        if (indicator == null) return ProcessExecution.run(pb, timeout, stdin);
-        Future<ProcessExecution.Result> future = RUNNER.submit(() -> ProcessExecution.run(pb, timeout, stdin));
+        return runCancellable(pb, timeout, stdin, indicator, null);
+    }
+
+    static @NotNull ProcessExecution.Result runCancellable(@NotNull ProcessBuilder pb,
+                                                           @NotNull Duration timeout,
+                                                           @Nullable String stdin,
+                                                           @Nullable ProgressIndicator indicator,
+                                                           @Nullable ProcessExecution.Observer observer)
+            throws IOException, InterruptedException {
+        if (indicator == null) return ProcessExecution.run(pb, timeout, stdin, observer);
+        Future<ProcessExecution.Result> future =
+            RUNNER.submit(() -> ProcessExecution.run(pb, timeout, stdin, observer));
         try {
             while (true) {
                 if (indicator.isCanceled()) {

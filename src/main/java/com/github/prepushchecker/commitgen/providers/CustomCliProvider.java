@@ -16,7 +16,7 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Runs any other local AI CLI (sahaa, gemini, cursor-agent, copilot, opencode, …) with an
+ * Runs any other local AI CLI (gemini, cursor-agent, copilot, opencode, a user-added CLI, …) with an
  * argument template.
  *
  * <p>A binary that has its own provider (codex, claude, llm, gh) is never run through a
@@ -33,6 +33,10 @@ public final class CustomCliProvider implements CommitMessageProvider {
     public @NotNull String generate(@NotNull AiRequest request) throws Exception {
         CommitMessageSettings.State s = CommitMessageSettings.getInstance().settings();
         String binary = binaryName(s);
+        if (binary.isEmpty()) {
+            throw new IllegalStateException("No local CLI selected.\nPick or add one in "
+                + CommitMessageSettings.SETTINGS_PATH + " (Detect Local CLIs / Add custom CLI…).");
+        }
         AiCli known = AiCli.byBinary(binary);
         String label = "Other CLI (" + binary + ")";
 
@@ -50,6 +54,7 @@ public final class CustomCliProvider implements CommitMessageProvider {
             + (known != null ? "\nInstall: " + known.installHint() : "")
             + "\nCheck the arguments template in " + CommitMessageSettings.SETTINGS_PATH + ".";
 
+        long resolveStarted = System.nanoTime();
         String path = CliPathResolver.resolveOrNull(s.customCliPath, binary);
         if (path == null) {
             throw new IllegalStateException(
@@ -59,6 +64,14 @@ public final class CustomCliProvider implements CommitMessageProvider {
         String template = effectiveTemplate(s.customCliArgs, known);
         String prompt = AiCliCommand.combinePrompt(request.system(), request.user(), request);
         List<String> cmd = AiCliCommand.fromTemplate(path, template, request.modelOr(s.customCliModel), prompt);
+        java.util.List<String> lean = AiCliCommand.leanTemplateFlags(known, known == null
+            ? com.github.prepushchecker.commitgen.cli.CliCapabilities.UNKNOWN
+            : com.github.prepushchecker.commitgen.cli.CliCapabilities.probe(path));
+        if (!lean.isEmpty()) {
+            cmd = new java.util.ArrayList<>(cmd);
+            cmd.addAll(1, lean);
+        }
+        AiCliRunner.noteResolve(resolveStarted);
         String stdin = AiCliCommand.usesPromptArg(template) ? null : prompt;
 
         Path workDir = AiCliRunner.createWorkDir();
@@ -82,8 +95,7 @@ public final class CustomCliProvider implements CommitMessageProvider {
     }
 
     static @NotNull String binaryName(@NotNull CommitMessageSettings.State s) {
-        return s.customCliBinary == null || s.customCliBinary.isBlank()
-            ? AiCli.SAHAA.binaryName() : s.customCliBinary.trim();
+        return s.customCliBinary == null ? "" : s.customCliBinary.trim();
     }
 
     /** The saved template, or the preset of a known binary when the saved one is blank. */

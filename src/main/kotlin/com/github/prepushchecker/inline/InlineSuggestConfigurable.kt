@@ -54,7 +54,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
     private val cliRadio = JBRadioButton("Local CLI")
     private val ideRadio = JBRadioButton("JetBrains AI")
     private val apiCombo = ComboBox(DefaultComboBoxModel(ProviderUi.API_IDS.toTypedArray()))
-    private val cliCombo = ComboBox(DefaultComboBoxModel(ProviderUi.CLI_IDS.toTypedArray()))
+    private val cliCombo = ComboBox<ProviderUi.CliChoice>()
     private val apiModelField = JBTextField().apply { emptyText.text = PROVIDER_DEFAULT }
     private val cliModelCombo = ComboBox<String>().apply { isEditable = true }
     private val cliSummary = JBLabel()
@@ -74,7 +74,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
             radio.addActionListener { if (radio.isSelected && !loading) { source = s; updateVisibility() } }
         }
         apiCombo.renderer = ProviderUi.renderer { ProviderUi.apiName(it) }
-        cliCombo.renderer = ProviderUi.renderer { it.displayName() }
+        cliCombo.renderer = ProviderUi.cliChoiceRenderer { AiCliDetector.lastScan() }
         apiCombo.addActionListener {
             if (loading) return@addActionListener
             stashModels()
@@ -83,8 +83,9 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         }
         cliCombo.addActionListener {
             if (loading) return@addActionListener
+            val choice = cliCombo.selectedItem as? ProviderUi.CliChoice ?: return@addActionListener
             stashModels()
-            cliId = cliCombo.selectedItem as Id
+            cliId = choice.providerId
             loadCli()
         }
         (cliModelCombo.editor.editorComponent as? JBTextField)?.emptyText?.text = PROVIDER_DEFAULT
@@ -178,6 +179,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         }
         built = true
         loadFromState()
+        scanIfNeeded()
         return p
     }
 
@@ -274,7 +276,7 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
             cliRadio.isSelected = source == Source.CLI
             ideRadio.isSelected = source == Source.IDE
             apiCombo.selectedItem = apiId
-            cliCombo.selectedItem = cliId
+            rebuildCliCombo()
             loadApiModel()
             loadCli()
         } finally {
@@ -297,7 +299,32 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
         apiModelField.text = work[apiId.name].orEmpty()
     }
 
-    private fun cliModelsOf(cli: AiCli): List<String> = AiCliModels.staticModels(cli)
+    private fun cliModelsOf(cli: AiCli?): List<String> = AiCliModels.staticModels(cli)
+
+    /** Same rows as the AI Provider page (installed CLIs, its active custom CLI), without "Add custom CLI…". */
+    private fun rebuildCliCombo() {
+        val s = commitState() ?: CommitMessageSettings.State()
+        val current = ProviderUi.choiceOf(cliId, s.customCliBinary, s)
+        val items = ProviderUi.cliChoices(s, AiCliDetector.lastScan(), current, onlyActiveCustom = true, withAdd = false)
+        val wasLoading = loading
+        loading = true
+        try {
+            cliCombo.model = DefaultComboBoxModel(items.toTypedArray())
+            cliCombo.selectedItem = current
+        } finally {
+            loading = wasLoading
+        }
+    }
+
+    /** First visit before the AI Provider page ran a scan: scan in the background, then list what was found. */
+    private fun scanIfNeeded() {
+        if (AiCliDetector.lastScan() != null) return
+        val s = commitState()?.let { com.intellij.util.xmlb.XmlSerializerUtil.createCopy(it) } ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            runCatching { AiCliDetector.scanAll(s) }
+            ApplicationManager.getApplication().invokeLater({ if (built) rebuildCliCombo() }, ModalityState.any())
+        }
+    }
 
     private fun loadCli() {
         val wasLoading = loading
@@ -326,17 +353,24 @@ class InlineSuggestConfigurable : BoundSearchableConfigurable(
     private fun commitState(): CommitMessageSettings.State? =
         runCatching { CommitMessageSettings.getInstance()?.settings() }.getOrNull()
 
-    private fun cliBinary(cli: AiCli): String =
-        if (cliId == Id.CUSTOM_CLI) commitState()?.customCliBinary?.trim().orEmpty().ifEmpty { "sahaa" } else cli.binaryName()
+    private fun cliBinary(cli: AiCli?): String =
+        if (cliId == Id.CUSTOM_CLI) commitState()?.customCliBinary?.trim().orEmpty() else cli?.binaryName().orEmpty()
 
-    private fun configuredPath(cli: AiCli): String = commitState()?.let { cli.configuredPath(it) }.orEmpty()
+    private fun configuredPath(cli: AiCli?): String =
+        if (cliId == Id.CUSTOM_CLI) commitState()?.customCliPath.orEmpty()
+        else commitState()?.let { cli?.configuredPath(it) }.orEmpty()
 
     private fun refreshCliSummary() {
         val generation = ++summaryGeneration
         val cli = ProviderUi.cliOf(cliId, commitState()?.customCliBinary)
         val binary = cliBinary(cli)
-        val name = cli.displayName()
+        val name = cli?.displayName() ?: binary
         val configured = configuredPath(cli)
+        if (binary.isEmpty()) {
+            cliSummary.text = ProviderUi.NO_CLI_TEXT
+            cliSummary.foreground = UIUtil.getContextHelpForeground()
+            return
+        }
         cliSummary.text = "$name  ·  checking…"
         cliSummary.foreground = UIUtil.getLabelForeground()
         ApplicationManager.getApplication().executeOnPooledThread {

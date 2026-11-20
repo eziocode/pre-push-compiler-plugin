@@ -65,6 +65,32 @@ public final class GenerateCommitMessageAction extends AnAction {
             : hasChanges
             ? "Pre-Push Checker: Generate a commit message from staged changes using the configured AI provider"
             : "Pre-Push Checker: No changes detected — make or stage some changes first");
+        if (hasChanges && !generating) pokeSpeculator(project, e);
+    }
+
+    private static volatile long lastPoke;
+
+    /**
+     * The commit panel is showing: let {@link CommitMessageSpeculator} write the message ahead of
+     * time (it checks the user opted in by using Generate). The checked files are read on the EDT,
+     * at most once a second.
+     */
+    private static void pokeSpeculator(@NotNull Project project, @NotNull AnActionEvent e) {
+        if (!CommitMessageSettings.getInstance().settings().commitGenerateUsed) return;
+        long now = System.currentTimeMillis();
+        if (now - lastPoke < 1_000) return;
+        lastPoke = now;
+        CommitWorkflowUi ui = getCommitWorkflowUi(e);
+        if (ui == null) return;
+        ApplicationManager.getApplication().invokeLater(() -> {
+            if (project.isDisposed()) return;
+            try {
+                CommitMessageSpeculator.getInstance(project)
+                    .panelShown(ui.getIncludedChanges(), includedUnversionedPaths(ui));
+            } catch (RuntimeException ignored) {
+                // the commit panel went away
+            }
+        }, ModalityState.any());
     }
 
     @Override
@@ -90,6 +116,9 @@ public final class GenerateCommitMessageAction extends AnAction {
         List<java.nio.file.Path> includedUnversioned = commitWorkflowUi != null
             ? includedUnversionedPaths(commitWorkflowUi)
             : Collections.emptyList();
+        String currentText = commitWorkflowUi != null ? commitWorkflowUi.getCommitMessageUi().getText() : null;
+        // From now on the message for the checked files is prepared while the commit panel is open.
+        CommitMessageSettings.getInstance().settings().commitGenerateUsed = true;
 
         ProgressManager.getInstance().run(
             // Cancellable: cancelling kills a running AI CLI (see AiCliRunner) and drops the result.
@@ -98,10 +127,14 @@ public final class GenerateCommitMessageAction extends AnAction {
                 public void run(@NotNull ProgressIndicator indicator) {
                     indicator.setIndeterminate(true);
                     indicator.setText("Contacting AI provider…");
+                    AtomicBoolean finished = new AtomicBoolean();
                     try {
-                        String message =
-                            CommitMessageGeneratorService.getInstance(project).generate(includedChanges, includedUnversioned);
+                        java.util.function.Consumer<String> onPartial = commitWorkflowUi == null ? null
+                            : partialWriter(project, commitWorkflowUi, indicator, finished);
+                        String message = CommitMessageGeneratorService.getInstance(project)
+                            .generate(includedChanges, includedUnversioned, currentText, onPartial);
                         indicator.checkCanceled();
+                        finished.set(true);
                         String finalMessage = message;
                         // setText edits the commit message document: needs a write-safe context.
                         com.github.prepushchecker.WriteSafeEdt.invokeLater(() -> {
@@ -120,8 +153,10 @@ public final class GenerateCommitMessageAction extends AnAction {
                             }
                         });
                     } catch (ProcessCanceledException cancelled) {
+                        finished.set(true);
                         throw cancelled;
                     } catch (Exception ex) {
+                        finished.set(true);
                         if (indicator.isCanceled()) return;
                         ApplicationManager.getApplication().invokeLater(() -> {
                             if (project.isDisposed()) return;
@@ -146,6 +181,31 @@ public final class GenerateCommitMessageAction extends AnAction {
                     }
                 }
             });
+    }
+
+    /**
+     * Shows the answer in the commit field while a streaming provider writes it: at most ~10
+     * updates a second, none after the final text is set ({@code finished}).
+     */
+    private static @NotNull java.util.function.Consumer<String> partialWriter(@NotNull Project project,
+                                                                            @NotNull CommitWorkflowUi ui,
+                                                                            @NotNull ProgressIndicator indicator,
+                                                                            @NotNull AtomicBoolean finished) {
+        java.util.concurrent.atomic.AtomicLong last = new java.util.concurrent.atomic.AtomicLong();
+        java.util.concurrent.atomic.AtomicReference<String> latest = new java.util.concurrent.atomic.AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean queued = new java.util.concurrent.atomic.AtomicBoolean();
+        return text -> {
+            latest.set(text);
+            long now = System.currentTimeMillis();
+            if (now - last.get() < 100 || !queued.compareAndSet(false, true)) return;
+            last.set(now);
+            com.github.prepushchecker.WriteSafeEdt.invokeLater(() -> {
+                queued.set(false);
+                if (finished.get() || project.isDisposed() || indicator.isCanceled()) return;
+                String partial = latest.get();
+                if (partial != null && !partial.isBlank()) ui.getCommitMessageUi().setText(partial.strip());
+            });
+        };
     }
 
     private static CommitWorkflowUi getCommitWorkflowUi(@NotNull AnActionEvent e) {

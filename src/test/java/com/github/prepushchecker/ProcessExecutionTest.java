@@ -103,4 +103,18 @@ public class ProcessExecutionTest extends TestCase {
         assertTrue(result.stdout().contains("out-19999"));
         assertTrue(result.stderr().contains("err-19999"));
     }
+
+    public void testObserverSeesStartAndEachStdoutLine() throws Exception {
+        java.util.List<String> lines = new java.util.concurrent.CopyOnWriteArrayList<>();
+        java.util.concurrent.atomic.AtomicBoolean started = new java.util.concurrent.atomic.AtomicBoolean();
+        ProcessExecution.Result r = ProcessExecution.run(
+            new ProcessBuilder("sh", "-c", "printf 'one\\ntwo\\r\\nthree'"), java.time.Duration.ofSeconds(10), null,
+            new ProcessExecution.Observer() {
+                @Override public void started() { started.set(true); }
+                @Override public void stdoutLine(@org.jetbrains.annotations.NotNull String line) { lines.add(line); }
+            });
+        assertTrue(started.get());
+        assertEquals(java.util.List.of("one", "two", "three"), lines);
+        assertTrue(r.stdout().startsWith("one\ntwo"));
+    }
 }

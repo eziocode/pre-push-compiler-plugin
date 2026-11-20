@@ -6,7 +6,9 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * Registry of local AI command-line tools the plugin can auto-detect.
+ * Detection catalog of local AI command-line tools. Settings only list the entries found on
+ * this machine (see {@link AiCliDetector}); anything else is added as a
+ * {@link com.github.prepushchecker.commitgen.CommitMessageSettings.CustomCliEntry}.
  *
  * <p>Each entry is found the same way as the GitHub CLI: by binary name via
  * {@link com.github.prepushchecker.commitgen.CliPathResolver}, honouring a
@@ -23,8 +25,6 @@ public enum AiCli {
         "", "brew install gh && gh auth login"),
     LLM("llm", CommitMessageProvider.Id.LLM_CLI, "llm",
         "", "pip install llm && llm keys set openai"),
-    SAHAA("Sahaa", CommitMessageProvider.Id.CUSTOM_CLI, "sahaa",
-        "--chat {model?-m {model}} {prompt}", "Install sahaa, then run: sahaa auth"),
     GEMINI("Gemini CLI", CommitMessageProvider.Id.CUSTOM_CLI, "gemini",
         "{model?-m {model}} -p {prompt}", "npm install -g @google/gemini-cli && gemini"),
     CURSOR_AGENT("Cursor Agent", CommitMessageProvider.Id.CUSTOM_CLI, "cursor-agent",
@@ -32,7 +32,18 @@ public enum AiCli {
     COPILOT("GitHub Copilot CLI", CommitMessageProvider.Id.CUSTOM_CLI, "copilot",
         "-s {model?--model {model}} -p {prompt}", "npm install -g @github/copilot"),
     OPENCODE("opencode", CommitMessageProvider.Id.CUSTOM_CLI, "opencode",
-        "run {model?-m {model}} {prompt}", "npm install -g opencode-ai");
+        "run {model?-m {model}} {prompt}", "npm install -g opencode-ai"),
+    AIDER("Aider", CommitMessageProvider.Id.CUSTOM_CLI, "aider",
+        "--no-git --no-auto-commits --yes-always --no-pretty {model?--model {model}} --message {prompt}",
+        "pip install aider-install && aider-install"),
+    QWEN("Qwen Code", CommitMessageProvider.Id.CUSTOM_CLI, "qwen",
+        "{model?-m {model}} -p {prompt}", "npm install -g @qwen-code/qwen-code"),
+    AMP("Amp", CommitMessageProvider.Id.CUSTOM_CLI, "amp",
+        "-x {prompt}", "npm install -g @sourcegraph/amp"),
+    GOOSE("goose", CommitMessageProvider.Id.CUSTOM_CLI, "goose",
+        "run --no-session {model?--model {model}} -t {prompt}", "brew install block-goose-cli"),
+    CRUSH("Crush", CommitMessageProvider.Id.CUSTOM_CLI, "crush",
+        "run -q {prompt}", "brew install charmbracelet/tap/crush");
 
     private final String displayName;
     private final CommitMessageProvider.Id providerId;
@@ -69,7 +80,11 @@ public enum AiCli {
             case CODEX  -> s.codexCliPath;
             case GH     -> s.ghCliPath;
             case LLM    -> s.llmCliPath;
-            default     -> binaryName.equals(s.customCliBinary) ? s.customCliPath : null;
+            default     -> {
+                if (binaryName.equals(s.customCliBinary)) yield s.customCliPath;
+                CommitMessageSettings.CustomCliEntry e = CommitMessageSettings.findCustom(s, binaryName);
+                yield e == null ? null : e.path;
+            }
         };
     }
 

@@ -42,12 +42,39 @@ public final class AiCliCommand {
     public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
                                                @Nullable String extraArgs, boolean lowLatency,
                                                @Nullable String effort) {
-        List<String> cmd = new ArrayList<>(List.of(path, "-p", "--output-format", "text"));
+        return claude(path, model, extraArgs, lowLatency, effort, CliCapabilities.UNKNOWN, false, true);
+    }
+
+    /**
+     * Full form. When the installed CLI's {@code --help} was probed ({@code caps.known()}), every
+     * request gets the overhead-stripping flags it lists ({@link #CLAUDE_LEAN}): no tools, no MCP
+     * servers, no saved session, no slash commands, no user settings (hooks, plugins) and a short
+     * system prompt instead of Claude Code's agent prompt and tool schemas. Unprobed, only inline
+     * completions get the original three flags. {@code stream} switches to {@code stream-json}
+     * with partial messages (read with {@link ClaudeStreamJson}). {@code withSettings == false}
+     * adds {@code --setting-sources ""}.
+     */
+    public static @NotNull List<String> claude(@NotNull String path, @Nullable String model,
+                                               @Nullable String extraArgs, boolean lowLatency,
+                                               @Nullable String effort, @NotNull CliCapabilities caps,
+                                               boolean stream, boolean withSettings) {
+        boolean streaming = stream && canStreamClaude(caps);
+        List<String> cmd = new ArrayList<>(List.of(path, "-p", "--output-format", streaming ? "stream-json" : "text"));
+        if (streaming) {
+            cmd.add("--verbose");
+            cmd.add("--include-partial-messages");
+        }
         if (!isBlank(model)) {
             cmd.add("--model");
             cmd.add(model.trim());
         }
-        if (lowLatency) {
+        if (caps.known()) {
+            for (List<String> flag : CLAUDE_LEAN) {
+                if (!caps.supports(flag.get(0))) continue;
+                if (withSettings && flag.get(0).equals("--setting-sources")) continue;
+                cmd.addAll(flag);
+            }
+        } else if (lowLatency) {
             cmd.addAll(CLAUDE_LOW_LATENCY);
         }
         if (!isBlank(effort)) {
@@ -58,6 +85,65 @@ public final class AiCliCommand {
         return cmd;
     }
 
+    /** {@code true} when the CLI can print partial answers as JSON events. */
+    public static boolean canStreamClaude(@NotNull CliCapabilities caps) {
+        return caps.supports("--include-partial-messages") && caps.supports("--verbose");
+    }
+
+    /**
+     * Replaces Claude Code's agent system prompt: the real instructions travel in the user
+     * message (see {@link #combinePrompt}), so this only needs to keep the model on task.
+     */
+    public static final String LEAN_SYSTEM_PROMPT =
+        "You are a non-interactive text generator called from an IDE plugin. Follow the instructions "
+            + "in the user message exactly and reply with the requested text only. You have no tools.";
+
+    /** Flags (option first) added when the installed claude lists the option. */
+    static final List<List<String>> CLAUDE_LEAN = List.of(
+        List.of("--tools", ""),
+        List.of("--strict-mcp-config"),
+        List.of("--no-session-persistence"),
+        List.of("--disable-slash-commands"),
+        List.of("--setting-sources", ""),
+        List.of("--system-prompt", LEAN_SYSTEM_PROMPT));
+
+    /** Default claude model for commit messages when none is set: fast and plenty for the task. */
+    public static final String CLAUDE_FAST_MODEL = "haiku";
+
+    /**
+     * The model to run: the configured one, else {@code haiku} for inline completions and commit
+     * messages. Review and fix keep the CLI's default (they need the depth).
+     */
+    public static @Nullable String claudeModelFor(@NotNull AiRequest request, @Nullable String configured) {
+        if (!isBlank(configured)) return configured;
+        return request.kind() == AiRequest.Kind.COMPLETION || request.kind() == AiRequest.Kind.COMMIT_MESSAGE
+            ? CLAUDE_FAST_MODEL : configured;
+    }
+
+    /**
+     * Speed flags for catalog CLIs run through an args template, inserted right after the binary
+     * and only when the installed version lists them (copilot: no built-in MCP servers, no repo
+     * instructions; gemini / qwen: no extensions).
+     */
+    public static @NotNull List<String> leanTemplateFlags(@Nullable AiCli cli, @NotNull CliCapabilities caps) {
+        List<String> out = new ArrayList<>();
+        if (cli == null || !caps.known()) return out;
+        switch (cli) {
+            case COPILOT -> {
+                if (caps.supports("--disable-builtin-mcps")) out.add("--disable-builtin-mcps");
+                if (caps.supports("--no-custom-instructions")) out.add("--no-custom-instructions");
+            }
+            case GEMINI, QWEN -> {
+                if (caps.supports("--extensions")) {
+                    out.add("--extensions");
+                    out.add("none");
+                }
+            }
+            default -> { }
+        }
+        return out;
+    }
+
     /**
      * The configured reasoning effort applies to commit messages only; review and fix keep the CLI's
      * own default (they need the depth) and inline completions are forced low elsewhere.
@@ -66,7 +152,7 @@ public final class AiCliCommand {
         return request.kind() == AiRequest.Kind.COMMIT_MESSAGE ? configured : null;
     }
 
-    /** Flags added for inline completions: no tools, no MCP servers, no saved session. */
+    /** Flags added for inline completions when the CLI was not probed: no tools, no MCP servers, no saved session. */
     static final List<String> CLAUDE_LOW_LATENCY =
         List.of("--tools", "", "--strict-mcp-config", "--no-session-persistence");
 
@@ -101,6 +187,18 @@ public final class AiCliCommand {
                                               @Nullable String extraArgs,
                                               @NotNull Path lastMessageFile, boolean lowLatency,
                                               @Nullable String effort) {
+        return codex(path, model, extraArgs, lastMessageFile, lowLatency, effort, CliCapabilities.UNKNOWN);
+    }
+
+    /**
+     * Full form. When the probed CLI lists {@code --ephemeral}, every request runs without a saved
+     * session and with no MCP servers ({@code -c mcp_servers={}}), which codex otherwise starts
+     * before answering.
+     */
+    public static @NotNull List<String> codex(@NotNull String path, @Nullable String model,
+                                              @Nullable String extraArgs,
+                                              @NotNull Path lastMessageFile, boolean lowLatency,
+                                              @Nullable String effort, @NotNull CliCapabilities caps) {
         List<String> cmd = new ArrayList<>(List.of(
             path, "exec", "--skip-git-repo-check", "--sandbox", "read-only", "--color", "never"));
         if (!isBlank(model)) {
@@ -109,8 +207,13 @@ public final class AiCliCommand {
         }
         cmd.add("--output-last-message");
         cmd.add(lastMessageFile.toString());
+        boolean lean = caps.known() && caps.supports("--ephemeral");
+        if (lean || lowLatency) cmd.add("--ephemeral");
+        if (lean) {
+            cmd.add("-c");
+            cmd.add(CODEX_NO_MCP);
+        }
         if (lowLatency) {
-            cmd.add("--ephemeral");
             cmd.add("-c");
             cmd.add(CODEX_LOW_EFFORT);
         } else if (!isBlank(effort)) {
@@ -121,6 +224,9 @@ public final class AiCliCommand {
         cmd.add("-");
         return cmd;
     }
+
+    /** Config override that starts no MCP servers. */
+    static final String CODEX_NO_MCP = "mcp_servers={}";
 
     /**
      * Expands a user args template for a generic CLI.
